@@ -54,7 +54,7 @@ backup_file() {
 
     mkdir -p "$(dirname "$backup_path")"
     cp "$file" "$backup_path"
-    ((backed_up++))
+    backed_up=$((backed_up + 1))
 }
 
 # Sync single file
@@ -67,14 +67,14 @@ sync_file() {
         mkdir -p "$(dirname "$dst")"
         cp "$src" "$dst"
         echo "  + $rel_path"
-        ((copied_new++))
+        copied_new=$((copied_new + 1))
     elif ! diff -q "$src" "$dst" > /dev/null 2>&1; then
         backup_file "$dst"
         cp "$src" "$dst"
         echo "  ~ $rel_path"
-        ((copied_updated++))
+        copied_updated=$((copied_updated + 1))
     else
-        ((skipped++))
+        skipped=$((skipped + 1))
     fi
 }
 
