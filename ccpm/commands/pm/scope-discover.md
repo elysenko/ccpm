@@ -1,6 +1,6 @@
-# Scope Discover - Interactive Discovery Session
+# Scope Discover - Merge Discovery Sections
 
-Conduct structured Q&A to understand a scope/vision. Saves answers incrementally to `discovery.md`.
+Merge all 12 completed discovery sections into a single `discovery.md` file with summary.
 
 ## Usage
 ```
@@ -8,181 +8,239 @@ Conduct structured Q&A to understand a scope/vision. Saves answers incrementally
 ```
 
 ## Arguments
-- `scope-name` (required): Name for this scope session
+- `scope-name` (required): Name of the scope session
+
+## Prerequisites
+
+All 12 discovery sections must be complete:
+- `company_background.md`
+- `stakeholders.md`
+- `timeline_budget.md`
+- `problem_definition.md`
+- `business_goals.md`
+- `project_scope.md`
+- `technical_environment.md`
+- `users_audience.md`
+- `user_types.md`
+- `competitive_landscape.md`
+- `risks_assumptions.md`
+- `data_reporting.md`
 
 ## Instructions
 
-You are conducting a product discovery session to understand a user's vision before breaking it into PRDs.
+You are merging the 12 completed discovery sections into a comprehensive `discovery.md` file.
 
-### Session Setup
+### Check Prerequisites
 
-**Check for existing session:**
 ```bash
 SESSION_DIR=".claude/scopes/$ARGUMENTS"
-test -d "$SESSION_DIR" && echo "Resuming existing session" || echo "Starting new session"
+SECTIONS_DIR="$SESSION_DIR/sections"
+
+echo "Checking discovery sections for: $ARGUMENTS"
+echo ""
+
+SECTIONS="company_background stakeholders timeline_budget problem_definition business_goals project_scope technical_environment users_audience user_types competitive_landscape risks_assumptions data_reporting"
+
+missing=0
+for section in $SECTIONS; do
+  if [ -f "$SECTIONS_DIR/${section}.md" ]; then
+    echo "✓ $section"
+  else
+    echo "✗ $section (MISSING)"
+    missing=$((missing + 1))
+  fi
+done
+
+if [ $missing -gt 0 ]; then
+  echo ""
+  echo "❌ $missing sections missing. Complete them first:"
+  echo "  .claude/scripts/prd-scope.sh $ARGUMENTS --discover"
+  exit 1
+fi
 ```
 
-**Initialize if new:**
-```bash
-mkdir -p "$SESSION_DIR/prds"
-```
+### Read All Sections
 
-**Check for existing discovery.md:**
-```bash
-test -f "$SESSION_DIR/discovery.md" && cat "$SESSION_DIR/discovery.md"
-```
+Read all 12 section files to gather content:
 
-If discovery.md exists with content, summarize what's already been captured and continue from where it left off.
+1. `sections/company_background.md`
+2. `sections/stakeholders.md`
+3. `sections/timeline_budget.md`
+4. `sections/problem_definition.md`
+5. `sections/business_goals.md`
+6. `sections/project_scope.md`
+7. `sections/technical_environment.md`
+8. `sections/users_audience.md`
+9. `sections/user_types.md`
+10. `sections/competitive_landscape.md`
+11. `sections/risks_assumptions.md`
+12. `sections/data_reporting.md`
 
-### Discovery Framework
+### Generate Discovery Document
 
-Ask questions in these categories. After EACH answer, append to discovery.md immediately.
-
-#### 1. Vision & Goals
-- "What's the big picture? What are you trying to build?"
-- "Who are the primary users? What personas will use this?"
-- "What does success look like? How will you measure it?"
-- "Why is this important now? What's the driver?"
-
-#### 2. Current State
-- "What exists today? What's the starting point?"
-- "What are the main pain points or gaps you're solving?"
-- "Are there existing systems this needs to integrate with?"
-- "What technical constraints exist (languages, frameworks, infrastructure)?"
-
-#### 3. Scope Boundaries
-- "What's explicitly OUT of scope for this effort?"
-- "Are there timeline or resource constraints?"
-- "What's the MVP vs nice-to-have?"
-- "Are there regulatory or compliance requirements?"
-
-#### 4. Dependencies & Risks
-- "Are there external dependencies (APIs, teams, decisions)?"
-- "What are the biggest risks or unknowns?"
-- "What could block this project?"
-- "Are there any security or privacy concerns?"
-
-#### 5. User Journeys
-- "Walk me through the main user journey end-to-end"
-- "What are the key interactions or touchpoints?"
-- "What happens when things go wrong? Error states?"
-- "Are there different journeys for different user types?"
-
-### Incremental Persistence
-
-After EACH answer, immediately write to discovery.md:
-
-```bash
-cat >> "$SESSION_DIR/discovery.md" << 'EOF'
-
-## {Category}: {Question}
-
-**Answer:** {User's response}
-
-**Key Points:**
-- {Extracted point 1}
-- {Extracted point 2}
-
-EOF
-```
-
-### Discovery.md Format
+Create `.claude/scopes/{scope-name}/discovery.md` with this structure:
 
 ```markdown
 # Discovery: {scope-name}
 
-discovery_complete: false
-started: {datetime}
-updated: {datetime}
+discovery_complete: true
+started: {earliest section datetime}
+completed: {current datetime}
 
 ---
 
-## Vision & Goals
+## Company Background
 
-### What are you building?
-**Answer:** {response}
-**Key Points:**
-- {point}
-
-### Who are the users?
-**Answer:** {response}
-**Key Points:**
-- {point}
+{Content from company_background.md - key points only}
 
 ---
 
-## Current State
-...
+## Stakeholders
+
+{Content from stakeholders.md - key points only}
 
 ---
 
-## Scope Boundaries
-...
+## Timeline & Budget
+
+{Content from timeline_budget.md - key points only}
 
 ---
 
-## Dependencies & Risks
-...
+## Problem Definition
+
+{Content from problem_definition.md - key points only}
 
 ---
 
-## User Journeys
-...
+## Business Goals
+
+{Content from business_goals.md - key points only}
 
 ---
 
-## Summary
+## Project Scope
+
+{Content from project_scope.md - key points only}
+
+---
+
+## Technical Environment
+
+{Content from technical_environment.md - key points only}
+
+---
+
+## Users & Audience
+
+{Content from users_audience.md - key points only}
+
+---
+
+## User Types
+
+{Content from user_types.md - key points only}
+
+---
+
+## Competitive Landscape
+
+{Content from competitive_landscape.md - key points only}
+
+---
+
+## Risks & Assumptions
+
+{Content from risks_assumptions.md - key points only}
+
+---
+
+## Data & Reporting
+
+{Content from data_reporting.md - key points only}
+
+---
+
+## Executive Summary
 
 ### Core Vision
-{1-2 sentence summary}
+{1-2 sentence summary synthesized from all sections}
 
-### Primary Users
-- {persona 1}
-- {persona 2}
+### Problem Being Solved
+{Brief problem statement from problem_definition}
 
-### Key Requirements
-1. {requirement}
-2. {requirement}
+### Target Users
+- {User type 1 from user_types}
+- {User type 2}
+- ...
 
-### Explicit Out of Scope
-- {item}
+### Key Business Goals
+1. {Primary goal from business_goals}
+2. {Secondary goals}
+
+### Technical Approach
+- Stack: {from technical_environment}
+- Integrations: {list from technical_environment}
+- Security: {requirements from technical_environment}
+
+### Scope Boundaries
+
+**In Scope:**
+{From project_scope}
+
+**Out of Scope:**
+{From project_scope}
+
+### Timeline & Constraints
+- Target Launch: {from timeline_budget}
+- Key Milestones: {from timeline_budget}
+- Constraints: {from project_scope and technical_environment}
 
 ### Known Risks
-- {risk}
+{From risks_assumptions}
 
-### Integrations Needed
-- {integration}
+### Unknowns (Require Research)
+{List all items marked UNKNOWN from any section}
+
+---
 
 discovery_complete: true
 ```
 
-### Completion Criteria
+### Content Guidelines
 
-Discovery is complete when you have:
-1. Clear understanding of the vision and goals
-2. Identified primary users/personas
-3. Documented current state and constraints
-4. Defined explicit in-scope and out-of-scope boundaries
-5. Captured at least one key user journey
-6. Identified major dependencies and risks
+When merging sections:
+
+1. **Extract key points** - Don't copy raw Q&A format
+2. **Consolidate duplicates** - Same info may appear in multiple sections
+3. **Highlight unknowns** - Collect all UNKNOWN items in one place
+4. **Create coherent narrative** - The summary should tell a story
+5. **Preserve decisions** - Any decisions made should be clear
+
+### Handle UNKNOWN Items
+
+Scan all sections for `**Answer:** UNKNOWN` and collect them:
+
+```markdown
+### Unknowns (Require Research)
+
+| Item | Section | Research Hint |
+|------|---------|---------------|
+| {question} | {section_name} | {hint if provided} |
+| ... | ... | ... |
+```
 
 ### Output
 
-When discovery is complete:
-
-1. Write the summary section to discovery.md
-2. Change `discovery_complete: false` to `discovery_complete: true`
-3. Output:
+After writing discovery.md:
 
 ```
-Discovery complete for: {scope-name}
+Discovery merge complete for: {scope-name}
 
 Summary:
-- Vision: {1-sentence}
-- Users: {count} personas identified
-- Requirements: {count} key requirements
-- Out of scope: {count} items
-- Risks: {count} identified
+- 12/12 sections merged
+- {count} unknowns flagged for research
+- Executive summary generated
 
 Saved to: .claude/scopes/{scope-name}/discovery.md
 
@@ -192,8 +250,8 @@ Next step:
 
 ### Important Rules
 
-1. **Write after every answer** - Don't batch writes
-2. **Extract key points** - Don't just record raw answers
-3. **Ask follow-ups** - Dig deeper when answers are vague
-4. **Stay focused** - Don't go down rabbit holes
-5. **Summarize at end** - Create the summary section when complete
+1. **All 12 sections required** - Don't merge partial discovery
+2. **Extract, don't copy** - Merge intelligently, remove Q&A format
+3. **Flag unknowns** - These need attention before decomposition
+4. **Create summary** - Executive summary is critical for next phases
+5. **Set complete flag** - Mark `discovery_complete: true`

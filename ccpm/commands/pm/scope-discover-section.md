@@ -384,19 +384,94 @@ Based on the section name, ask these specific questions:
 1. **Greet and explain**: Tell the user which section you're covering
 2. **Ask questions one at a time**: Don't dump all questions at once
 3. **Probe for clarity**: If answer is vague, ask follow-up
-4. **Accept "I don't know"**: Mark as `UNKNOWN` if user doesn't have answer
-5. **Skip optional questions**: If user says "skip" or "next", move on
-6. **Extract key points**: Summarize each answer into bullet points
+4. **Research unknowns**: If user says "I don't know", research and present options
+5. **Iterate until satisfied**: Keep researching until user picks an answer or defers
+6. **Skip optional questions**: If user says "skip" or "next", move on
+7. **Extract key points**: Summarize each answer into bullet points
 
-### Handling Unknown Answers
+### Handling Unknown Answers - Research On The Fly
 
-When user says "I don't know", "not sure", "you decide", or similar:
+When user says "I don't know", "not sure", "research this", or similar:
 
-```markdown
-### {Question}
-**Answer:** UNKNOWN
-**Reason:** {why user doesn't know}
-**Research Hint:** {from question's research_hints}
+**DO NOT just mark as UNKNOWN and move on.** Instead:
+
+1. **Offer to research immediately:**
+   ```
+   "I can research that for you. Should I look up [specific topic]?"
+   ```
+
+2. **If user says yes, research immediately:**
+   - Do a focused web search
+   - Present 2-3 options with pros/cons
+   - Ask user to pick one
+
+3. **Present findings conversationally:**
+   ```
+   "I found three common approaches for [topic]:
+
+   1. **Option A** - [1 sentence]. Best for [use case].
+   2. **Option B** - [1 sentence]. Best for [use case].
+   3. **Option C** - [1 sentence]. Best for [use case].
+
+   Based on what you've told me about [context], I'd recommend Option B.
+   Does that work, or should I dig deeper?"
+   ```
+
+4. **Iterate until satisfied:**
+   - If user asks for more detail, research deeper
+   - If user picks an option, record it as the answer
+   - If user wants to defer, THEN mark as UNKNOWN
+
+5. **Only mark UNKNOWN if user explicitly defers:**
+   ```markdown
+   ### {Question}
+   **Answer:** UNKNOWN (user chose to defer)
+   **Research Done:** Yes - presented 3 options, user wants to decide later
+   **Options Presented:**
+   - Option A: {summary}
+   - Option B: {summary}
+   - Option C: {summary}
+   ```
+
+### Research Categories
+
+When researching, use these search patterns:
+
+| Topic Type | Search Pattern | Present As |
+|------------|---------------|------------|
+| Tech choice | "{topic} vs alternatives 2025" | Comparison table |
+| Best practice | "{topic} best practices 2025" | Recommendation |
+| Compliance | "{requirement} requirements checklist" | Checklist |
+| Pricing | "{tool/service} pricing 2025" | Cost breakdown |
+| Integration | "{system A} {system B} integration" | How-to summary |
+
+### Research Flow Example
+
+```
+User: "I don't know what auth provider to use"
+
+You: "I can research that. Are you building B2B (enterprise SSO needed)
+     or B2C (social logins, passwordless)?"
+
+User: "B2B, we need SSO"
+
+You: [Does web search: "B2B authentication provider SSO SAML 2025 comparison"]
+
+You: "For B2B with SSO, the top options are:
+
+     1. **Auth0** - Full-featured, native SAML, $23k+/year for enterprise
+     2. **Okta** - Enterprise standard, complex setup, $$$
+     3. **WorkOS** - Developer-focused, simple SSO integration, usage-based
+
+     Given you mentioned budget constraints earlier, WorkOS might be
+     the best fit. It's simpler and cheaper for early-stage.
+
+     Want to go with WorkOS, or should I look into others?"
+
+User: "WorkOS sounds good"
+
+You: [Records: "Auth provider: WorkOS - selected for developer simplicity
+     and cost-effectiveness for B2B SSO requirements"]
 ```
 
 ### Output Format (section file)
@@ -459,7 +534,9 @@ Or run: .claude/scripts/prd-scope.sh {scope-name} --discover
 ### Important Rules
 
 1. **One section only** - Don't ask questions from other sections
-2. **Write immediately** - Save section file when complete
-3. **Accept unknowns** - Don't push too hard, mark and move on
+2. **Research before marking unknown** - Always offer to research first
+3. **Write immediately** - Save section file when complete
 4. **Be conversational** - This is interactive, not an interrogation
 5. **Extract key points** - Don't just record raw answers
+6. **Use context** - Reference earlier answers when making recommendations
+7. **One search per topic** - Don't over-research, present top 2-3 options
