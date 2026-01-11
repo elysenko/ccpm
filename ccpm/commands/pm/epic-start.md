@@ -238,6 +238,41 @@ Try: git branch -d epic/$ARGUMENTS
 Or: Check existing branches with: git branch -a
 ```
 
+## Agent Deploy Capability
+
+Agents can deploy after completing their work if the epic's scope has deploy enabled.
+
+### When Agents Should Deploy
+
+1. **After completing a task** that changes runtime code (not just tests)
+2. **When testing requires a running app** (E2E, integration tests)
+3. **When explicitly instructed** in the task/issue
+
+### How Agents Deploy
+
+Include in agent prompt when deploy is enabled:
+```markdown
+After completing your changes, if they affect runtime code:
+1. Commit your changes
+2. Run `/pm:deploy {scope}` to build and deploy
+3. Verify pods are healthy: `kubectl get pods -n {namespace}`
+4. Continue with next task or report completion
+```
+
+### Deploy Coordination
+
+When multiple agents are working:
+- Only ONE agent should deploy at a time
+- Use the execution-status.md to coordinate:
+  ```markdown
+  ## Deploy Lock
+  - Locked by: Agent-{id}
+  - Since: {timestamp}
+  - Reason: Deploying after Issue #{number}
+  ```
+- Other agents wait for deploy to complete before deploying
+- Lock is released after `kubectl wait` succeeds
+
 ## Important Notes
 
 - Follow `/rules/branch-operations.md` for git operations
@@ -245,3 +280,4 @@ Or: Check existing branches with: git branch -a
 - Agents work in the SAME branch (not separate branches)
 - Maximum parallel agents should be reasonable (e.g., 5-10)
 - Monitor system resources if launching many agents
+- When deploy is enabled, agents can call `/pm:deploy` after completing work
