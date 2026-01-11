@@ -28,8 +28,17 @@ if [ -d ".claude/scopes" ]; then
       phase=$(grep "^phase:" "$session" | cut -d: -f2 | tr -d ' ')
       updated=$(grep "^updated:" "$session" | cut -d: -f2- | tr -d ' ')
 
+      # Count completed sections
+      sections_done=0
+      for section in company_background stakeholders timeline_budget problem_definition \
+                     business_goals project_scope technical_environment users_audience \
+                     user_types competitive_landscape risks_assumptions data_reporting; do
+        [ -f "$dir/sections/${section}.md" ] && sections_done=$((sections_done + 1))
+      done
+
       echo "$name"
       echo "  Phase: $phase"
+      echo "  Discovery: $sections_done/12 sections"
       echo "  Updated: $updated"
       echo ""
     fi
@@ -49,6 +58,7 @@ Show detailed status:
 ```bash
 SESSION_DIR=".claude/scopes/$ARGUMENTS"
 SESSION_FILE="$SESSION_DIR/session.yaml"
+SECTIONS_DIR="$SESSION_DIR/sections"
 
 if [ ! -d "$SESSION_DIR" ]; then
   echo "Scope not found: $ARGUMENTS"
@@ -68,15 +78,32 @@ Phase: {current phase}
 Created: {datetime}
 Updated: {datetime}
 
---- Progress ---
+--- Discovery Sections ---
+
+[x] Company Background
+[x] Stakeholders
+[x] Timeline & Budget
+[x] Problem Definition
+[ ] Business Goals         <- next
+[ ] Project Scope
+[ ] Technical Environment
+[ ] Users & Audience
+[ ] User Types
+[ ] Competitive Landscape
+[ ] Risks & Assumptions
+[ ] Data & Reporting
+
+Progress: {done}/12 sections
+
+--- Phase Progress ---
 
 Discovery:
-  Status: {complete|incomplete}
-  File: {exists|missing}
+  Status: {complete|in-progress|not started}
+  Sections: {done}/12
+  File: {discovery.md exists|missing}
 
 Decomposition:
-  Status: {complete|incomplete|not started}
-  Approved: {yes|no|n/a}
+  Status: {complete|in-progress|not started}
   PRDs Proposed: {count}
   File: {exists|missing}
 
@@ -100,14 +127,60 @@ Verification:
 {Based on current phase, suggest next command}
 ```
 
+### Section Status Display
+
+For discovery sections, show checkbox status:
+
+```bash
+SECTIONS="company_background stakeholders timeline_budget problem_definition \
+          business_goals project_scope technical_environment users_audience \
+          user_types competitive_landscape risks_assumptions data_reporting"
+
+declare -A SECTION_NAMES
+SECTION_NAMES[company_background]="Company Background"
+SECTION_NAMES[stakeholders]="Stakeholders"
+SECTION_NAMES[timeline_budget]="Timeline & Budget"
+SECTION_NAMES[problem_definition]="Problem Definition"
+SECTION_NAMES[business_goals]="Business Goals"
+SECTION_NAMES[project_scope]="Project Scope"
+SECTION_NAMES[technical_environment]="Technical Environment"
+SECTION_NAMES[users_audience]="Users & Audience"
+SECTION_NAMES[user_types]="User Types"
+SECTION_NAMES[competitive_landscape]="Competitive Landscape"
+SECTION_NAMES[risks_assumptions]="Risks & Assumptions"
+SECTION_NAMES[data_reporting]="Data & Reporting"
+
+echo "Discovery Sections:"
+next_section=""
+for section in $SECTIONS; do
+  name="${SECTION_NAMES[$section]}"
+  if [ -f "$SECTIONS_DIR/${section}.md" ]; then
+    echo "  [x] $name"
+  else
+    if [ -z "$next_section" ]; then
+      echo "  [ ] $name  <- next"
+      next_section="$section"
+    else
+      echo "  [ ] $name"
+    fi
+  fi
+done
+```
+
 ### Phase-Specific Next Actions
 
-**discovery:**
+**discovery (sections incomplete):**
 ```
-Next: Complete discovery session
-  .claude/scripts/prd-scope.sh {scope-name}
+Next: Continue discovery session
+  .claude/scripts/prd-scope.sh {scope-name} --discover
 
-Or continue discovery:
+Or complete specific section:
+  /pm:scope-discover-section {scope-name} {next-section}
+```
+
+**discovery (all sections complete, no discovery.md):**
+```
+Next: Merge discovery sections
   /pm:scope-discover {scope-name}
 ```
 
@@ -163,23 +236,39 @@ Phase: {phase}
 Created: {date}
 Updated: {date}
 
-Progress:
-  [x] Discovery complete
-  [x] Decomposition complete (8 PRDs proposed)
-  [x] Generation complete (8/8 PRDs)
-  [ ] Verification (not run)
+Discovery Sections:
+  [x] Company Background
+  [x] Stakeholders
+  [x] Timeline & Budget
+  [x] Problem Definition
+  [x] Business Goals
+  [x] Project Scope
+  [x] Technical Environment
+  [x] Users & Audience
+  [ ] User Types          <- next
+  [ ] Competitive Landscape
+  [ ] Risks & Assumptions
+  [ ] Data & Reporting
+
+Progress: 8/12 sections
+
+Progress Summary:
+  [ ] Discovery (8/12 sections)
+  [ ] Decomposition
+  [ ] Generation
+  [ ] Verification
 
 Files:
-  discovery.md       (12KB)
-  decomposition.md   (8KB)
-  prds/
-    85-auth.md       (4KB)
-    86-profile.md    (3KB)
+  sections/
+    company_background.md    (4KB)
+    stakeholders.md          (3KB)
     ...
+  discovery.md               (not yet created)
+  decomposition.md           (not yet created)
 
 Next:
-  Run verification to check for gaps:
-  .claude/scripts/prd-scope.sh {name} --verify
+  Continue discovery:
+  .claude/scripts/prd-scope.sh {name} --discover
 ```
 
 ### Session Health Check
