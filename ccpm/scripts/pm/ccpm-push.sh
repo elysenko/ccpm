@@ -182,13 +182,18 @@ echo ""
 echo "Creating/updating PR..."
 
 PR_TITLE="[contrib] $PROJECT_NAME${PR_TITLE_SUFFIX:+: $PR_TITLE_SUFFIX}"
+
+# Build file list
+FILE_LIST=""
+for f in "${new_files[@]}"; do FILE_LIST="${FILE_LIST}- \`${f}\` (new)"$'\n'; done
+for f in "${modified_files[@]}"; do FILE_LIST="${FILE_LIST}- \`${f}\` (modified)"$'\n'; done
+
 PR_BODY="## Contributions from $PROJECT_NAME
 
 **New:** ${#new_files[@]} | **Modified:** ${#modified_files[@]}
 
 ### Files
-$(printf '- \`%s\`\n' "${new_files[@]}" "${modified_files[@]}")
-
+${FILE_LIST}
 ---
 *Created by /pm:ccpm-push*"
 
