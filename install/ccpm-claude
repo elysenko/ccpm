@@ -1,0 +1,15 @@
+#!/bin/bash
+# ccpm-claude - Wrapper script that auto-initializes .claude/ from canonical repo
+#
+# Usage: alias claude='ccpm-claude' in your shell profile
+#
+# Requires: CCPM_SOURCE_REPO environment variable pointing to canonical ccpm repo
+
+if [ ! -d ".claude" ] && [ -n "$CCPM_SOURCE_REPO" ] && [ -d "$CCPM_SOURCE_REPO/ccpm" ]; then
+    mkdir -p .claude
+    cp -r "$CCPM_SOURCE_REPO/ccpm/"* .claude/ 2>/dev/null
+    chmod +x .claude/scripts/**/*.sh 2>/dev/null
+    echo "✓ Initialized .claude/ from $CCPM_SOURCE_REPO"
+fi
+
+exec claude "$@"
