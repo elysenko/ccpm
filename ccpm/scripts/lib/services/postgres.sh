@@ -25,7 +25,7 @@ deploy_postgres() {
   local password
   password=$(generate_password 16)
 
-  # Deploy via Helm (--create-namespace handles webhook race condition)
+  # Deploy via Helm (--create-namespace handles Rancher webhook race condition)
   if helm upgrade --install "$release" "$POSTGRES_CHART" \
     -n "$namespace" --create-namespace \
     --set "auth.username=$project" \
@@ -79,6 +79,8 @@ init_postgres() {
     return 1
   fi
 
+  # Test connection using psql (if available) or just verify secret exists
+  # For now, we trust Helm created everything correctly
   log_success "PostgreSQL initialized"
 }
 
@@ -123,7 +125,7 @@ output_postgres_credentials() {
 setup_postgres() {
   local namespace=$1
   local project=$2
-  local expose_mode=${3:-nodeport}
+  local expose_mode=$3
   local release="${project}-postgresql"
 
   # Deploy
@@ -133,9 +135,9 @@ setup_postgres() {
   wait_for_postgres "$namespace" "$project" || return 1
 
   # Expose
-  log_info "Exposing PostgreSQL (nodeport)..."
+  log_info "Exposing PostgreSQL ($expose_mode)..."
   local host_port
-  host_port=$(expose_service "$release" "$namespace" "$POSTGRES_PORT")
+  host_port=$(expose_service "$release" "$namespace" "$POSTGRES_PORT" "$expose_mode")
   local host="${host_port%:*}"
   local port="${host_port#*:}"
   log_success "PostgreSQL exposed at $host:$port"
@@ -143,6 +145,34 @@ setup_postgres() {
   # Initialize
   init_postgres "$host" "$port" "$namespace" "$project" || return 1
 
+  # Get password for output AND CloudBeaver auto-deployment
+  local password
+  password=$(kubectl get secret "$release" -n "$namespace" \
+    -o jsonpath="{.data.password}" 2>/dev/null | base64 -d)
+
+  if [[ -z "$password" ]]; then
+    # Fallback to superuser password
+    password=$(kubectl get secret "$release" -n "$namespace" \
+      -o jsonpath="{.data.postgres-password}" 2>/dev/null | base64 -d)
+  fi
+
   # Output credentials
   output_postgres_credentials "$host" "$port" "$namespace" "$project"
+
+  # Auto-deploy CloudBeaver (opt-out via DEPLOY_CLOUDBEAVER=false)
+  if [[ "${DEPLOY_CLOUDBEAVER:-true}" == "true" ]]; then
+    local cloudbeaver_script="$SCRIPT_DIR/cloudbeaver.sh"
+    if [[ -f "$cloudbeaver_script" ]]; then
+      source "$cloudbeaver_script"
+
+      log_info "Auto-deploying CloudBeaver for PostgreSQL management..."
+
+      # Use internal K8s service DNS for CloudBeaver → PostgreSQL connection
+      local postgres_internal_service="${release}.${namespace}.svc.cluster.local"
+
+      # Setup CloudBeaver with PostgreSQL connection
+      setup_cloudbeaver "$namespace" "$project" "$expose_mode" \
+        "$postgres_internal_service" "$project" "$project" "$password"
+    fi
+  fi
 }

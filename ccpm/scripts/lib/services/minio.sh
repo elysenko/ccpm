@@ -8,7 +8,7 @@ MINIO_CONSOLE_PORT=9001
 MINIO_ADMIN_USER="admin"
 MINIO_ADMIN_PASSWORD="adminadmin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CCPM_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
 # Deploy MinIO via kubectl
 # Usage: deploy_minio <namespace> <project>
@@ -25,7 +25,7 @@ deploy_minio() {
   fi
 
   # Apply MinIO manifest
-  local minio_yaml="$CCPM_DIR/k8s/minio.yaml"
+  local minio_yaml="$PROJECT_ROOT/k8s/minio.yaml"
   if [[ ! -f "$minio_yaml" ]]; then
     log_error "MinIO manifest not found: $minio_yaml"
     return 1
@@ -68,12 +68,6 @@ init_minio() {
   local endpoint="http://${host}:${port}"
 
   log_info "Initializing MinIO (bucket: $bucket_name)..."
-
-  # Check if mc is available
-  if ! command -v mc &>/dev/null; then
-    log_error "mc (MinIO client) not found. Install with: brew install minio/stable/mc"
-    return 1
-  fi
 
   # Generate credentials
   local access_key
@@ -228,7 +222,7 @@ output_minio_credentials() {
 setup_minio() {
   local namespace=$1
   local project=$2
-  local expose_mode=${3:-nodeport}
+  local expose_mode=$3
 
   # Check if credentials already exist
   if secret_exists "minio-credentials" "$namespace"; then
@@ -241,6 +235,11 @@ setup_minio() {
     endpoint=$(get_secret_value "minio-credentials" "$namespace" "MINIO_ENDPOINT")
     console_url=$(get_secret_value "minio-credentials" "$namespace" "MINIO_CONSOLE_URL")
     bucket=$(get_secret_value "minio-credentials" "$namespace" "MINIO_BUCKET")
+
+    # If no endpoint in secret, need to expose and update
+    if [[ -z "$endpoint" ]]; then
+      endpoint=$(get_secret_value "minio-credentials" "$namespace" "S3_EXTERNAL_ENDPOINT")
+    fi
 
     # Also try legacy MINIO_ACCESS_KEY/MINIO_SECRET_KEY keys
     if [[ -z "$access_key" ]]; then
@@ -265,17 +264,17 @@ setup_minio() {
   wait_for_minio "$namespace" || return 1
 
   # Expose API port
-  log_info "Exposing MinIO API (nodeport)..."
+  log_info "Exposing MinIO API ($expose_mode)..."
   local api_host_port
-  api_host_port=$(expose_service "minio" "$namespace" "$MINIO_PORT")
+  api_host_port=$(expose_service "minio" "$namespace" "$MINIO_PORT" "$expose_mode")
   local api_host="${api_host_port%:*}"
   local api_port="${api_host_port#*:}"
   log_success "MinIO API exposed at $api_host:$api_port"
 
   # Expose Console port
-  log_info "Exposing MinIO Console (nodeport)..."
+  log_info "Exposing MinIO Console ($expose_mode)..."
   local console_host_port
-  console_host_port=$(expose_service "minio" "$namespace" "$MINIO_CONSOLE_PORT")
+  console_host_port=$(expose_service "minio" "$namespace" "$MINIO_CONSOLE_PORT" "$expose_mode")
   local console_host="${console_host_port%:*}"
   local console_port="${console_host_port#*:}"
   log_success "MinIO Console exposed at $console_host:$console_port"

@@ -279,90 +279,6 @@ Record their confirmation or correction.
 
 ---
 
-#### Layer 6: Integration Discovery (SERVICES)
-
-**Detect and configure third-party service integrations during the conversation.**
-
-As users describe their needs, watch for keywords that indicate integration requirements. Reference `.claude/integrations/detector-rules.yaml` for the trigger patterns.
-
-**Common integration categories:**
-
-| Category | Keywords | Services |
-|----------|----------|----------|
-| AI/LLM | AI, GPT, Claude, embeddings | OpenAI, Anthropic |
-| Email | email, notify, newsletter | SendGrid, Resend |
-| Payments | payment, stripe, billing | Stripe, LemonSqueezy |
-| Auth | login, SSO, users | Clerk, Auth0 |
-| Vector DB | vector, RAG, semantic search | Pinecone, Qdrant |
-| Storage | upload, S3, files | R2, S3 |
-
-**When an integration trigger is detected:**
-
-1. **Acknowledge and probe:**
-   ```
-   "I noticed you mentioned [capability]. This typically requires a third-party
-   service. Let me understand your needs better..."
-   ```
-
-2. **Ask clarifying questions:**
-   - "What volume/scale are you expecting?"
-   - "Do you have an existing account with any provider?"
-   - "Any specific requirements (compliance, features)?"
-
-3. **Check for existing credentials:**
-   ```
-   "Do you already have credentials configured for [service type]?"
-   ```
-
-4. **Offer options with context:**
-   ```
-   "For [category], the main options are:
-   1. [Service A] - Free tier: [limits], Good for: [use case]
-   2. [Service B] - Free tier: [limits], Good for: [use case]
-
-   Based on what you've described, I'd suggest [recommendation]. Thoughts?"
-   ```
-
-5. **Offer immediate setup OR defer:**
-   ```
-   "Would you like to set up [service] now, or defer until after we finish
-   the discovery? Either works."
-   ```
-
-6. **If user wants to set up now:**
-   - Guide them through signup steps from registry
-   - Collect and validate credentials
-   - Store securely
-   - Record in conversation:
-     ```markdown
-     **Integration Configured:**
-     - Service: [name]
-     - Category: [category]
-     - Status: Active
-     - Credential: [KEY_NAME] (stored)
-     ```
-
-7. **If user defers:**
-   ```markdown
-   **Integration Needed:**
-   - Category: [category]
-   - Options discussed: [services]
-   - Status: Pending
-   - Decision: Deferred to post-discovery
-   ```
-
-**Integration questions to ask:**
-- "Will you need to send emails to users? (transactional, marketing, notifications)"
-- "Will you process payments or subscriptions?"
-- "What authentication approach do you want? (social login, email/password, SSO)"
-- "Will you need AI/LLM capabilities?"
-- "Any file uploads or storage needs?"
-- "Will you need search functionality?"
-
-**Record all integration discussions in conversation.md.**
-
----
-
 ### Step 5: Handle "I Don't Know"
 
 When user says "I don't know", "not sure", etc:
@@ -422,11 +338,6 @@ When user says "I don't know", "not sure", etc:
 - [ ] Is the objective clear?
 - [ ] Are constraints defined?
 - [ ] Are success criteria measurable?
-
-**Integrations:**
-- [ ] Are third-party service needs identified?
-- [ ] For each integration, is it configured or marked as pending?
-- [ ] Are credentials stored or deferred with clear next steps?
 
 **If gaps remain in features or journeys, ask targeted follow-ups.** Don't end until you have concrete features and at least one clear user journey.
 
@@ -498,12 +409,11 @@ If conversation.md exists when starting:
 3. **Write immediately** - Don't wait until end of session
 4. **Probe vague answers** - Push for specifics
 5. **Research unknowns** - Don't just accept "I don't know"
-6. **Stay structured** - Follow Layer 1 → 2 → 3 → 4 → 5 → 6 progression
+6. **Stay structured** - Follow Layer 1 → 2 → 3 → 4 → 5 progression
 7. **Be conversational** - Natural dialogue, not interrogation
 8. **Preserve verbatim** - No summarization, raw transcript only
 9. **Drive to features** - Every line of inquiry should help identify a feature
 10. **Drive to journeys** - Every line of inquiry should help map a journey
-11. **Detect integrations** - Watch for keywords that indicate third-party service needs
 
 ---
 
@@ -515,9 +425,8 @@ The conversation should capture enough information for `/pm:extract-findings` to
 |--------|------------|----------------|
 | **Features** | Discrete capabilities | Layer 4 questions - "What should users be able to DO?" |
 | **User Journeys** | Step-by-step flows | Layer 5 questions - "Walk me through how someone uses this" |
-| **Integrations** | Third-party services | Layer 6 questions - "Will you need email/payments/auth/etc?" |
 | **Constraints** | Limitations | Layer 1 questions - "What constraints exist?" |
 | **Success Criteria** | How to measure | Layer 1 questions - "What does success look like?" |
 | **Unknowns** | Gaps to research | Anywhere user says "I don't know" |
 
-**Features, User Journeys, and Integrations are the primary outputs. Everything else supports them.**
+**Features and User Journeys are the primary outputs. Everything else supports them.**

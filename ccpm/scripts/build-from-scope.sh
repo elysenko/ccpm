@@ -28,12 +28,16 @@ Usage:
 Prerequisites:
   - For existing scope: .claude/scopes/<name>/00_scope_document.md must exist
   - For full pipeline: Will create scope from interrogation session
+  - Credentials: .env file with integration credentials
   - Loki Mode requires: --dangerously-skip-permissions flag
 
 Full Pipeline Flow:
   1. /pm:interrogate <session>  → conversation.md
   2. /pm:extract-findings       → scope document
-  3. Loki Mode                  → built application
+  3. /pm:gather-credentials     → .env credentials
+  4. ensure-github-repo         → GitHub repository
+  5. setup-services             → PostgreSQL, MinIO, CloudBeaver
+  6. Loki Mode                  → built application
 
 Examples:
   ./build-from-scope.sh invoice-system
@@ -111,6 +115,36 @@ if [[ "$FULL_PIPELINE" == "true" ]]; then
 
   echo ""
   echo "Step 2: Scope document generated ✓"
+
+  # Step 3: Gather credentials
+  CREDS_STATE="$SCOPE_DIR/credentials.yaml"
+  if [[ -f "$CREDS_STATE" ]] && [[ -f ".env" ]]; then
+    echo "Step 3: Credentials already gathered ✓"
+  else
+    echo ""
+    echo "Step 3: Gathering credentials..."
+    echo "---"
+    claude "/pm:gather-credentials $SCOPE_NAME"
+    echo "---"
+    echo "Step 3: Credentials gathered ✓"
+  fi
+
+  # Step 4: Ensure GitHub repo
+  echo ""
+  echo "Step 4: GitHub Repository..."
+  ./.claude/scripts/ensure-github-repo.sh
+  echo "Step 4: Repository ✓"
+
+  # Step 5: Setup infrastructure services
+  echo ""
+  echo "Step 5: Infrastructure Services (PostgreSQL, MinIO, CloudBeaver)..."
+  local project_name
+  project_name=$(basename "$(pwd)")
+  ./.claude/scripts/setup-service.sh all "$project_name" --project="$project_name"
+  echo ""
+  echo "Pulling credentials into .env..."
+  NAMESPACE="$project_name" ./.claude/scripts/setup-env-from-k8s.sh
+  echo "Step 5: Services ✓"
 fi
 
 # Verify scope document exists
@@ -140,6 +174,52 @@ echo "  Features: ~$features"
 echo "  Journeys: ~$journeys"
 echo "  Risks: ~$risks"
 echo ""
+
+# Validate credentials
+CREDS_STATE="$SCOPE_DIR/credentials.yaml"
+if [[ -f ".env" ]] && [[ -f "$CREDS_STATE" ]]; then
+  # Check for deferred credentials
+  deferred=$(grep "deferred_credentials:" "$CREDS_STATE" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+  total=$(grep "total_credentials:" "$CREDS_STATE" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+
+  echo "Credentials:"
+  echo "  Total: $total"
+  if [[ -n "$deferred" ]] && [[ "$deferred" != "0" ]]; then
+    echo "  ⚠️  Deferred: $deferred"
+    echo ""
+    read -p "Continue with deferred credentials? (yes/no): " continue_defer
+    if [[ "$continue_defer" != "yes" ]]; then
+      echo ""
+      echo "Complete credentials first: ./interrogate.sh --credentials $SCOPE_NAME"
+      exit 0
+    fi
+  else
+    echo "  Status: Complete ✓"
+  fi
+  echo ""
+else
+  echo "⚠️  Credentials not gathered"
+  echo ""
+  echo "Integrations in your scope document may require credentials."
+  echo "Run: ./interrogate.sh --credentials $SCOPE_NAME"
+  echo ""
+  read -p "Continue without credentials? (yes/no): " continue_anyway
+  if [[ "$continue_anyway" != "yes" ]]; then
+    exit 0
+  fi
+  echo ""
+fi
+
+# Check GitHub repo is configured
+if ! git remote get-url origin &> /dev/null; then
+  echo "⚠️  No remote origin configured"
+  echo ""
+  read -p "Set up GitHub repository? (y/n): " setup_repo
+  if [[ "$setup_repo" == "y" ]]; then
+    ./.claude/scripts/ensure-github-repo.sh
+    echo ""
+  fi
+fi
 
 # Warning about Loki Mode
 echo "⚠️  WARNING: Loki Mode Activation"
@@ -181,6 +261,10 @@ Additional context files are in: .claude/scopes/$SCOPE_NAME/
 - 04_technical_architecture.md - Tech stack and integrations
 - 05_risk_assessment.md - Risk analysis
 - 06_gap_analysis.md - Open questions (resolve as needed)
+- credentials.yaml - Credential collection metadata
+
+Credentials are pre-configured in .env file. Use environment variables for integration credentials.
+Template available in .env.template for reference.
 
 Default tech stack (per CLAUDE.md): Angular, GraphQL, Python, PostgreSQL
 

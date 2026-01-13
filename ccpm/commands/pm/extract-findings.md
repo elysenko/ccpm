@@ -573,7 +573,9 @@ Files Created:
 Next Steps:
 1. Review 00_scope_document.md with stakeholders
 2. Address critical gaps: /pm:scope-research {session-name} "{question}"
-3. Build application: ./interrogate.sh --build {session-name}
+3. Gather credentials: ./interrogate.sh --credentials {session-name}
+4. Ensure GitHub repo: ./interrogate.sh --repo
+5. Build application: ./interrogate.sh --build {session-name}
 ```
 
 ---

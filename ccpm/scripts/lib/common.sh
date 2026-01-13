@@ -64,32 +64,76 @@ wait_for_deployment() {
     --timeout="${timeout}s" 2>/dev/null
 }
 
-# Expose a service via NodePort
-# Usage: expose_service <service> <namespace> <port>
+# Expose a service via NodePort or port-forward
+# Usage: expose_service <service> <namespace> <port> <mode>
 # Returns: HOST:PORT via stdout
 expose_service() {
   local service=$1
   local namespace=$2
   local port=$3
+  local mode=${4:-nodeport}
 
   local host
   local exposed_port
 
-  # Patch service to NodePort
-  kubectl patch svc "$service" -n "$namespace" \
-    -p '{"spec":{"type":"NodePort"}}' >/dev/null 2>&1 || true
+  if [[ "$mode" == "nodeport" ]]; then
+    # Patch service to NodePort
+    kubectl patch svc "$service" -n "$namespace" \
+      -p '{"spec":{"type":"NodePort"}}' >/dev/null 2>&1 || true
 
-  # Get host IP
-  host=$(hostname -I | awk '{print $1}')
+    # Get host IP
+    host=$(hostname -I | awk '{print $1}')
 
-  # Get assigned NodePort
-  exposed_port=$(kubectl get svc "$service" -n "$namespace" \
-    -o jsonpath="{.spec.ports[?(@.port==$port)].nodePort}" 2>/dev/null)
-
-  if [[ -z "$exposed_port" ]]; then
-    # Try first port if specific port not found
+    # Get assigned NodePort
     exposed_port=$(kubectl get svc "$service" -n "$namespace" \
-      -o jsonpath="{.spec.ports[0].nodePort}" 2>/dev/null)
+      -o jsonpath="{.spec.ports[?(@.port==$port)].nodePort}" 2>/dev/null)
+
+    if [[ -z "$exposed_port" ]]; then
+      # Try first port if specific port not found
+      exposed_port=$(kubectl get svc "$service" -n "$namespace" \
+        -o jsonpath="{.spec.ports[0].nodePort}" 2>/dev/null)
+    fi
+  else
+    # Port-forward mode
+    local pid_file="/tmp/ccpm-pf-${service}-${namespace}.pid"
+    local log_file="/tmp/ccpm-pf-${service}-${namespace}.log"
+
+    # Kill existing port-forward if running
+    if [[ -f "$pid_file" ]]; then
+      local old_pid
+      old_pid=$(cat "$pid_file")
+      kill "$old_pid" 2>/dev/null || true
+      rm -f "$pid_file"
+    fi
+
+    # Start port-forward in background with nohup to survive script exit
+    nohup kubectl port-forward "svc/$service" -n "$namespace" \
+      "$port:$port" >"$log_file" 2>&1 &
+    local pf_pid=$!
+    echo $pf_pid > "$pid_file"
+
+    # Disown to fully detach from parent shell
+    disown $pf_pid 2>/dev/null || true
+
+    # Wait for port-forward to establish and verify it's working
+    local max_wait=10
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+      sleep 1
+      waited=$((waited + 1))
+      # Check if process is still running
+      if ! kill -0 $pf_pid 2>/dev/null; then
+        log_error "Port-forward process died. Check $log_file"
+        return 1
+      fi
+      # Try to connect to verify port is ready
+      if nc -z localhost "$port" 2>/dev/null; then
+        break
+      fi
+    done
+
+    host="localhost"
+    exposed_port=$port
   fi
 
   echo "${host}:${exposed_port}"
@@ -164,7 +208,7 @@ ensure_namespace() {
   if ! kubectl get namespace "$namespace" &>/dev/null; then
     kubectl create namespace "$namespace"
     log_success "Created namespace: $namespace"
-    # Wait for namespace to be fully ready
+    # Wait for namespace to be fully ready (Rancher controllers may need time)
     log_info "Waiting for namespace to be ready..."
     sleep 2
     kubectl wait --for=jsonpath='{.status.phase}'=Active namespace/"$namespace" --timeout=30s
