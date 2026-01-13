@@ -100,7 +100,14 @@ Progress: {done}/12 sections
 Discovery:
   Status: {complete|in-progress|not started}
   Sections: {done}/12
+  Unknowns: {count of UNKNOWN items in discovery.md}
   File: {discovery.md exists|missing}
+
+Research (Optional):
+  Status: {complete|available|not needed}
+  Gaps Found: {count}
+  Gaps Resolved: {count}
+  File: {research.md exists|missing}
 
 Decomposition:
   Status: {complete|in-progress|not started}
@@ -184,6 +191,17 @@ Next: Merge discovery sections
   /pm:scope-discover {scope-name}
 ```
 
+**discovery complete with UNKNOWNs:**
+```
+{count} items still marked UNKNOWN.
+
+Option 1: Research remaining unknowns
+  .claude/scripts/prd-scope.sh {scope-name} --research
+
+Option 2: Continue to decomposition (unknowns will be flagged)
+  .claude/scripts/prd-scope.sh {scope-name} --decompose
+```
+
 **decomposition:**
 ```
 Next: Review and approve decomposition
@@ -254,6 +272,7 @@ Progress: 8/12 sections
 
 Progress Summary:
   [ ] Discovery (8/12 sections)
+  [ ] Research (optional - {count} unknowns)
   [ ] Decomposition
   [ ] Generation
   [ ] Verification
