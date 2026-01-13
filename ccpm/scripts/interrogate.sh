@@ -12,7 +12,7 @@
 #   ./interrogate.sh --build <name>           # Full pipeline → Loki Mode build
 #
 # Pipeline:
-#   interrogate → extract → credentials → repo → services → Loki Mode build
+#   services → schema → repo → interrogate → extract → credentials → Loki Mode build
 
 set -e
 
@@ -34,16 +34,17 @@ Usage:
   ./interrogate.sh --credentials <name>     Gather credentials for integrations
   ./interrogate.sh --repo [name]            Ensure GitHub repository exists
   ./interrogate.sh --services [name]        Setup PostgreSQL and MinIO services
-  ./interrogate.sh --build <name>           Full pipeline: interrogate → extract → credentials → repo → services → Loki Mode
+  ./interrogate.sh --build <name>           Full pipeline: services → repo → interrogate → extract → credentials → Loki Mode
   ./interrogate.sh --help                   Show this help
 
 Pipeline Flow:
-  1. ./interrogate.sh <name>                Structured Q&A → conversation.md
-  2. ./interrogate.sh --extract <name>      Generate scope document
-  3. ./interrogate.sh --credentials <name>  Collect integration credentials
-  4. ./interrogate.sh --repo [name]         Ensure GitHub repo exists
-  5. ./interrogate.sh --services [name]     Setup PostgreSQL and MinIO
-  6. ./interrogate.sh --build <name>        Activate Loki Mode to build app
+  1. ./interrogate.sh --services [name]     Setup PostgreSQL, MinIO, CloudBeaver
+  2. (auto) Create interview database schema
+  3. ./interrogate.sh --repo [name]         Ensure GitHub repo exists
+  4. ./interrogate.sh <name>                Structured Q&A → conversation.md
+  5. ./interrogate.sh --extract <name>      Generate scope document
+  6. ./interrogate.sh --credentials <name>  Collect integration credentials
+  7. ./interrogate.sh --build <name>        Activate Loki Mode to build app
 
 Or run the full pipeline at once:
   ./interrogate.sh --build <name>           Does all steps automatically
@@ -299,31 +300,58 @@ setup_services() {
   echo "   MinIO: $project_name namespace"
 }
 
-# Full pipeline: interrogate → extract → credentials → repo → services → Loki Mode build
+# Full pipeline: services → schema → repo → interrogate → extract → credentials → Loki Mode build
 build_full() {
   local name="$1"
   local conv=".claude/interrogations/$name/conversation.md"
   local scope=".claude/scopes/$name/00_scope_document.md"
   local creds_state=".claude/scopes/$name/credentials.yaml"
+  local project_name
+  project_name=$(basename "$(pwd)")
 
   echo "=== Full Pipeline: $name ==="
   echo ""
-  echo "Pipeline: interrogate → extract → credentials → Loki Mode build"
+  echo "Pipeline: services → schema → repo → interrogate → extract → credentials → Loki Mode"
   echo ""
 
-  # Step 1: Check/run interrogation
+  # Step 1: Setup Infrastructure Services
+  echo "Step 1: Infrastructure Services (PostgreSQL, MinIO, CloudBeaver)"
+  setup_services "$project_name"
+  echo "Step 1: Services ✓"
+
+  echo ""
+
+  # Step 2: Create Interview Schema
+  echo "Step 2: Create Database Schema"
+  if [ -f "./.claude/scripts/create-interview-schema.sh" ]; then
+    ./.claude/scripts/create-interview-schema.sh
+    echo "Step 2: Schema ✓"
+  else
+    echo "Step 2: Schema script not found, skipping"
+  fi
+
+  echo ""
+
+  # Step 3: Ensure GitHub repo
+  echo "Step 3: GitHub Repository"
+  ./.claude/scripts/ensure-github-repo.sh
+  echo "Step 3: Repository ✓"
+
+  echo ""
+
+  # Step 4: Check/run interrogation
   if [ -f "$conv" ]; then
     status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
     if [ "$status" = "complete" ]; then
-      echo "Step 1: Interrogation ✓ (already complete)"
+      echo "Step 4: Interrogation ✓ (already complete)"
     else
-      echo "Step 1: Resuming interrogation..."
+      echo "Step 4: Resuming interrogation..."
       echo "---"
       claude "/pm:interrogate $name"
       echo "---"
     fi
   else
-    echo "Step 1: Starting interrogation..."
+    echo "Step 4: Starting interrogation..."
     mkdir -p ".claude/interrogations/$name"
     echo "---"
     claude "/pm:interrogate $name"
@@ -345,10 +373,12 @@ build_full() {
   fi
 
   echo ""
+  echo "Step 4: Interrogation ✓"
+  echo ""
 
-  # Step 2: Extract findings
+  # Step 5: Extract findings
   if [ -f "$scope" ]; then
-    echo "Step 2: Scope document ✓ (already exists)"
+    echo "Step 5: Scope document ✓ (already exists)"
     echo ""
     read -p "Regenerate scope document? (y/n): " regen
     if [[ "$regen" == "y" ]]; then
@@ -356,7 +386,7 @@ build_full() {
       claude --print "/pm:extract-findings $name"
     fi
   else
-    echo "Step 2: Extracting findings..."
+    echo "Step 5: Extracting findings..."
     echo "---"
     claude --print "/pm:extract-findings $name"
     echo "---"
@@ -369,12 +399,12 @@ build_full() {
   fi
 
   echo ""
-  echo "Step 2: Scope document ✓"
+  echo "Step 5: Scope document ✓"
   echo ""
 
-  # Step 3: Credential Gathering
+  # Step 6: Credential Gathering
   if [ -f "$creds_state" ] && [ -f ".env" ]; then
-    echo "Step 3: Credentials ✓ (already gathered)"
+    echo "Step 6: Credentials ✓ (already gathered)"
     echo ""
     read -p "Regather credentials? (y/n): " regather
     if [[ "$regather" == "y" ]]; then
@@ -382,7 +412,7 @@ build_full() {
       claude "/pm:gather-credentials $name"
     fi
   else
-    echo "Step 3: Gathering credentials..."
+    echo "Step 6: Gathering credentials..."
     echo ""
     echo "Integrations detected in scope document will be configured."
     echo "---"
@@ -413,29 +443,13 @@ build_full() {
         exit 0
       fi
     fi
-    echo "Step 3: Credentials ✓"
+    echo "Step 6: Credentials ✓"
   fi
 
   echo ""
 
-  # Step 4: Ensure GitHub repo
-  echo "Step 4: GitHub Repository"
-  ./.claude/scripts/ensure-github-repo.sh
-  echo "Step 4: Repository ✓"
-
-  echo ""
-
-  # Step 5: Setup Infrastructure Services
-  echo "Step 5: Infrastructure Services (PostgreSQL, MinIO, CloudBeaver)"
-  local project_name
-  project_name=$(basename "$(pwd)")
-  setup_services "$project_name"
-  echo "Step 5: Services ✓"
-
-  echo ""
-
-  # Step 6: Loki Mode
-  echo "Step 6: Loki Mode Build"
+  # Step 7: Loki Mode
+  echo "Step 7: Loki Mode Build"
   echo ""
   echo "⚠️  WARNING: Loki Mode is autonomous and will:"
   echo "  - Generate code across multiple files"
