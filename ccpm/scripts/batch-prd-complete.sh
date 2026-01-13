@@ -108,6 +108,34 @@ get_status() {
   fi
 }
 
+# Analyze log to determine which phases completed
+analyze_phases() {
+  local logfile="$1"
+  local phases=""
+
+  # Check for phase completion indicators from prd-complete.sh
+  if grep -q "Phase 1 complete" "$logfile" 2>/dev/null; then
+    phases="${phases}1"
+  fi
+  if grep -q "Phase 2 complete" "$logfile" 2>/dev/null; then
+    phases="${phases}2"
+  fi
+  if grep -q "Phase 3 complete" "$logfile" 2>/dev/null; then
+    phases="${phases}3"
+  fi
+  if grep -q "Phase 4 complete" "$logfile" 2>/dev/null; then
+    phases="${phases}4"
+  fi
+  if grep -q "Phase 5 complete" "$logfile" 2>/dev/null; then
+    phases="${phases}5"
+  fi
+  if grep -q "Phase 6 complete\|PRD Complete:" "$logfile" 2>/dev/null; then
+    phases="${phases}6"
+  fi
+
+  echo "$phases"
+}
+
 process_prd() {
   local prd="$1"
   local logfile="$LOGDIR/${prd}.log"
@@ -118,50 +146,58 @@ process_prd() {
 
   if [ "$status" = "complete" ]; then
     echo "SKIPPED" > "$logfile.result"
+    echo "phases:skipped" > "$logfile.phases"
     echo "[$prd] Skipped (already complete)"
     return 0
   fi
 
   if [ "$status" = "NOT_FOUND" ]; then
     echo "NOT_FOUND" > "$logfile.result"
+    echo "phases:none" > "$logfile.phases"
     echo "[$prd] Error: PRD file not found"
     return 1
   fi
 
   if $DRY_RUN; then
     echo "DRY_RUN" > "$logfile.result"
+    echo "phases:dry" > "$logfile.phases"
     echo "[$prd] Would run: claude --dangerously-skip-permissions --print \"/pm:prd-complete $prd\""
     return 0
   fi
 
   # Run claude in fresh session, capture output
-  # --dangerously-skip-permissions: run non-interactively without permission prompts
-  # Show real-time output only when running serially (PARALLEL=1)
+  echo "[$prd] Running phases..."
+
   if [ "$PARALLEL" = "1" ]; then
     echo ""
-    if claude --dangerously-skip-permissions --print "/pm:prd-complete $prd" 2>&1 | tee "$logfile"; then
-      echo "SUCCESS" > "$logfile.result"
-      echo ""
-      echo "[$prd] Complete"
-    else
-      echo "FAILED" > "$logfile.result"
-      echo ""
-      echo "[$prd] Failed"
-      return 1
-    fi
+    bash .claude/scripts/pm/prd-complete.sh "$prd" 2>&1 | tee "$logfile"
+    local exit_code=${PIPESTATUS[0]}
+    echo ""
   else
-    if claude --dangerously-skip-permissions --print "/pm:prd-complete $prd" > "$logfile" 2>&1; then
-      echo "SUCCESS" > "$logfile.result"
-      echo "[$prd] Complete"
-    else
-      echo "FAILED" > "$logfile.result"
-      echo "[$prd] Failed (see $logfile)"
-      return 1
-    fi
+    bash .claude/scripts/pm/prd-complete.sh "$prd" > "$logfile" 2>&1
+    local exit_code=$?
+  fi
+
+  # Analyze which phases were reached
+  local phases=$(analyze_phases "$logfile")
+  echo "phases:$phases" > "$logfile.phases"
+
+  # Check ACTUAL PRD status (not just exit code)
+  local final_status=$(get_status "$prd")
+
+  if [ "$final_status" = "complete" ]; then
+    echo "SUCCESS" > "$logfile.result"
+    echo "[$prd] ✓ Complete (phases: $phases)"
+    return 0
+  else
+    # Claude returned but PRD not complete - it stopped early
+    echo "INCOMPLETE:$phases" > "$logfile.result"
+    echo "[$prd] ✗ Incomplete - stopped at phase(s): $phases (status still: $final_status)"
+    return 1
   fi
 }
 
-export -f process_prd get_status
+export -f process_prd get_status analyze_phases
 export LOGDIR DRY_RUN PARALLEL
 
 echo "Processing ${#PRDS[@]} PRDs (parallel: $PARALLEL)"
@@ -180,41 +216,50 @@ echo "========================================"
 SUCCESS=0
 SKIPPED=0
 FAILED=0
+INCOMPLETE=0
 
 for prd in "${PRDS[@]}"; do
   result=$(cat "$LOGDIR/${prd}.log.result" 2>/dev/null || echo "UNKNOWN")
+  phases=$(cat "$LOGDIR/${prd}.log.phases" 2>/dev/null | sed 's/phases://' || echo "?")
+
   case "$result" in
     SUCCESS)
-      echo "[OK] $prd"
+      echo "[OK]   $prd (phases: $phases)"
       ((SUCCESS++))
       ;;
     SKIPPED)
       echo "[SKIP] $prd (already complete)"
       ((SKIPPED++))
       ;;
-    FAILED)
-      echo "[FAIL] $prd"
-      ((FAILED++))
+    INCOMPLETE*)
+      incomplete_phases=$(echo "$result" | cut -d: -f2)
+      echo "[STOP] $prd (stopped at phases: $incomplete_phases)"
+      ((INCOMPLETE++))
       ;;
     NOT_FOUND)
-      echo "[ERR] $prd (not found)"
+      echo "[ERR]  $prd (not found)"
       ((FAILED++))
       ;;
     DRY_RUN)
-      echo "[DRY] $prd"
+      echo "[DRY]  $prd"
       ;;
     *)
-      echo "[???] $prd (unknown)"
+      echo "[???]  $prd (unknown: $result)"
       ((FAILED++))
       ;;
   esac
 done
 
 echo ""
-echo "Success: $SUCCESS | Skipped: $SKIPPED | Failed: $FAILED"
+echo "Success: $SUCCESS | Skipped: $SKIPPED | Incomplete: $INCOMPLETE | Failed: $FAILED"
 echo "Logs: $LOGDIR"
 
-# Exit with failure if any PRD failed
-if [ "$FAILED" -gt 0 ]; then
+if [ "$INCOMPLETE" -gt 0 ]; then
+  echo ""
+  echo "⚠️  $INCOMPLETE PRD(s) stopped early. Check logs for details."
+fi
+
+# Exit with failure if any PRD failed or incomplete
+if [ "$FAILED" -gt 0 ] || [ "$INCOMPLETE" -gt 0 ]; then
   exit 1
 fi
