@@ -173,7 +173,7 @@ extract_findings() {
   echo ""
 
   # Run extract-findings
-  claude --print "/pm:extract-findings $name"
+  claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
 
   echo ""
   echo "---"
@@ -212,14 +212,14 @@ build_full() {
     else
       echo "Step 1: Resuming interrogation..."
       echo "---"
-      claude "/pm:interrogate $name"
+      claude --dangerously-skip-permissions "/pm:interrogate $name"
       echo "---"
     fi
   else
     echo "Step 1: Starting interrogation..."
     mkdir -p ".claude/interrogations/$name"
     echo "---"
-    claude "/pm:interrogate $name"
+    claude --dangerously-skip-permissions "/pm:interrogate $name"
     echo "---"
   fi
 
@@ -246,12 +246,12 @@ build_full() {
     read -p "Regenerate scope document? (y/n): " regen
     if [[ "$regen" == "y" ]]; then
       echo "Regenerating..."
-      claude --print "/pm:extract-findings $name"
+      claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
     fi
   else
     echo "Step 2: Extracting findings..."
     echo "---"
-    claude --print "/pm:extract-findings $name"
+    claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
     echo "---"
   fi
 
@@ -422,7 +422,7 @@ echo "---"
 echo ""
 
 # Run interactively (no --print flag - this is a conversation)
-claude "/pm:interrogate $SESSION_NAME"
+claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
 
 # After completion, show next steps
 echo ""
