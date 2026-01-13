@@ -32,12 +32,13 @@ Prerequisites:
   - Loki Mode requires: --dangerously-skip-permissions flag
 
 Full Pipeline Flow:
-  1. /pm:interrogate <session>  → conversation.md
-  2. /pm:extract-findings       → scope document
-  3. /pm:gather-credentials     → .env credentials
-  4. ensure-github-repo         → GitHub repository
-  5. setup-services             → PostgreSQL, MinIO, CloudBeaver
-  6. Loki Mode                  → built application
+  1. setup-services             → PostgreSQL, MinIO, CloudBeaver
+  2. create-interview-schema    → Interview database tables
+  3. ensure-github-repo         → GitHub repository
+  4. /pm:interrogate <session>  → conversation.md
+  5. /pm:extract-findings       → scope document
+  6. /pm:gather-credentials     → .env credentials
+  7. Loki Mode                  → built application
 
 Examples:
   ./build-from-scope.sh invoice-system
@@ -76,32 +77,61 @@ SCOPE_DOC="$SCOPE_DIR/00_scope_document.md"
 CONV_DIR=".claude/interrogations/$SCOPE_NAME"
 CONV_FILE="$CONV_DIR/conversation.md"
 
-# Full pipeline: run interrogate and extract first
+# Full pipeline: services → schema → repo → interrogate → extract → credentials → Loki Mode
 if [[ "$FULL_PIPELINE" == "true" ]]; then
   echo "=== Full Pipeline Mode ==="
   echo ""
+  echo "Pipeline: services → schema → repo → interrogate → extract → credentials → Loki Mode"
+  echo ""
 
-  # Step 1: Check if interrogation exists, if not run it
+  # Step 1: Setup infrastructure services
+  echo "Step 1: Infrastructure Services (PostgreSQL, MinIO, CloudBeaver)..."
+  project_name=$(basename "$(pwd)")
+  ./.claude/scripts/setup-service.sh all "$project_name" --project="$project_name"
+  echo ""
+  echo "Pulling credentials into .env..."
+  NAMESPACE="$project_name" ./.claude/scripts/setup-env-from-k8s.sh
+  echo "Step 1: Services ✓"
+
+  # Step 2: Create Interview Schema
+  echo ""
+  echo "Step 2: Database Schema..."
+  if [ -f "./.claude/scripts/create-interview-schema.sh" ]; then
+    ./.claude/scripts/create-interview-schema.sh
+    echo "Step 2: Schema ✓"
+  else
+    echo "Step 2: Schema script not found, skipping"
+  fi
+
+  # Step 3: Ensure GitHub repo
+  echo ""
+  echo "Step 3: GitHub Repository..."
+  ./.claude/scripts/ensure-github-repo.sh
+  echo "Step 3: Repository ✓"
+
+  # Step 4: Check if interrogation exists, if not run it
+  echo ""
   if [[ -f "$CONV_FILE" ]]; then
     status=$(grep "^Status:" "$CONV_FILE" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
     if [[ "$status" != "complete" ]]; then
-      echo "Step 1: Completing interrogation..."
+      echo "Step 4: Completing interrogation..."
       echo "---"
       ./.claude/scripts/interrogate.sh "$SCOPE_NAME"
       echo "---"
     else
-      echo "Step 1: Interrogation already complete ✓"
+      echo "Step 4: Interrogation already complete ✓"
     fi
   else
-    echo "Step 1: Running interrogation..."
+    echo "Step 4: Running interrogation..."
     echo "---"
     ./.claude/scripts/interrogate.sh "$SCOPE_NAME"
     echo "---"
   fi
+  echo "Step 4: Interrogation ✓"
 
-  # Step 2: Extract findings and generate scope document
+  # Step 5: Extract findings and generate scope document
   echo ""
-  echo "Step 2: Extracting findings and generating scope document..."
+  echo "Step 5: Extracting findings and generating scope document..."
   echo "---"
   claude --print "/pm:extract-findings $SCOPE_NAME"
   echo "---"
@@ -114,37 +144,20 @@ if [[ "$FULL_PIPELINE" == "true" ]]; then
   fi
 
   echo ""
-  echo "Step 2: Scope document generated ✓"
+  echo "Step 5: Scope document generated ✓"
 
-  # Step 3: Gather credentials
+  # Step 6: Gather credentials
   CREDS_STATE="$SCOPE_DIR/credentials.yaml"
   if [[ -f "$CREDS_STATE" ]] && [[ -f ".env" ]]; then
-    echo "Step 3: Credentials already gathered ✓"
+    echo "Step 6: Credentials already gathered ✓"
   else
     echo ""
-    echo "Step 3: Gathering credentials..."
+    echo "Step 6: Gathering credentials..."
     echo "---"
     claude "/pm:gather-credentials $SCOPE_NAME"
     echo "---"
-    echo "Step 3: Credentials gathered ✓"
+    echo "Step 6: Credentials gathered ✓"
   fi
-
-  # Step 4: Ensure GitHub repo
-  echo ""
-  echo "Step 4: GitHub Repository..."
-  ./.claude/scripts/ensure-github-repo.sh
-  echo "Step 4: Repository ✓"
-
-  # Step 5: Setup infrastructure services
-  echo ""
-  echo "Step 5: Infrastructure Services (PostgreSQL, MinIO, CloudBeaver)..."
-  local project_name
-  project_name=$(basename "$(pwd)")
-  ./.claude/scripts/setup-service.sh all "$project_name" --project="$project_name"
-  echo ""
-  echo "Pulling credentials into .env..."
-  NAMESPACE="$project_name" ./.claude/scripts/setup-env-from-k8s.sh
-  echo "Step 5: Services ✓"
 fi
 
 # Verify scope document exists
