@@ -2,8 +2,15 @@
 # Epic Sync Script - Creates GitHub issues for epic tasks
 
 EPIC_NAME="$1"
-EPIC_DIR="/home/ubuntu/robert/.claude/epics/$EPIC_NAME"
-REPO="elysenko/robert"
+# Use relative path from current working directory
+EPIC_DIR=".claude/epics/$EPIC_NAME"
+# Derive repo from git remote origin
+REPO=$(git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||' | sed 's|\.git$||')
+
+if [ -z "$REPO" ]; then
+  echo "Error: No git remote origin configured"
+  exit 1
+fi
 
 if [ -z "$EPIC_NAME" ]; then
   echo "Usage: epic-sync.sh <epic_name>"

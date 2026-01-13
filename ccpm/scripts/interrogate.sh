@@ -6,25 +6,15 @@
 #   ./interrogate.sh --list                   # List all sessions
 #   ./interrogate.sh --status [name]          # Show session status
 #   ./interrogate.sh --extract <name>         # Extract scope document
+#   ./interrogate.sh --credentials <name>     # Gather credentials for integrations
+#   ./interrogate.sh --repo [name]            # Ensure GitHub repo exists
+#   ./interrogate.sh --services [name]        # Setup PostgreSQL and MinIO services
 #   ./interrogate.sh --build <name>           # Full pipeline → Loki Mode build
 #
 # Pipeline:
-#   interrogate → extract-findings → (optional) Loki Mode build
+#   interrogate → extract → credentials → repo → services → Loki Mode build
 
 set -e
-
-# Detect CCPM directory (where the skills are defined)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CCPM_DIR="${CCPM_DIR:-$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")}"
-
-# Function to run claude with access to CCPM skills
-run_claude() {
-  local args="$@"
-  # Run from CCPM directory so skills are found
-  # Explicitly export HOME to ensure Claude uses the right config directory
-  export HOME="${HOME:-/home/appuser}"
-  (cd "$CCPM_DIR" && claude $args)
-}
 
 SESSION_NAME="${1:-$(date +%Y%m%d-%H%M%S)}"
 SESSION_DIR=".claude/interrogations/$SESSION_NAME"
@@ -41,13 +31,19 @@ Usage:
   ./interrogate.sh --list                   List all sessions
   ./interrogate.sh --status [name]          Show session status
   ./interrogate.sh --extract <name>         Extract scope document from session
-  ./interrogate.sh --build <name>           Full pipeline: interrogate → extract → Loki Mode
+  ./interrogate.sh --credentials <name>     Gather credentials for integrations
+  ./interrogate.sh --repo [name]            Ensure GitHub repository exists
+  ./interrogate.sh --services [name]        Setup PostgreSQL and MinIO services
+  ./interrogate.sh --build <name>           Full pipeline: interrogate → extract → credentials → repo → services → Loki Mode
   ./interrogate.sh --help                   Show this help
 
 Pipeline Flow:
   1. ./interrogate.sh <name>                Structured Q&A → conversation.md
   2. ./interrogate.sh --extract <name>      Generate scope document
-  3. ./interrogate.sh --build <name>        Activate Loki Mode to build app
+  3. ./interrogate.sh --credentials <name>  Collect integration credentials
+  4. ./interrogate.sh --repo [name]         Ensure GitHub repo exists
+  5. ./interrogate.sh --services [name]     Setup PostgreSQL and MinIO
+  6. ./interrogate.sh --build <name>        Activate Loki Mode to build app
 
 Or run the full pipeline at once:
   ./interrogate.sh --build <name>           Does all steps automatically
@@ -61,6 +57,9 @@ Output Files:
   .claude/scopes/<name>/04_technical_architecture.md   Tech stack, integrations
   .claude/scopes/<name>/05_risk_assessment.md     Risk analysis
   .claude/scopes/<name>/06_gap_analysis.md        Open questions
+  .claude/scopes/<name>/credentials.yaml          Credential collection metadata
+  .env                                            Environment credentials (gitignored)
+  .env.template                                   Template for sharing
 EOF
 }
 
@@ -136,6 +135,19 @@ show_status() {
   else
     echo "Scope: Not generated"
   fi
+
+  # Check credential status
+  local creds_state=".claude/scopes/$name/credentials.yaml"
+  if [ -f "$creds_state" ] && [ -f ".env" ]; then
+    deferred=$(grep "deferred_credentials:" "$creds_state" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+    if [ -n "$deferred" ] && [ "$deferred" != "0" ]; then
+      echo "Credentials: Gathered (⚠️ $deferred deferred)"
+    else
+      echo "Credentials: Gathered ✓"
+    fi
+  else
+    echo "Credentials: Not gathered"
+  fi
   echo ""
 
   # Show last exchange
@@ -186,7 +198,7 @@ extract_findings() {
   echo ""
 
   # Run extract-findings
-  run_claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
+  claude --print "/pm:extract-findings $name"
 
   echo ""
   echo "---"
@@ -206,15 +218,97 @@ extract_findings() {
   fi
 }
 
-# Full pipeline: interrogate → extract → Loki Mode build
+# Gather credentials for integrations
+gather_credentials() {
+  local name="$1"
+  local scope=".claude/scopes/$name/04_technical_architecture.md"
+  local creds_state=".claude/scopes/$name/credentials.yaml"
+
+  if [ ! -f "$scope" ]; then
+    echo "❌ Scope not found: $name"
+    echo ""
+    echo "First run: ./interrogate.sh --extract $name"
+    exit 1
+  fi
+
+  echo "=== Gathering Credentials: $name ==="
+  echo ""
+  echo "This will collect credentials for integrations in your scope document..."
+  echo ""
+
+  # Run gather-credentials command
+  claude "/pm:gather-credentials $name"
+
+  echo ""
+  echo "---"
+  echo ""
+
+  if [ -f ".env" ] && [ -f "$creds_state" ]; then
+    echo "✅ Credentials gathered"
+    echo ""
+    echo "Files created:"
+    echo "  .env (actual values - gitignored)"
+    echo "  .env.template (template for sharing)"
+    echo "  $creds_state (metadata)"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Review .env for accuracy"
+    echo "  2. Build: ./interrogate.sh --build $name"
+  else
+    echo "⚠️  Credential gathering incomplete"
+    echo ""
+    echo "Resume with: ./interrogate.sh --credentials $name"
+  fi
+}
+
+# Ensure GitHub repository exists
+ensure_repo() {
+  local repo_name="${1:-$(basename "$(pwd)")}"
+
+  echo "=== Ensure GitHub Repository ==="
+  echo ""
+
+  # Run the ensure-github-repo script
+  ./.claude/scripts/ensure-github-repo.sh "$repo_name"
+}
+
+# Setup infrastructure services (PostgreSQL, MinIO)
+setup_services() {
+  local project_name="${1:-$(basename "$(pwd)")}"
+
+  echo "=== Setup Infrastructure Services ==="
+  echo ""
+  echo "Project: $project_name"
+  echo "Namespace: $project_name"
+  echo ""
+
+  # Run setup-service.sh for all services
+  ./.claude/scripts/setup-service.sh all "$project_name" --project="$project_name"
+
+  echo ""
+  echo "---"
+  echo ""
+
+  # Pull credentials into .env
+  echo "Pulling credentials into .env..."
+  NAMESPACE="$project_name" ./.claude/scripts/setup-env-from-k8s.sh
+
+  echo ""
+  echo "✅ Services ready"
+  echo "   PostgreSQL: $project_name namespace"
+  echo "   MinIO: $project_name namespace"
+}
+
+# Full pipeline: interrogate → extract → credentials → repo → services → Loki Mode build
 build_full() {
   local name="$1"
   local conv=".claude/interrogations/$name/conversation.md"
   local scope=".claude/scopes/$name/00_scope_document.md"
+  local creds_state=".claude/scopes/$name/credentials.yaml"
 
   echo "=== Full Pipeline: $name ==="
   echo ""
-  echo "Pipeline: interrogate → extract → Loki Mode build"
+  echo "Pipeline: interrogate → extract → credentials → Loki Mode build"
   echo ""
 
   # Step 1: Check/run interrogation
@@ -225,14 +319,14 @@ build_full() {
     else
       echo "Step 1: Resuming interrogation..."
       echo "---"
-      run_claude --dangerously-skip-permissions "/pm:interrogate $name"
+      claude "/pm:interrogate $name"
       echo "---"
     fi
   else
     echo "Step 1: Starting interrogation..."
     mkdir -p ".claude/interrogations/$name"
     echo "---"
-    run_claude --dangerously-skip-permissions "/pm:interrogate $name"
+    claude "/pm:interrogate $name"
     echo "---"
   fi
 
@@ -259,12 +353,12 @@ build_full() {
     read -p "Regenerate scope document? (y/n): " regen
     if [[ "$regen" == "y" ]]; then
       echo "Regenerating..."
-      run_claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
+      claude --print "/pm:extract-findings $name"
     fi
   else
     echo "Step 2: Extracting findings..."
     echo "---"
-    run_claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
+    claude --print "/pm:extract-findings $name"
     echo "---"
   fi
 
@@ -278,8 +372,70 @@ build_full() {
   echo "Step 2: Scope document ✓"
   echo ""
 
-  # Step 3: Loki Mode
-  echo "Step 3: Loki Mode Build"
+  # Step 3: Credential Gathering
+  if [ -f "$creds_state" ] && [ -f ".env" ]; then
+    echo "Step 3: Credentials ✓ (already gathered)"
+    echo ""
+    read -p "Regather credentials? (y/n): " regather
+    if [[ "$regather" == "y" ]]; then
+      echo "Regathering..."
+      claude "/pm:gather-credentials $name"
+    fi
+  else
+    echo "Step 3: Gathering credentials..."
+    echo ""
+    echo "Integrations detected in scope document will be configured."
+    echo "---"
+    claude "/pm:gather-credentials $name"
+    echo "---"
+  fi
+
+  # Verify credentials exist (optional - warn but don't block)
+  if [ ! -f ".env" ]; then
+    echo "⚠️  No .env file found"
+    echo ""
+    read -p "Continue without credentials? (y/n): " continue_anyway
+    if [[ "$continue_anyway" != "y" ]]; then
+      echo ""
+      echo "Pipeline stopped."
+      echo "Run: ./interrogate.sh --credentials $name"
+      exit 0
+    fi
+  else
+    # Check for deferred credentials
+    deferred=$(grep "deferred_credentials:" "$creds_state" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+    if [ -n "$deferred" ] && [ "$deferred" != "0" ]; then
+      echo "⚠️  $deferred credential(s) deferred"
+      read -p "Continue with deferred credentials? (y/n): " continue_defer
+      if [[ "$continue_defer" != "y" ]]; then
+        echo ""
+        echo "Complete credentials: ./interrogate.sh --credentials $name"
+        exit 0
+      fi
+    fi
+    echo "Step 3: Credentials ✓"
+  fi
+
+  echo ""
+
+  # Step 4: Ensure GitHub repo
+  echo "Step 4: GitHub Repository"
+  ./.claude/scripts/ensure-github-repo.sh
+  echo "Step 4: Repository ✓"
+
+  echo ""
+
+  # Step 5: Setup Infrastructure Services
+  echo "Step 5: Infrastructure Services (PostgreSQL, MinIO, CloudBeaver)"
+  local project_name
+  project_name=$(basename "$(pwd)")
+  setup_services "$project_name"
+  echo "Step 5: Services ✓"
+
+  echo ""
+
+  # Step 6: Loki Mode
+  echo "Step 6: Loki Mode Build"
   echo ""
   echo "⚠️  WARNING: Loki Mode is autonomous and will:"
   echo "  - Generate code across multiple files"
@@ -350,7 +506,7 @@ EOF
   echo "---"
   echo ""
 
-  run_claude --dangerously-skip-permissions < "$PROMPT_FILE"
+  claude --dangerously-skip-permissions < "$PROMPT_FILE"
 
   # Cleanup
   rm -f "$PROMPT_FILE"
@@ -382,6 +538,23 @@ case "$1" in
       exit 1
     fi
     extract_findings "$2"
+    exit 0
+    ;;
+  --credentials|-c)
+    if [ -z "$2" ]; then
+      echo "❌ Error: Session name required"
+      echo "Usage: ./interrogate.sh --credentials <session-name>"
+      exit 1
+    fi
+    gather_credentials "$2"
+    exit 0
+    ;;
+  --repo|-r)
+    ensure_repo "$2"
+    exit 0
+    ;;
+  --services)
+    setup_services "$2"
     exit 0
     ;;
   --build|-b)
@@ -435,7 +608,7 @@ echo "---"
 echo ""
 
 # Run interactively (no --print flag - this is a conversation)
-run_claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
+claude "/pm:interrogate $SESSION_NAME"
 
 # After completion, show next steps
 echo ""
