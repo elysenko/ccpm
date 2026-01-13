@@ -13,6 +13,19 @@
 
 set -e
 
+# Detect CCPM directory (where the skills are defined)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CCPM_DIR="${CCPM_DIR:-$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")}"
+
+# Function to run claude with access to CCPM skills
+run_claude() {
+  local args="$@"
+  # Run from CCPM directory so skills are found
+  # Explicitly export HOME to ensure Claude uses the right config directory
+  export HOME="${HOME:-/home/appuser}"
+  (cd "$CCPM_DIR" && claude $args)
+}
+
 SESSION_NAME="${1:-$(date +%Y%m%d-%H%M%S)}"
 SESSION_DIR=".claude/interrogations/$SESSION_NAME"
 CONV_FILE="$SESSION_DIR/conversation.md"
@@ -173,7 +186,7 @@ extract_findings() {
   echo ""
 
   # Run extract-findings
-  claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
+  run_claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
 
   echo ""
   echo "---"
@@ -212,14 +225,14 @@ build_full() {
     else
       echo "Step 1: Resuming interrogation..."
       echo "---"
-      claude --dangerously-skip-permissions "/pm:interrogate $name"
+      run_claude --dangerously-skip-permissions "/pm:interrogate $name"
       echo "---"
     fi
   else
     echo "Step 1: Starting interrogation..."
     mkdir -p ".claude/interrogations/$name"
     echo "---"
-    claude --dangerously-skip-permissions "/pm:interrogate $name"
+    run_claude --dangerously-skip-permissions "/pm:interrogate $name"
     echo "---"
   fi
 
@@ -246,12 +259,12 @@ build_full() {
     read -p "Regenerate scope document? (y/n): " regen
     if [[ "$regen" == "y" ]]; then
       echo "Regenerating..."
-      claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
+      run_claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
     fi
   else
     echo "Step 2: Extracting findings..."
     echo "---"
-    claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
+    run_claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
     echo "---"
   fi
 
@@ -337,7 +350,7 @@ EOF
   echo "---"
   echo ""
 
-  claude --dangerously-skip-permissions < "$PROMPT_FILE"
+  run_claude --dangerously-skip-permissions < "$PROMPT_FILE"
 
   # Cleanup
   rm -f "$PROMPT_FILE"
@@ -422,7 +435,7 @@ echo "---"
 echo ""
 
 # Run interactively (no --print flag - this is a conversation)
-claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
+run_claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
 
 # After completion, show next steps
 echo ""
