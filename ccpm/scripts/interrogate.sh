@@ -9,10 +9,10 @@
 #   ./interrogate.sh --credentials <name>     # Gather credentials for integrations
 #   ./interrogate.sh --repo [name]            # Ensure GitHub repo exists
 #   ./interrogate.sh --services [name]        # Setup PostgreSQL and MinIO services
-#   ./interrogate.sh --build <name>           # Full pipeline → Loki Mode build
+#   ./interrogate.sh --build <name>           # Full pipeline → batch process PRDs
 #
 # Pipeline:
-#   services → schema → repo → interrogate → extract → credentials → Loki Mode build
+#   services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process
 
 set -e
 
@@ -34,7 +34,7 @@ Usage:
   ./interrogate.sh --credentials <name>     Gather credentials for integrations
   ./interrogate.sh --repo [name]            Ensure GitHub repository exists
   ./interrogate.sh --services [name]        Setup PostgreSQL and MinIO services
-  ./interrogate.sh --build <name>           Full pipeline: services → repo → interrogate → extract → credentials → Loki Mode
+  ./interrogate.sh --build <name>           Full pipeline: services → PRDs → batch-process
   ./interrogate.sh --help                   Show this help
 
 Pipeline Flow:
@@ -44,7 +44,9 @@ Pipeline Flow:
   4. ./interrogate.sh <name>                Structured Q&A → conversation.md
   5. ./interrogate.sh --extract <name>      Generate scope document
   6. ./interrogate.sh --credentials <name>  Collect integration credentials
-  7. ./interrogate.sh --build <name>        Activate Loki Mode to build app
+  7. (auto) Generate MVP roadmap            /pm:roadmap-generate
+  8. (auto) Decompose into PRDs             /pm:scope-decompose --generate
+  9. (auto) Batch process PRDs              /pm:batch-process
 
 Or run the full pipeline at once:
   ./interrogate.sh --build <name>           Does all steps automatically
@@ -58,7 +60,9 @@ Output Files:
   .claude/scopes/<name>/04_technical_architecture.md   Tech stack, integrations
   .claude/scopes/<name>/05_risk_assessment.md     Risk analysis
   .claude/scopes/<name>/06_gap_analysis.md        Open questions
+  .claude/scopes/<name>/07_roadmap.md             MVP roadmap with phases
   .claude/scopes/<name>/credentials.yaml          Credential collection metadata
+  .claude/prds/*.md                               Generated PRDs
   .env                                            Environment credentials (gitignored)
   .env.template                                   Template for sharing
 EOF
@@ -161,7 +165,7 @@ show_status() {
   status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
   if [ "$status" = "complete" ]; then
     if [ -f "$scope" ]; then
-      echo "Next: ./interrogate.sh --build $name  (activate Loki Mode)"
+      echo "Next: ./interrogate.sh --build $name  (generate roadmap → PRDs → batch-process)"
     else
       echo "Next: ./interrogate.sh --extract $name"
     fi
@@ -300,7 +304,7 @@ setup_services() {
   echo "   MinIO: $project_name namespace"
 }
 
-# Full pipeline: services → schema → repo → interrogate → extract → credentials → Loki Mode build
+# Full pipeline: services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process
 build_full() {
   local name="$1"
   local conv=".claude/interrogations/$name/conversation.md"
@@ -311,7 +315,7 @@ build_full() {
 
   echo "=== Full Pipeline: $name ==="
   echo ""
-  echo "Pipeline: services → schema → repo → interrogate → extract → credentials → Loki Mode"
+  echo "Pipeline: services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process"
   echo ""
 
   # Step 1: Setup Infrastructure Services
@@ -448,87 +452,93 @@ build_full() {
 
   echo ""
 
-  # Step 7: Loki Mode
-  echo "Step 7: Loki Mode Build"
+  # Step 7: Generate MVP Roadmap
+  local roadmap=".claude/scopes/$name/07_roadmap.md"
+  if [ -f "$roadmap" ]; then
+    echo "Step 7: MVP Roadmap ✓ (already exists)"
+    echo ""
+    read -p "Regenerate roadmap? (y/n): " regen_roadmap
+    if [[ "$regen_roadmap" == "y" ]]; then
+      echo "Regenerating roadmap..."
+      claude --print "/pm:roadmap-generate $name"
+    fi
+  else
+    echo "Step 7: Generating MVP Roadmap..."
+    echo "---"
+    claude --print "/pm:roadmap-generate $name"
+    echo "---"
+  fi
+
+  # Verify roadmap exists
+  if [ ! -f "$roadmap" ]; then
+    echo "❌ Roadmap generation failed"
+    exit 1
+  fi
+
   echo ""
-  echo "⚠️  WARNING: Loki Mode is autonomous and will:"
-  echo "  - Generate code across multiple files"
-  echo "  - Create database schemas and migrations"
-  echo "  - Set up infrastructure and deployment"
-  echo "  - Run tests and validate functionality"
-  echo ""
-  echo "This requires --dangerously-skip-permissions flag."
+  echo "Step 7: MVP Roadmap ✓"
   echo ""
 
-  read -p "Activate Loki Mode? (yes/no): " confirm
-  if [[ "$confirm" != "yes" ]]; then
+  # Step 8: Decompose into PRDs
+  local prds_dir=".claude/prds"
+  echo "Step 8: Decomposing scope into PRDs..."
+  echo "---"
+  claude --print "/pm:scope-decompose $name --generate"
+  echo "---"
+
+  # Count PRDs created
+  prd_count=$(ls -1 "$prds_dir"/*.md 2>/dev/null | wc -l)
+  if [ "$prd_count" -eq 0 ]; then
+    echo "❌ No PRDs generated"
+    exit 1
+  fi
+
+  echo ""
+  echo "Step 8: PRDs generated ✓ ($prd_count PRDs)"
+  echo ""
+
+  # Step 9: Batch process PRDs in order
+  echo "Step 9: Batch Processing PRDs"
+  echo ""
+  echo "This will process all PRDs in dependency order:"
+  echo "  - Parse each PRD into epics/issues"
+  echo "  - Create GitHub issues"
+  echo "  - Execute implementation"
+  echo ""
+
+  read -p "Start batch processing? (yes/no): " confirm_batch
+  if [[ "$confirm_batch" != "yes" ]]; then
     echo ""
-    echo "Pipeline stopped before Loki Mode."
+    echo "Pipeline stopped before batch processing."
     echo ""
-    echo "Your scope document is ready at:"
-    echo "  .claude/scopes/$name/00_scope_document.md"
+    echo "Your PRDs are ready at: $prds_dir/"
+    echo "Roadmap: $roadmap"
     echo ""
-    echo "To activate Loki Mode later:"
-    echo "  ./build-from-scope.sh $name"
+    echo "To process PRDs later:"
+    echo "  /pm:batch-process"
     exit 0
   fi
 
   echo ""
-  echo "=== Activating Loki Mode ==="
+  echo "=== Starting Batch Processing ==="
   echo ""
 
-  # Prepare Loki Mode prompt
-  LOKI_PROMPT=$(cat << EOF
-Loki Mode
-
-Build the application defined in this scope document:
-
-$(cat "$scope")
-
----
-
-Additional context files are in: .claude/scopes/$name/
-- 01_features.md - Feature catalog
-- 02_user_journeys.md - User journey maps
-- 03_nfr_requirements.md - Non-functional requirements
-- 04_technical_architecture.md - Tech stack and integrations
-- 05_risk_assessment.md - Risk analysis
-- 06_gap_analysis.md - Open questions (resolve as needed)
-
-Default tech stack (per CLAUDE.md): Angular, GraphQL, Python, PostgreSQL
-
-Execute full build pipeline including:
-1. Architecture and project setup
-2. Database schema and migrations
-3. Backend API implementation
-4. Frontend implementation
-5. Integration with external systems
-6. Testing (unit, integration, e2e)
-7. Documentation
-8. Deployment configuration
-
-Begin.
-EOF
-)
-
-  # Write prompt to temp file
-  PROMPT_FILE=$(mktemp)
-  echo "$LOKI_PROMPT" > "$PROMPT_FILE"
-
-  # Launch Loki Mode
-  echo "Launching Claude Code with Loki Mode..."
-  echo "---"
-  echo ""
-
-  claude --dangerously-skip-permissions < "$PROMPT_FILE"
-
-  # Cleanup
-  rm -f "$PROMPT_FILE"
+  # Run batch-process
+  claude --dangerously-skip-permissions "/pm:batch-process"
 
   echo ""
   echo "---"
   echo ""
   echo "=== Pipeline Complete ==="
+  echo ""
+  echo "Summary:"
+  echo "  - Scope: .claude/scopes/$name/"
+  echo "  - Roadmap: $roadmap"
+  echo "  - PRDs: $prds_dir/ ($prd_count files)"
+  echo ""
+  echo "Monitor progress:"
+  echo "  /pm:status"
+  echo "  /pm:epic-status <epic-name>"
 }
 
 # Handle arguments
