@@ -197,17 +197,39 @@ ${FILE_LIST}
 ---
 *Created by /pm:ccpm-push*"
 
-# Check if PR exists
-EXISTING_PR=$(gh pr list --head "$BRANCH_NAME" --json number -q '.[0].number' 2>/dev/null)
+# Check if PR exists for this branch
+EXISTING_PR=$(gh pr list --head "$BRANCH_NAME" --state open --json number,url -q '.[0]' 2>/dev/null)
 
-if [ -n "$EXISTING_PR" ]; then
-    echo "Updating existing PR #$EXISTING_PR"
-    PR_URL=$(gh pr view "$EXISTING_PR" --json url -q .url)
+if [ -n "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
+    PR_NUMBER=$(echo "$EXISTING_PR" | jq -r '.number')
+    PR_URL=$(echo "$EXISTING_PR" | jq -r '.url')
+    echo "Updating existing PR #$PR_NUMBER..."
+    # Update PR body with latest file list
+    gh pr edit "$PR_NUMBER" --body "$PR_BODY" 2>/dev/null || true
 else
-    PR_URL=$(gh pr create --title "$PR_TITLE" --body "$PR_BODY" --base "$MAIN_BRANCH" --head "$BRANCH_NAME" 2>&1) || {
-        echo "PR may already exist or creation failed"
-        PR_URL=$(gh pr view "$BRANCH_NAME" --json url -q .url 2>/dev/null || echo "")
-    }
+    echo "Creating new PR..."
+    # Create PR and capture URL properly (redirect stderr to avoid mixing warnings)
+    PR_URL=$(gh pr create \
+        --title "$PR_TITLE" \
+        --body "$PR_BODY" \
+        --base "$MAIN_BRANCH" \
+        --head "$BRANCH_NAME" \
+        --json url -q .url 2>/dev/null)
+
+    # If json output failed, try without json flag
+    if [ -z "$PR_URL" ]; then
+        gh pr create \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --base "$MAIN_BRANCH" \
+            --head "$BRANCH_NAME" 2>&1 | tail -1 | grep -o 'https://[^ ]*' > /tmp/pr_url.txt || true
+        PR_URL=$(cat /tmp/pr_url.txt 2>/dev/null || echo "")
+    fi
+
+    # Fallback: try to get PR URL from view
+    if [ -z "$PR_URL" ]; then
+        PR_URL=$(gh pr view --json url -q .url 2>/dev/null || echo "(check GitHub for PR)")
+    fi
 fi
 
 # Return to original directory
