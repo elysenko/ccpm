@@ -232,6 +232,28 @@ else
     fi
 fi
 
+# Get PR number for merge operations
+PR_NUMBER=$(gh pr view --json number -q .number 2>/dev/null || echo "")
+
+# Auto-merge the PR
+MERGE_STATUS=""
+if [ -n "$PR_NUMBER" ]; then
+    echo ""
+    echo "Merging PR #$PR_NUMBER..."
+
+    # Try to merge with squash
+    if gh pr merge "$PR_NUMBER" --squash --delete-branch 2>/dev/null; then
+        MERGE_STATUS="merged"
+    else
+        # If merge fails, try to enable auto-merge
+        if gh pr merge "$PR_NUMBER" --squash --auto 2>/dev/null; then
+            MERGE_STATUS="auto-merge enabled"
+        else
+            MERGE_STATUS="pending review (cannot self-merge)"
+        fi
+    fi
+fi
+
 # Return to original directory
 cd "$ORIGINAL_DIR"
 
@@ -241,5 +263,6 @@ echo "Done!"
 echo ""
 echo "Branch: $BRANCH_NAME"
 echo "PR:     $PR_URL"
+[ -n "$MERGE_STATUS" ] && echo "Status: $MERGE_STATUS"
 
 exit 0
