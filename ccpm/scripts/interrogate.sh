@@ -12,7 +12,7 @@
 #   ./interrogate.sh --build <name>           # Full pipeline → batch process PRDs
 #
 # Pipeline:
-#   services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process
+#   services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process → synthetic-test → remediation
 
 set -e
 
@@ -47,6 +47,8 @@ Pipeline Flow:
   7. (auto) Generate MVP roadmap            /pm:roadmap-generate
   8. (auto) Decompose into PRDs             /pm:scope-decompose --generate
   9. (auto) Batch process PRDs              /pm:batch-process
+ 10. (auto) Synthetic persona testing       /pm:generate-personas → tests → feedback
+ 11. (auto) Generate remediation PRDs       /pm:generate-remediation
 
 Or run the full pipeline at once:
   ./interrogate.sh --build <name>           Does all steps automatically
@@ -63,6 +65,10 @@ Output Files:
   .claude/scopes/<name>/07_roadmap.md             MVP roadmap with phases
   .claude/scopes/<name>/credentials.yaml          Credential collection metadata
   .claude/prds/*.md                               Generated PRDs
+  .claude/testing/personas/<name>-personas.json   Synthetic test personas
+  .claude/testing/playwright/                     E2E test suite
+  .claude/testing/feedback/<name>-feedback.json   Synthetic user feedback
+  .claude/testing/feedback/<name>-analysis.md     Feedback analysis report
   .env                                            Environment credentials (gitignored)
   .env.template                                   Template for sharing
 EOF
@@ -304,7 +310,7 @@ setup_services() {
   echo "   MinIO: $project_name namespace"
 }
 
-# Full pipeline: services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process
+# Full pipeline: services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process → synthetic-test → remediation
 build_full() {
   local name="$1"
   local conv=".claude/interrogations/$name/conversation.md"
@@ -315,7 +321,7 @@ build_full() {
 
   echo "=== Full Pipeline: $name ==="
   echo ""
-  echo "Pipeline: services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process"
+  echo "Pipeline: services → repo → interrogate → extract → credentials → roadmap → PRDs → batch → test → remediation"
   echo ""
 
   # Step 1: Setup Infrastructure Services
@@ -527,6 +533,128 @@ build_full() {
   claude --dangerously-skip-permissions "/pm:batch-process"
 
   echo ""
+  echo "Step 9: Batch Processing ✓"
+  echo ""
+
+  # Step 10: Synthetic Persona Testing
+  echo "Step 10: Synthetic Persona Testing"
+  echo ""
+  echo "This will:"
+  echo "  - Generate 10 synthetic personas from user journeys"
+  echo "  - Create Playwright E2E test suite"
+  echo "  - Run tests as each persona"
+  echo "  - Generate synthetic user feedback"
+  echo "  - Analyze feedback patterns"
+  echo ""
+
+  read -p "Run synthetic testing? (yes/no): " confirm_test
+  if [[ "$confirm_test" == "yes" ]]; then
+    echo ""
+    echo "Generating synthetic personas..."
+    claude --print "/pm:generate-personas $name --count 10"
+
+    local personas_file=".claude/testing/personas/$name-personas.json"
+    if [ ! -f "$personas_file" ]; then
+      echo "❌ Persona generation failed"
+      exit 1
+    fi
+    echo "Personas generated ✓"
+    echo ""
+
+    echo "Generating Playwright tests..."
+    claude --print "/pm:generate-tests $name"
+
+    local playwright_dir=".claude/testing/playwright"
+    if [ ! -d "$playwright_dir" ]; then
+      echo "❌ Test generation failed"
+      exit 1
+    fi
+    echo "Tests generated ✓"
+    echo ""
+
+    # Run Playwright tests
+    echo "Running Playwright tests..."
+    if [ -f "$playwright_dir/package.json" ]; then
+      (cd "$playwright_dir" && npm install 2>/dev/null || true)
+      (cd "$playwright_dir" && npx playwright test --reporter=json > test-results.json 2>&1) || true
+      echo "Tests executed ✓"
+    else
+      echo "⚠️  Playwright not configured - skipping test execution"
+      echo "   Manual setup: cd $playwright_dir && npm init -y && npm i -D @playwright/test"
+      # Create placeholder test results for feedback generation
+      echo '{"suites":[],"stats":{"expected":0,"unexpected":0,"flaky":0,"skipped":0}}' > "$playwright_dir/test-results.json"
+    fi
+    echo ""
+
+    echo "Generating synthetic feedback..."
+    claude --print "/pm:generate-feedback $name"
+
+    local feedback_file=".claude/testing/feedback/$name-feedback.json"
+    if [ -f "$feedback_file" ]; then
+      echo "Feedback generated ✓"
+    else
+      echo "⚠️  Feedback generation skipped"
+    fi
+    echo ""
+
+    echo "Analyzing feedback patterns..."
+    claude --print "/pm:analyze-feedback $name"
+
+    local analysis_file=".claude/testing/feedback/$name-analysis.md"
+    if [ -f "$analysis_file" ]; then
+      echo "Analysis complete ✓"
+    else
+      echo "⚠️  Analysis skipped"
+    fi
+
+    echo ""
+    echo "Step 10: Synthetic Testing ✓"
+    echo ""
+
+    # Step 11: Generate Remediation PRDs
+    local issues_file=".claude/testing/feedback/$name-issues.json"
+    if [ -f "$issues_file" ]; then
+      echo "Step 11: Generating Remediation PRDs"
+      echo ""
+      echo "Creating PRDs to address feedback issues..."
+      echo ""
+
+      read -p "Generate remediation PRDs? (yes/no): " confirm_remediation
+      if [[ "$confirm_remediation" == "yes" ]]; then
+        claude --print "/pm:generate-remediation $name --max 10"
+
+        echo ""
+        echo "Step 11: Remediation PRDs ✓"
+        echo ""
+
+        # Count remediation PRDs
+        remediation_count=$(ls -1 "$prds_dir"/*-fix-*.md "$prds_dir"/*-improve-*.md "$prds_dir"/*-add-*.md 2>/dev/null | wc -l)
+        echo "Remediation PRDs generated: $remediation_count"
+        echo ""
+
+        read -p "Process remediation PRDs now? (yes/no): " confirm_remediation_batch
+        if [[ "$confirm_remediation_batch" == "yes" ]]; then
+          echo ""
+          echo "Processing remediation PRDs..."
+          claude --dangerously-skip-permissions "/pm:batch-process"
+        fi
+      else
+        echo "Skipping remediation PRD generation."
+      fi
+    else
+      echo "Step 11: Skipped (no issues file)"
+    fi
+  else
+    echo "Skipping synthetic testing."
+    echo "Run manually later:"
+    echo "  /pm:generate-personas $name"
+    echo "  /pm:generate-tests $name"
+    echo "  /pm:generate-feedback $name"
+    echo "  /pm:analyze-feedback $name"
+    echo "  /pm:generate-remediation $name"
+  fi
+
+  echo ""
   echo "---"
   echo ""
   echo "=== Pipeline Complete ==="
@@ -535,6 +663,12 @@ build_full() {
   echo "  - Scope: .claude/scopes/$name/"
   echo "  - Roadmap: $roadmap"
   echo "  - PRDs: $prds_dir/ ($prd_count files)"
+  if [ -f ".claude/testing/personas/$name-personas.json" ]; then
+    echo "  - Personas: .claude/testing/personas/$name-personas.json"
+  fi
+  if [ -f ".claude/testing/feedback/$name-analysis.md" ]; then
+    echo "  - Feedback Analysis: .claude/testing/feedback/$name-analysis.md"
+  fi
   echo ""
   echo "Monitor progress:"
   echo "  /pm:status"
