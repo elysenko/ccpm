@@ -22,6 +22,18 @@ echo "🚀 Initializing Claude Code PM System"
 echo "======================================"
 echo ""
 
+# Pull latest CCPM if source repo is configured
+if [ -n "$CCPM_SOURCE_REPO" ] && [ -d "$CCPM_SOURCE_REPO/ccpm" ]; then
+  echo "📥 Syncing from CCPM canonical repository..."
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ -f "$SCRIPT_DIR/ccpm-pull.sh" ]; then
+    bash "$SCRIPT_DIR/ccpm-pull.sh"
+  elif [ -f "$CCPM_SOURCE_REPO/ccpm/scripts/pm/ccpm-pull.sh" ]; then
+    bash "$CCPM_SOURCE_REPO/ccpm/scripts/pm/ccpm-pull.sh"
+  fi
+  echo ""
+fi
+
 # Check for required tools
 echo "🔍 Checking dependencies..."
 
