@@ -63,6 +63,16 @@ echo "Project: $PROJECT_NAME"
 echo "Branch:  $BRANCH_NAME"
 echo ""
 
+# Update canonical repo first
+echo "Updating canonical CCPM repo..."
+(
+    cd "$CCPM_SOURCE_REPO"
+    MAIN_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') || MAIN_BRANCH="main"
+    git checkout "$MAIN_BRANCH" 2>/dev/null || true
+    git pull origin "$MAIN_BRANCH" 2>/dev/null || true
+) || echo "Warning: Could not update canonical repo"
+echo ""
+
 # Analyze differences
 echo "Analyzing differences..."
 
