@@ -264,6 +264,14 @@ if [ -n "$PR_NUMBER" ]; then
     fi
 fi
 
+# Sync ccpm/ccpm/ to ccpm/.claude/ (Claude pulls from .claude/)
+if [ -d "$CCPM_SOURCE_REPO/ccpm" ] && [ -d "$CCPM_SOURCE_REPO/.claude" ]; then
+    echo ""
+    echo "Syncing ccpm/ to .claude/ (for Claude auto-init)..."
+    rsync -a --delete "$CCPM_SOURCE_REPO/ccpm/" "$CCPM_SOURCE_REPO/.claude/"
+    echo "✅ Synced"
+fi
+
 # Return to original directory
 cd "$ORIGINAL_DIR"
 
