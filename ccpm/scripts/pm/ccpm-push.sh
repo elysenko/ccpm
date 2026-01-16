@@ -44,7 +44,7 @@ SOURCE_BASE="$CCPM_SOURCE_REPO/ccpm"
 LOCAL_BASE=".claude"
 
 # Directories to sync
-SYNC_DIRS=("commands" "scripts" "rules" "agents" "hooks" "schemas")
+SYNC_DIRS=("commands" "scripts" "rules" "agents" "hooks" "schemas" "services" "testing" "templates")
 SYNC_FILES=("ccpm.config")
 
 # Get project name
