@@ -209,7 +209,7 @@ extract_findings() {
   echo ""
 
   # Run extract-findings
-  claude --print "/pm:extract-findings $name"
+  claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
 
   echo ""
   echo "---"
@@ -393,12 +393,12 @@ build_full() {
     read -p "Regenerate scope document? (y/n): " regen
     if [[ "$regen" == "y" ]]; then
       echo "Regenerating..."
-      claude --print "/pm:extract-findings $name"
+      claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
     fi
   else
     echo "Step 5: Extracting findings..."
     echo "---"
-    claude --print "/pm:extract-findings $name"
+    claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
     echo "---"
   fi
 
@@ -466,12 +466,12 @@ build_full() {
     read -p "Regenerate roadmap? (y/n): " regen_roadmap
     if [[ "$regen_roadmap" == "y" ]]; then
       echo "Regenerating roadmap..."
-      claude --print "/pm:roadmap-generate $name"
+      claude --dangerously-skip-permissions --print "/pm:roadmap-generate $name"
     fi
   else
     echo "Step 7: Generating MVP Roadmap..."
     echo "---"
-    claude --print "/pm:roadmap-generate $name"
+    claude --dangerously-skip-permissions --print "/pm:roadmap-generate $name"
     echo "---"
   fi
 
@@ -489,7 +489,7 @@ build_full() {
   local prds_dir=".claude/prds"
   echo "Step 8: Decomposing scope into PRDs..."
   echo "---"
-  claude --print "/pm:scope-decompose $name --generate"
+  claude --dangerously-skip-permissions --print "/pm:scope-decompose $name --generate"
   echo "---"
 
   # Count PRDs created
@@ -551,7 +551,7 @@ build_full() {
   if [[ "$confirm_test" == "yes" ]]; then
     echo ""
     echo "Generating synthetic personas..."
-    claude --print "/pm:generate-personas $name --count 10"
+    claude --dangerously-skip-permissions --print "/pm:generate-personas $name --count 10"
 
     local personas_file=".claude/testing/personas/$name-personas.json"
     if [ ! -f "$personas_file" ]; then
@@ -562,7 +562,7 @@ build_full() {
     echo ""
 
     echo "Generating Playwright tests..."
-    claude --print "/pm:generate-tests $name"
+    claude --dangerously-skip-permissions --print "/pm:generate-tests $name"
 
     local playwright_dir=".claude/testing/playwright"
     if [ ! -d "$playwright_dir" ]; then
@@ -587,7 +587,7 @@ build_full() {
     echo ""
 
     echo "Generating synthetic feedback..."
-    claude --print "/pm:generate-feedback $name"
+    claude --dangerously-skip-permissions --print "/pm:generate-feedback $name"
 
     local feedback_file=".claude/testing/feedback/$name-feedback.json"
     if [ -f "$feedback_file" ]; then
@@ -598,7 +598,7 @@ build_full() {
     echo ""
 
     echo "Analyzing feedback patterns..."
-    claude --print "/pm:analyze-feedback $name"
+    claude --dangerously-skip-permissions --print "/pm:analyze-feedback $name"
 
     local analysis_file=".claude/testing/feedback/$name-analysis.md"
     if [ -f "$analysis_file" ]; then
@@ -621,7 +621,7 @@ build_full() {
 
       read -p "Generate remediation PRDs? (yes/no): " confirm_remediation
       if [[ "$confirm_remediation" == "yes" ]]; then
-        claude --print "/pm:generate-remediation $name --max 10"
+        claude --dangerously-skip-permissions --print "/pm:generate-remediation $name --max 10"
 
         echo ""
         echo "Step 11: Remediation PRDs ✓"
