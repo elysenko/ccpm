@@ -33,8 +33,18 @@ echo "Source: $SOURCE_BASE"
 echo "Local:  $LOCAL_BASE"
 echo ""
 
+# Update canonical repo first
+echo "Updating canonical CCPM repo..."
+(
+    cd "$CCPM_SOURCE_REPO"
+    MAIN_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') || MAIN_BRANCH="main"
+    git checkout "$MAIN_BRANCH" 2>/dev/null || true
+    git pull origin "$MAIN_BRANCH" 2>/dev/null || true
+) || echo "Warning: Could not update canonical repo"
+echo ""
+
 # Directories to sync (framework components)
-SYNC_DIRS=("commands" "scripts" "rules" "agents" "hooks")
+SYNC_DIRS=("commands" "scripts" "rules" "agents" "hooks" "schemas" "services" "testing" "templates")
 
 # Files to sync
 SYNC_FILES=("ccpm.config")
