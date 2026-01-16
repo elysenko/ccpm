@@ -125,6 +125,37 @@ Store final confirmed list of integrations.
 
 ---
 
+### Step 3.5: Collect Purpose for Each Integration
+
+**CRITICAL: For each confirmed integration, ask about its purpose.**
+
+Use the AskUserQuestion tool for each integration:
+
+```
+What is the purpose of {Integration Name} in your application?
+
+Examples:
+- "Payment processing and subscription billing"
+- "Accounting and invoicing sync"
+- "User authentication and SSO"
+- "Email notifications and transactional emails"
+```
+
+**Options (with "Other" always available):**
+- Common purpose based on integration type (e.g., "Payment processing" for Stripe)
+- Second common purpose
+- Third option
+- Other (user provides custom purpose)
+
+**Store the purpose with each integration for database storage.**
+
+This purpose will be used to:
+1. Document why each integration exists
+2. Help with debugging and maintenance
+3. Generate better PRD context
+
+---
+
 ### Step 4: Collect Credentials
 
 For each confirmed integration, collect credentials.
@@ -249,7 +280,65 @@ fi
 
 ---
 
-### Step 7: Save State
+### Step 7: Save to Database (Encrypted)
+
+**CRITICAL: Store credentials in PostgreSQL with encryption.**
+
+For each integration, create an `IntegrationCredential` record:
+
+```python
+from backend.db.interview import CredentialRepository, check_encryption_configured
+from backend.extraction.interview.models import (
+    IntegrationCredential,
+    IntegrationEnvironment,
+    CredentialStatus,
+)
+from sqlalchemy import create_engine
+import os
+
+# Check encryption is configured
+if not check_encryption_configured():
+    print("⚠️  CREDENTIAL_ENCRYPTION_KEY not set in .env")
+    print("Generate with: python -c 'from backend.services.credential_encryption_service import CredentialEncryption; print(CredentialEncryption.generate_key())'")
+    # Skip database storage but continue with .env generation
+else:
+    # Create database connection
+    engine = create_engine(os.getenv("DATABASE_URL"))
+    repo = CredentialRepository(engine)
+
+    # For each integration
+    for integration in confirmed_integrations:
+        cred = IntegrationCredential(
+            integration_type=integration["type"],  # e.g., "stripe", "quickbooks"
+            integration_name=integration["name"],  # e.g., "Stripe Production"
+            purpose=integration["purpose"],        # e.g., "Payment processing"
+            environment=IntegrationEnvironment.PRODUCTION,
+            scope_name=session_name,
+            status=CredentialStatus.PENDING if deferred else CredentialStatus.ACTIVE,
+            # Credential values (will be encrypted by repository)
+            api_key_encrypted=integration.get("api_key"),
+            api_secret_encrypted=integration.get("api_secret"),
+            username=integration.get("username"),
+            password_encrypted=integration.get("password"),
+            oauth_client_id=integration.get("client_id"),
+            oauth_client_secret_encrypted=integration.get("client_secret"),
+            # Additional fields as needed
+            additional_secrets=integration.get("additional", {}),
+        )
+
+        # Upsert (insert or update)
+        cred_id = repo.upsert(cred)
+        print(f"  ✓ {integration['type']}: Stored (ID: {cred_id})")
+```
+
+**Security Notes:**
+- All `*_encrypted` fields are automatically encrypted by `CredentialRepository`
+- Encryption uses AES-256-GCM with unique nonce per value
+- Encryption key must be set in `CREDENTIAL_ENCRYPTION_KEY` environment variable
+
+---
+
+### Step 8: Save State
 
 **Create credentials.yaml in scope directory:**
 
@@ -258,21 +347,27 @@ gathered: {datetime}
 session: {session-name}
 integrations:
   - name: {Integration1}
+    purpose: {purpose1}
     credentials_count: {n}
+    db_id: {database_id}
   - name: {Integration2}
+    purpose: {purpose2}
     credentials_count: {n}
+    db_id: {database_id}
 total_credentials: {total}
 deferred_credentials: {count}
 validation_passed: true
 env_file: .env
 template_file: .env.template
+database_stored: true
+encryption_enabled: true
 ```
 
 Write to: `$SCOPE_DIR/credentials.yaml`
 
 ---
 
-### Step 8: Present Summary
+### Step 9: Present Summary
 
 ```
 === Credential Gathering Complete ===
@@ -280,8 +375,8 @@ Write to: `$SCOPE_DIR/credentials.yaml`
 Session: {session-name}
 
 Integrations Configured:
-- {Integration 1} ({n} credentials)
-- {Integration 2} ({n} credentials)
+- {Integration 1}: {purpose1} ({n} credentials)
+- {Integration 2}: {purpose2} ({n} credentials)
 ...
 
 Summary:
@@ -294,13 +389,25 @@ Files Created:
 - .env.template (for sharing/onboarding)
 - .claude/scopes/{session}/credentials.yaml (metadata)
 
+Database Storage:
+- ✓ Credentials encrypted with AES-256-GCM
+- ✓ Stored in integration_credentials table
+- ✓ Linked to scope: {session-name}
+
 Security:
 - ✓ .env added to .gitignore
 - ✓ .env not tracked in git
+- ✓ Database fields encrypted at rest
 
 {If deferred > 0:}
 ⚠ Deferred credentials: {count}
   Run this command again to complete them before building.
+
+{If encryption not configured:}
+⚠ Database storage skipped - CREDENTIAL_ENCRYPTION_KEY not set
+  Generate key: python -c "from backend.services.credential_encryption_service import CredentialEncryption; print(CredentialEncryption.generate_key())"
+  Add to .env: CREDENTIAL_ENCRYPTION_KEY=<generated-key>
+  Re-run: /pm:gather-credentials {session-name}
 
 Next Steps:
 1. Review .env for accuracy
@@ -330,6 +437,9 @@ Next Steps:
 5. **Support custom integrations** - Not everything is in the mapping
 6. **Preserve existing .env** - Merge new credentials, don't overwrite
 7. **Interactive confirmation** - Always confirm detected integrations
+8. **Always collect purpose** - Ask what each integration is used for
+9. **Store in database with encryption** - Use CredentialRepository for encrypted storage
+10. **Dual storage** - Both .env file and database for flexibility
 
 ---
 
@@ -355,6 +465,12 @@ Next Steps:
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────┐
+│ Collect Purpose for Each Integration                    │
+│ Ask: "What is {Integration} used for?"                  │
+└─────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────┐
 │ For each integration:                                   │
 │   - Look up required credentials                        │
 │   - Prompt for each value (or accept default/defer)     │
@@ -370,8 +486,16 @@ Next Steps:
                     │
                     ▼
 ┌─────────────────────────────────────────────────────────┐
+│ Store in Database (Encrypted)                           │
+│   - IntegrationCredential with purpose                  │
+│   - AES-256-GCM encryption for sensitive fields         │
+│   - Link to scope_name                                  │
+└─────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────┐
 │ Save credentials.yaml state                             │
-│ Show summary                                            │
+│ Show summary with database storage status               │
 └─────────────────────────────────────────────────────────┘
 ```
 
