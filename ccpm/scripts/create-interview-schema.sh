@@ -78,26 +78,48 @@ done
 echo -e "${GREEN}PostgreSQL is ready${NC}"
 echo ""
 
-# Check if schema already exists
-EXISTING_TABLES=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+# Check if schema already exists (check for v3 schema's 'journey_steps_detailed' table)
+EXISTING_V3=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+    -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c \
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'journey_steps_detailed'" 2>/dev/null | tr -d ' ')
+
+# Check for old 16-table schema
+OLD_SCHEMA=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
     -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c \
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'interrogation_sessions'" 2>/dev/null | tr -d ' ')
 
-if [ "$EXISTING_TABLES" -gt 0 ] 2>/dev/null; then
-    echo -e "${YELLOW}Schema already exists. Checking for updates...${NC}"
+# Check for v2 7-table schema (has journey_step but not journey_steps_detailed)
+V2_SCHEMA=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+    -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c \
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'journey_step'" 2>/dev/null | tr -d ' ')
 
-    # Check schema version
-    CURRENT_VERSION=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
-        -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c \
-        "SELECT version FROM schema_versions WHERE schema_name = 'interview_schema' ORDER BY applied_at DESC LIMIT 1" 2>/dev/null | tr -d ' ')
+if [ "$OLD_SCHEMA" -gt 0 ] 2>/dev/null; then
+    echo -e "${YELLOW}Old 16-table schema detected. Migrating to v3.1 (10-table design)...${NC}"
+    echo "  (Old tables will be dropped)"
+    echo ""
+fi
 
-    if [ -n "$CURRENT_VERSION" ]; then
-        echo "  Current version: $CURRENT_VERSION"
-    fi
+if [ "$V2_SCHEMA" -gt 0 ] 2>/dev/null && [ "$EXISTING_V3" -eq 0 ] 2>/dev/null; then
+    echo -e "${YELLOW}v2.0 (7-table) schema detected. Migrating to v3.1 (10-table design)...${NC}"
+    echo "  (Old tables will be dropped)"
+    echo ""
+fi
 
+# Check for integration_credentials (v3.1 indicator)
+V31_INDICATOR=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+    -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c \
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'integration_credentials'" 2>/dev/null | tr -d ' ')
+
+if [ "$EXISTING_V3" -gt 0 ] 2>/dev/null && [ "$V31_INDICATOR" -gt 0 ] 2>/dev/null; then
+    echo -e "${YELLOW}Schema v3.1 already exists${NC}"
     echo -e "${GREEN}Schema is current${NC}"
+elif [ "$EXISTING_V3" -gt 0 ] 2>/dev/null && [ "$V31_INDICATOR" -eq 0 ] 2>/dev/null; then
+    echo -e "${YELLOW}Upgrading from v3.0 to v3.1 (adding integration_credentials)...${NC}"
+    PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+        -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$SCHEMA_FILE"
+    echo -e "${GREEN}Schema upgraded successfully${NC}"
 else
-    echo "Creating schema..."
+    echo "Creating schema v3.1 (10-table hybrid design)..."
     PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
         -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$SCHEMA_FILE"
     echo -e "${GREEN}Schema created successfully${NC}"
@@ -107,22 +129,16 @@ fi
 echo ""
 echo "Verifying schema..."
 TABLES=(
-    "interrogation_sessions"
-    "conversation_turns"
-    "turn_extractions"
-    "extraction_conflicts"
-    "user_journeys"
+    "feature"
+    "page"
+    "journey"
     "journey_steps_detailed"
-    "step_data_flow"
-    "step_dependencies"
-    "features"
-    "feature_journey_mapping"
+    "conversation"
+    "conversation_feature"
+    "database_entities"
     "technical_components"
     "step_component_mapping"
-    "database_entities"
-    "backend_action_traces"
-    "trace_layers"
-    "entity_operations"
+    "integration_credentials"
 )
 
 MISSING=0
@@ -147,10 +163,9 @@ if [ $MISSING -eq 0 ]; then
     echo "Views created:"
     VIEWS=(
         "journey_full_view"
-        "step_technical_summary"
-        "extraction_summary"
-        "feature_implementation_trace"
-        "entity_usage_summary"
+        "feature_discovery_view"
+        "step_components_view"
+        "entity_usage_view"
     )
     for VIEW in "${VIEWS[@]}"; do
         EXISTS=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
