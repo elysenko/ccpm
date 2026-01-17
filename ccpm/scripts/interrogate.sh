@@ -27,15 +27,14 @@ show_help() {
 Interrogate - Structured Discovery Conversations
 
 Usage:
-  ./interrogate.sh [session-name]           Full pipeline (default): services → PRDs → batch-process
-  ./interrogate.sh --interrogate-only <name> Just run the Q&A conversation
+  ./interrogate.sh [session-name]           Start or resume a session
   ./interrogate.sh --list                   List all sessions
   ./interrogate.sh --status [name]          Show session status
   ./interrogate.sh --extract <name>         Extract scope document from session
   ./interrogate.sh --credentials <name>     Gather credentials for integrations
   ./interrogate.sh --repo [name]            Ensure GitHub repository exists
   ./interrogate.sh --services [name]        Setup PostgreSQL and MinIO services
-  ./interrogate.sh --build <name>           Alias for default (full pipeline)
+  ./interrogate.sh --build <name>           Full pipeline: services → PRDs → batch-process
   ./interrogate.sh --help                   Show this help
 
 Pipeline Flow:
@@ -725,80 +724,68 @@ case "$1" in
     build_full "$2"
     exit 0
     ;;
-  --interrogate-only|-i)
-    if [ -z "$2" ]; then
-      echo "❌ Error: Session name required"
-      echo "Usage: ./interrogate.sh --interrogate-only <session-name>"
-      exit 1
-    fi
-    SESSION_NAME="$2"
-    SESSION_DIR=".claude/interrogations/$SESSION_NAME"
-    CONV_FILE="$SESSION_DIR/conversation.md"
-    echo "=== Interrogate: $SESSION_NAME ==="
-    echo ""
-
-    if [ -f "$CONV_FILE" ]; then
-      # Check if already complete
-      status=$(grep "^Status:" "$CONV_FILE" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
-      if [ "$status" = "complete" ]; then
-        echo "Session already complete."
-        echo ""
-        echo "Next steps:"
-        echo "  Extract scope: ./interrogate.sh --extract $SESSION_NAME"
-        echo "  Full build:    ./interrogate.sh $SESSION_NAME"
-        echo "  Start fresh:   rm -rf $SESSION_DIR && ./interrogate.sh --interrogate-only $SESSION_NAME"
-        exit 0
-      fi
-
-      echo "Resuming existing session..."
-      echo "Conversation file: $CONV_FILE"
-      echo ""
-
-      # Show where we left off
-      last_q=$(grep "^\*\*Claude:\*\*" "$CONV_FILE" 2>/dev/null | tail -1 | sed 's/\*\*Claude:\*\* //')
-      if [ -n "$last_q" ]; then
-        echo "Last question: $last_q"
-        echo ""
-      fi
-    else
-      echo "Starting new session..."
-      mkdir -p "$SESSION_DIR"
-      echo "Session directory: $SESSION_DIR"
-      echo ""
-    fi
-
-    # Launch Claude with the interrogate command
-    echo "Launching interrogation..."
-    echo "---"
-    echo ""
-
-    # Run interactively (no --print flag - this is a conversation)
-    claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
-
-    # After completion, show next steps
-    echo ""
-    echo "---"
-    echo ""
-
-    if [ -f "$CONV_FILE" ]; then
-      status=$(grep "^Status:" "$CONV_FILE" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
-      if [ "$status" = "complete" ]; then
-        echo "✅ Interrogation complete"
-        echo ""
-        echo "Conversation saved: $CONV_FILE"
-        echo ""
-        echo "Next steps:"
-        echo "  Extract scope: ./interrogate.sh --extract $SESSION_NAME"
-        echo "  Full build:    ./interrogate.sh $SESSION_NAME"
-      else
-        echo "Session paused."
-        echo ""
-        echo "Resume with: ./interrogate.sh --interrogate-only $SESSION_NAME"
-      fi
-    fi
-    exit 0
-    ;;
 esac
 
-# Default: Run full build pipeline (--build is now the default)
-build_full "$SESSION_NAME"
+# Default: Initialize or resume session
+echo "=== Interrogate: $SESSION_NAME ==="
+echo ""
+
+if [ -f "$CONV_FILE" ]; then
+  # Check if already complete
+  status=$(grep "^Status:" "$CONV_FILE" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
+  if [ "$status" = "complete" ]; then
+    echo "Session already complete."
+    echo ""
+    echo "Next steps:"
+    echo "  Extract scope: ./interrogate.sh --extract $SESSION_NAME"
+    echo "  Full build:    ./interrogate.sh --build $SESSION_NAME"
+    echo "  Start fresh:   rm -rf $SESSION_DIR && ./interrogate.sh $SESSION_NAME"
+    exit 0
+  fi
+
+  echo "Resuming existing session..."
+  echo "Conversation file: $CONV_FILE"
+  echo ""
+
+  # Show where we left off
+  last_q=$(grep "^\*\*Claude:\*\*" "$CONV_FILE" 2>/dev/null | tail -1 | sed 's/\*\*Claude:\*\* //')
+  if [ -n "$last_q" ]; then
+    echo "Last question: $last_q"
+    echo ""
+  fi
+else
+  echo "Starting new session..."
+  mkdir -p "$SESSION_DIR"
+  echo "Session directory: $SESSION_DIR"
+  echo ""
+fi
+
+# Launch Claude with the interrogate command
+echo "Launching interrogation..."
+echo "---"
+echo ""
+
+# Run interactively (no --print flag - this is a conversation)
+claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
+
+# After completion, show next steps
+echo ""
+echo "---"
+echo ""
+
+if [ -f "$CONV_FILE" ]; then
+  status=$(grep "^Status:" "$CONV_FILE" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
+  if [ "$status" = "complete" ]; then
+    echo "✅ Interrogation complete"
+    echo ""
+    echo "Conversation saved: $CONV_FILE"
+    echo ""
+    echo "Next steps:"
+    echo "  Extract scope: ./interrogate.sh --extract $SESSION_NAME"
+    echo "  Full build:    ./interrogate.sh --build $SESSION_NAME"
+  else
+    echo "Session paused."
+    echo ""
+    echo "Resume with: ./interrogate.sh $SESSION_NAME"
+  fi
+fi
