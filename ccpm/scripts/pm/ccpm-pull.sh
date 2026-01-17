@@ -114,6 +114,30 @@ done
 # Make scripts executable
 find "$LOCAL_BASE/scripts" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
 
+# Sync k8s folder to project root (not inside .claude/)
+if [ -d "$SOURCE_BASE/k8s" ]; then
+    echo ""
+    echo "Syncing k8s/..."
+    mkdir -p "k8s"
+    while IFS= read -r -d '' src_file; do
+        rel_path="${src_file#$SOURCE_BASE/k8s/}"
+        dst_file="k8s/$rel_path"
+        if [ ! -f "$dst_file" ]; then
+            mkdir -p "$(dirname "$dst_file")"
+            cp "$src_file" "$dst_file"
+            echo "  + k8s/$rel_path"
+            copied_new=$((copied_new + 1))
+        elif ! diff -q "$src_file" "$dst_file" > /dev/null 2>&1; then
+            backup_file "$dst_file"
+            cp "$src_file" "$dst_file"
+            echo "  ~ k8s/$rel_path"
+            copied_updated=$((copied_updated + 1))
+        else
+            skipped=$((skipped + 1))
+        fi
+    done < <(find "$SOURCE_BASE/k8s" -type f -print0)
+fi
+
 # Add .backups to .gitignore if not present
 if [ -f ".gitignore" ]; then
     grep -q "^\.claude/\.backups" .gitignore 2>/dev/null || echo ".claude/.backups" >> .gitignore
