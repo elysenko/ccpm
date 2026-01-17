@@ -2,7 +2,7 @@
 # interrogate.sh - Orchestrate structured discovery conversations
 #
 # Usage:
-#   ./interrogate.sh [session-name]           # Start or resume session
+#   ./interrogate.sh [session-name]           # Start or resume session (full pipeline)
 #   ./interrogate.sh --list                   # List all sessions
 #   ./interrogate.sh --status [name]          # Show session status
 #   ./interrogate.sh --extract <name>         # Extract scope document
@@ -10,11 +10,17 @@
 #   ./interrogate.sh --repo [name]            # Ensure GitHub repo exists
 #   ./interrogate.sh --services [name]        # Setup PostgreSQL and MinIO services
 #   ./interrogate.sh --build <name>           # Full pipeline → batch process PRDs
+#   ./interrogate.sh --resume <name>          # Resume pipeline from last completed step
+#   ./interrogate.sh --resume-from <N> <name> # Resume from specific step
+#   ./interrogate.sh --pipeline-status <name> # Show pipeline progress
 #
 # Pipeline:
 #   services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process → synthetic-test → remediation
 
 set -e
+
+# Get script directory for sourcing library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SESSION_NAME="${1:-$(date +%Y%m%d-%H%M%S)}"
 SESSION_DIR=".claude/interrogations/$SESSION_NAME"
@@ -27,28 +33,42 @@ show_help() {
 Interrogate - Structured Discovery Conversations
 
 Usage:
-  ./interrogate.sh [session-name]           Start or resume a session
-  ./interrogate.sh --list                   List all sessions
-  ./interrogate.sh --status [name]          Show session status
-  ./interrogate.sh --extract <name>         Extract scope document from session
-  ./interrogate.sh --credentials <name>     Gather credentials for integrations
-  ./interrogate.sh --repo [name]            Ensure GitHub repository exists
-  ./interrogate.sh --services [name]        Setup PostgreSQL and MinIO services
-  ./interrogate.sh --build <name>           Full pipeline: services → PRDs → batch-process
-  ./interrogate.sh --help                   Show this help
+  ./interrogate.sh [session-name]             Full pipeline (default): services → PRDs → batch-process
+  ./interrogate.sh --interrogate-only <name>  Just run the Q&A conversation
+  ./interrogate.sh --list                     List all sessions
+  ./interrogate.sh --status [name]            Show session status
+  ./interrogate.sh --extract <name>           Extract scope document from session
+  ./interrogate.sh --credentials <name>       Gather credentials for integrations
+  ./interrogate.sh --repo [name]              Ensure GitHub repository exists
+  ./interrogate.sh --services [name]          Setup PostgreSQL and MinIO services
+  ./interrogate.sh --build <name>             Alias for default (full pipeline)
+  ./interrogate.sh --resume <name>            Resume pipeline from last completed step
+  ./interrogate.sh --resume-from <N> <name>   Resume from specific step (1-12)
+  ./interrogate.sh --pipeline-status <name>   Show pipeline progress
+  ./interrogate.sh --help                     Show this help
 
 Pipeline Flow:
-  1. ./interrogate.sh --services [name]     Setup PostgreSQL, MinIO, CloudBeaver
-  2. (auto) Create interview database schema
-  3. ./interrogate.sh --repo [name]         Ensure GitHub repo exists
-  4. ./interrogate.sh <name>                Structured Q&A → conversation.md
-  5. ./interrogate.sh --extract <name>      Generate scope document
-  6. ./interrogate.sh --credentials <name>  Collect integration credentials
-  7. (auto) Generate MVP roadmap            /pm:roadmap-generate
-  8. (auto) Decompose into PRDs             /pm:scope-decompose --generate
-  9. (auto) Batch process PRDs              /pm:batch-process
- 10. (auto) Synthetic persona testing       /pm:generate-personas → tests → feedback
- 11. (auto) Generate remediation PRDs       /pm:generate-remediation
+   1. ./interrogate.sh --services [name]     Setup PostgreSQL, MinIO, CloudBeaver
+   2. (auto) Create interview database schema
+   3. ./interrogate.sh --repo [name]         Ensure GitHub repo exists
+   4. ./interrogate.sh <name>                Structured Q&A → conversation.md
+   5. ./interrogate.sh --extract <name>      Generate scope document
+   6. ./interrogate.sh --credentials <name>  Collect integration credentials
+   7. (auto) Generate MVP roadmap            /pm:roadmap-generate
+   8. (auto) Decompose into PRDs             /pm:scope-decompose --generate
+   9. (auto) Batch process PRDs              /pm:batch-process
+  10. (auto) Deploy to Kubernetes            /pm:deploy
+  11. (auto) Synthetic persona testing       /pm:generate-personas → tests → feedback
+  12. (auto) Generate remediation PRDs       /pm:generate-remediation
+
+Resume Options:
+  --resume <name>             Continue from where pipeline stopped
+  --resume-from <N> <name>    Start from specific step (1-12)
+
+Self-Healing:
+  When a step fails, the pipeline automatically invokes /pm:fix_problem
+  to diagnose and fix the issue. Up to 3 fix attempts are made before
+  escalating to manual intervention.
 
 Or run the full pipeline at once:
   ./interrogate.sh --build <name>           Does all steps automatically
@@ -71,6 +91,9 @@ Output Files:
   .claude/testing/feedback/<name>-analysis.md     Feedback analysis report
   .env                                            Environment credentials (gitignored)
   .env.template                                   Template for sharing
+
+Pipeline State:
+  .claude/pipeline/<name>/state.yaml             Pipeline progress tracking
 EOF
 }
 
@@ -90,6 +113,7 @@ list_sessions() {
       name=$(basename "$dir")
       conv_file="$dir/conversation.md"
       scope_file=".claude/scopes/$name/00_scope_document.md"
+      pipeline_state=".claude/pipeline/$name/state.yaml"
 
       if [ -f "$conv_file" ]; then
         # Extract status from frontmatter
@@ -105,7 +129,19 @@ list_sessions() {
           scope_status="[scope ✓]"
         fi
 
-        printf "  %-25s %s (%s) - %d exchanges %s\n" "$name" "${status:-unknown}" "${type:-unclassified}" "$exchanges" "$scope_status"
+        # Check pipeline status
+        pipeline_info=""
+        if [ -f "$pipeline_state" ]; then
+          last_step=$(grep "^last_completed_step:" "$pipeline_state" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+          pipe_status=$(grep "^status:" "$pipeline_state" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
+          if [ "$pipe_status" = "complete" ]; then
+            pipeline_info="[pipeline ✓]"
+          elif [ -n "$last_step" ] && [ "$last_step" != "0" ]; then
+            pipeline_info="[step $last_step/11]"
+          fi
+        fi
+
+        printf "  %-25s %s (%s) - %d exchanges %s %s\n" "$name" "${status:-unknown}" "${type:-unclassified}" "$exchanges" "$scope_status" "$pipeline_info"
       else
         printf "  %-25s empty\n" "$name"
       fi
@@ -117,6 +153,7 @@ list_sessions() {
   echo "  Resume:  ./interrogate.sh <name>"
   echo "  Extract: ./interrogate.sh --extract <name>"
   echo "  Build:   ./interrogate.sh --build <name>"
+  echo "  Resume:  ./interrogate.sh --resume <name>"
 }
 
 # Show session status
@@ -159,6 +196,20 @@ show_status() {
   else
     echo "Credentials: Not gathered"
   fi
+
+  # Check pipeline status
+  local pipeline_state=".claude/pipeline/$name/state.yaml"
+  if [ -f "$pipeline_state" ]; then
+    echo ""
+    echo "Pipeline:"
+    local pipe_status
+    pipe_status=$(grep "^status:" "$pipeline_state" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
+    local last_step
+    last_step=$(grep "^last_completed_step:" "$pipeline_state" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+    echo "  Status: $pipe_status"
+    echo "  Progress: Step $last_step/11"
+  fi
+
   echo ""
 
   # Show last exchange
@@ -171,7 +222,17 @@ show_status() {
   status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
   if [ "$status" = "complete" ]; then
     if [ -f "$scope" ]; then
-      echo "Next: ./interrogate.sh --build $name  (generate roadmap → PRDs → batch-process)"
+      if [ -f "$pipeline_state" ]; then
+        local pipe_status
+        pipe_status=$(grep "^status:" "$pipeline_state" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
+        if [ "$pipe_status" = "complete" ]; then
+          echo "Pipeline complete!"
+        else
+          echo "Next: ./interrogate.sh --resume $name"
+        fi
+      else
+        echo "Next: ./interrogate.sh --build $name  (generate roadmap → PRDs → batch-process)"
+      fi
     else
       echo "Next: ./interrogate.sh --extract $name"
     fi
@@ -310,358 +371,38 @@ setup_services() {
   echo "   MinIO: $project_name namespace"
 }
 
-# Full pipeline: services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process → synthetic-test → remediation
+# Full pipeline using pipeline-lib.sh
 build_full() {
   local name="$1"
-  local conv=".claude/interrogations/$name/conversation.md"
-  local scope=".claude/scopes/$name/00_scope_document.md"
-  local creds_state=".claude/scopes/$name/credentials.yaml"
-  local project_name
-  project_name=$(basename "$(pwd)")
+  local start_step="${2:-1}"
 
   echo "=== Full Pipeline: $name ==="
   echo ""
   echo "Pipeline: services → repo → interrogate → extract → credentials → roadmap → PRDs → batch → test → remediation"
   echo ""
 
-  # Step 1: Setup Infrastructure Services
-  echo "Step 1: Infrastructure Services (PostgreSQL, MinIO, CloudBeaver)"
-  setup_services "$project_name"
-  echo "Step 1: Services ✓"
+  # Source the pipeline library
+  source "$SCRIPT_DIR/pipeline-lib.sh"
 
-  echo ""
+  # Initialize state
+  init_pipeline_state "$name"
 
-  # Step 2: Create Interview Schema
-  echo "Step 2: Create Database Schema"
-  if [ -f "./.claude/scripts/create-interview-schema.sh" ]; then
-    ./.claude/scripts/create-interview-schema.sh
-    echo "Step 2: Schema ✓"
-  else
-    echo "Step 2: Schema script not found, skipping"
-  fi
+  # Run pipeline from start step
+  run_pipeline_from "$start_step"
 
-  echo ""
-
-  # Step 3: Ensure GitHub repo
-  echo "Step 3: GitHub Repository"
-  ./.claude/scripts/ensure-github-repo.sh
-  echo "Step 3: Repository ✓"
-
-  echo ""
-
-  # Step 4: Check/run interrogation
-  if [ -f "$conv" ]; then
-    status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
-    if [ "$status" = "complete" ]; then
-      echo "Step 4: Interrogation ✓ (already complete)"
-    else
-      echo "Step 4: Resuming interrogation..."
-      echo "---"
-      claude --dangerously-skip-permissions "/pm:interrogate $name"
-      echo "---"
-    fi
-  else
-    echo "Step 4: Starting interrogation..."
-    mkdir -p ".claude/interrogations/$name"
-    echo "---"
-    claude --dangerously-skip-permissions "/pm:interrogate $name"
-    echo "---"
-  fi
-
-  # Verify interrogation complete
-  if [ -f "$conv" ]; then
-    status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
-    if [ "$status" != "complete" ]; then
-      echo ""
-      echo "Interrogation not complete. Stopping pipeline."
-      echo "Resume with: ./interrogate.sh --build $name"
-      exit 0
-    fi
-  else
-    echo "❌ Interrogation failed"
-    exit 1
-  fi
-
-  echo ""
-  echo "Step 4: Interrogation ✓"
-  echo ""
-
-  # Step 5: Extract findings
-  if [ -f "$scope" ]; then
-    echo "Step 5: Scope document ✓ (already exists)"
-    echo ""
-    read -p "Regenerate scope document? (y/n): " regen
-    if [[ "$regen" == "y" ]]; then
-      echo "Regenerating..."
-      claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
-    fi
-  else
-    echo "Step 5: Extracting findings..."
-    echo "---"
-    claude --dangerously-skip-permissions --print "/pm:extract-findings $name"
-    echo "---"
-  fi
-
-  # Verify scope exists
-  if [ ! -f "$scope" ]; then
-    echo "❌ Scope document generation failed"
-    exit 1
-  fi
-
-  echo ""
-  echo "Step 5: Scope document ✓"
-  echo ""
-
-  # Step 6: Credential Gathering
-  if [ -f "$creds_state" ] && [ -f ".env" ]; then
-    echo "Step 6: Credentials ✓ (already gathered)"
-    echo ""
-    read -p "Regather credentials? (y/n): " regather
-    if [[ "$regather" == "y" ]]; then
-      echo "Regathering..."
-      claude --dangerously-skip-permissions "/pm:gather-credentials $name"
-    fi
-  else
-    echo "Step 6: Gathering credentials..."
-    echo ""
-    echo "Integrations detected in scope document will be configured."
-    echo "---"
-    claude --dangerously-skip-permissions "/pm:gather-credentials $name"
-    echo "---"
-  fi
-
-  # Verify credentials exist (optional - warn but don't block)
-  if [ ! -f ".env" ]; then
-    echo "⚠️  No .env file found"
-    echo ""
-    read -p "Continue without credentials? (y/n): " continue_anyway
-    if [[ "$continue_anyway" != "y" ]]; then
-      echo ""
-      echo "Pipeline stopped."
-      echo "Run: ./interrogate.sh --credentials $name"
-      exit 0
-    fi
-  else
-    # Check for deferred credentials
-    deferred=$(grep "deferred_credentials:" "$creds_state" 2>/dev/null | cut -d: -f2 | tr -d ' ')
-    if [ -n "$deferred" ] && [ "$deferred" != "0" ]; then
-      echo "⚠️  $deferred credential(s) deferred"
-      read -p "Continue with deferred credentials? (y/n): " continue_defer
-      if [[ "$continue_defer" != "y" ]]; then
-        echo ""
-        echo "Complete credentials: ./interrogate.sh --credentials $name"
-        exit 0
-      fi
-    fi
-    echo "Step 6: Credentials ✓"
-  fi
-
-  echo ""
-
-  # Step 7: Generate MVP Roadmap
-  local roadmap=".claude/scopes/$name/07_roadmap.md"
-  if [ -f "$roadmap" ]; then
-    echo "Step 7: MVP Roadmap ✓ (already exists)"
-    echo ""
-    read -p "Regenerate roadmap? (y/n): " regen_roadmap
-    if [[ "$regen_roadmap" == "y" ]]; then
-      echo "Regenerating roadmap..."
-      claude --dangerously-skip-permissions --print "/pm:roadmap-generate $name"
-    fi
-  else
-    echo "Step 7: Generating MVP Roadmap..."
-    echo "---"
-    claude --dangerously-skip-permissions --print "/pm:roadmap-generate $name"
-    echo "---"
-  fi
-
-  # Verify roadmap exists
-  if [ ! -f "$roadmap" ]; then
-    echo "❌ Roadmap generation failed"
-    exit 1
-  fi
-
-  echo ""
-  echo "Step 7: MVP Roadmap ✓"
-  echo ""
-
-  # Step 8: Decompose into PRDs
+  # Show final summary
   local prds_dir=".claude/prds"
-  echo "Step 8: Decomposing scope into PRDs..."
-  echo "---"
-  claude --dangerously-skip-permissions --print "/pm:scope-decompose $name --generate"
-  echo "---"
-
-  # Count PRDs created
+  local prd_count
   prd_count=$(ls -1 "$prds_dir"/*.md 2>/dev/null | wc -l)
-  if [ "$prd_count" -eq 0 ]; then
-    echo "❌ No PRDs generated"
-    exit 1
-  fi
+  local roadmap=".claude/scopes/$name/07_roadmap.md"
 
   echo ""
-  echo "Step 8: PRDs generated ✓ ($prd_count PRDs)"
+  echo "=== Pipeline Summary ==="
   echo ""
-
-  # Step 9: Batch process PRDs in order
-  echo "Step 9: Batch Processing PRDs"
-  echo ""
-  echo "This will process all PRDs in dependency order:"
-  echo "  - Parse each PRD into epics/issues"
-  echo "  - Create GitHub issues"
-  echo "  - Execute implementation"
-  echo ""
-
-  read -p "Start batch processing? (yes/no): " confirm_batch
-  if [[ "$confirm_batch" != "yes" ]]; then
-    echo ""
-    echo "Pipeline stopped before batch processing."
-    echo ""
-    echo "Your PRDs are ready at: $prds_dir/"
-    echo "Roadmap: $roadmap"
-    echo ""
-    echo "To process PRDs later:"
-    echo "  /pm:batch-process"
-    exit 0
-  fi
-
-  echo ""
-  echo "=== Starting Batch Processing ==="
-  echo ""
-
-  # Run batch-process
-  claude --dangerously-skip-permissions "/pm:batch-process"
-
-  echo ""
-  echo "Step 9: Batch Processing ✓"
-  echo ""
-
-  # Step 10: Synthetic Persona Testing
-  echo "Step 10: Synthetic Persona Testing"
-  echo ""
-  echo "This will:"
-  echo "  - Generate 10 synthetic personas from user journeys"
-  echo "  - Create Playwright E2E test suite"
-  echo "  - Run tests as each persona"
-  echo "  - Generate synthetic user feedback"
-  echo "  - Analyze feedback patterns"
-  echo ""
-
-  read -p "Run synthetic testing? (yes/no): " confirm_test
-  if [[ "$confirm_test" == "yes" ]]; then
-    echo ""
-    echo "Generating synthetic personas..."
-    claude --dangerously-skip-permissions --print "/pm:generate-personas $name --count 10"
-
-    local personas_file=".claude/testing/personas/$name-personas.json"
-    if [ ! -f "$personas_file" ]; then
-      echo "❌ Persona generation failed"
-      exit 1
-    fi
-    echo "Personas generated ✓"
-    echo ""
-
-    echo "Generating Playwright tests..."
-    claude --dangerously-skip-permissions --print "/pm:generate-tests $name"
-
-    local playwright_dir=".claude/testing/playwright"
-    if [ ! -d "$playwright_dir" ]; then
-      echo "❌ Test generation failed"
-      exit 1
-    fi
-    echo "Tests generated ✓"
-    echo ""
-
-    # Run Playwright tests
-    echo "Running Playwright tests..."
-    if [ -f "$playwright_dir/package.json" ]; then
-      (cd "$playwright_dir" && npm install 2>/dev/null || true)
-      (cd "$playwright_dir" && npx playwright test --reporter=json > test-results.json 2>&1) || true
-      echo "Tests executed ✓"
-    else
-      echo "⚠️  Playwright not configured - skipping test execution"
-      echo "   Manual setup: cd $playwright_dir && npm init -y && npm i -D @playwright/test"
-      # Create placeholder test results for feedback generation
-      echo '{"suites":[],"stats":{"expected":0,"unexpected":0,"flaky":0,"skipped":0}}' > "$playwright_dir/test-results.json"
-    fi
-    echo ""
-
-    echo "Generating synthetic feedback..."
-    claude --dangerously-skip-permissions --print "/pm:generate-feedback $name"
-
-    local feedback_file=".claude/testing/feedback/$name-feedback.json"
-    if [ -f "$feedback_file" ]; then
-      echo "Feedback generated ✓"
-    else
-      echo "⚠️  Feedback generation skipped"
-    fi
-    echo ""
-
-    echo "Analyzing feedback patterns..."
-    claude --dangerously-skip-permissions --print "/pm:analyze-feedback $name"
-
-    local analysis_file=".claude/testing/feedback/$name-analysis.md"
-    if [ -f "$analysis_file" ]; then
-      echo "Analysis complete ✓"
-    else
-      echo "⚠️  Analysis skipped"
-    fi
-
-    echo ""
-    echo "Step 10: Synthetic Testing ✓"
-    echo ""
-
-    # Step 11: Generate Remediation PRDs
-    local issues_file=".claude/testing/feedback/$name-issues.json"
-    if [ -f "$issues_file" ]; then
-      echo "Step 11: Generating Remediation PRDs"
-      echo ""
-      echo "Creating PRDs to address feedback issues..."
-      echo ""
-
-      read -p "Generate remediation PRDs? (yes/no): " confirm_remediation
-      if [[ "$confirm_remediation" == "yes" ]]; then
-        claude --dangerously-skip-permissions --print "/pm:generate-remediation $name --max 10"
-
-        echo ""
-        echo "Step 11: Remediation PRDs ✓"
-        echo ""
-
-        # Count remediation PRDs
-        remediation_count=$(ls -1 "$prds_dir"/*-fix-*.md "$prds_dir"/*-improve-*.md "$prds_dir"/*-add-*.md 2>/dev/null | wc -l)
-        echo "Remediation PRDs generated: $remediation_count"
-        echo ""
-
-        read -p "Process remediation PRDs now? (yes/no): " confirm_remediation_batch
-        if [[ "$confirm_remediation_batch" == "yes" ]]; then
-          echo ""
-          echo "Processing remediation PRDs..."
-          claude --dangerously-skip-permissions "/pm:batch-process"
-        fi
-      else
-        echo "Skipping remediation PRD generation."
-      fi
-    else
-      echo "Step 11: Skipped (no issues file)"
-    fi
-  else
-    echo "Skipping synthetic testing."
-    echo "Run manually later:"
-    echo "  /pm:generate-personas $name"
-    echo "  /pm:generate-tests $name"
-    echo "  /pm:generate-feedback $name"
-    echo "  /pm:analyze-feedback $name"
-    echo "  /pm:generate-remediation $name"
-  fi
-
-  echo ""
-  echo "---"
-  echo ""
-  echo "=== Pipeline Complete ==="
-  echo ""
-  echo "Summary:"
   echo "  - Scope: .claude/scopes/$name/"
-  echo "  - Roadmap: $roadmap"
+  if [ -f "$roadmap" ]; then
+    echo "  - Roadmap: $roadmap"
+  fi
   echo "  - PRDs: $prds_dir/ ($prd_count files)"
   if [ -f ".claude/testing/personas/$name-personas.json" ]; then
     echo "  - Personas: .claude/testing/personas/$name-personas.json"
@@ -669,10 +410,84 @@ build_full() {
   if [ -f ".claude/testing/feedback/$name-analysis.md" ]; then
     echo "  - Feedback Analysis: .claude/testing/feedback/$name-analysis.md"
   fi
+  echo "  - State: .claude/pipeline/$name/state.yaml"
   echo ""
   echo "Monitor progress:"
   echo "  /pm:status"
   echo "  /pm:epic-status <epic-name>"
+}
+
+# Resume pipeline from last completed step
+resume_pipeline() {
+  local name="$1"
+  local pipeline_state=".claude/pipeline/$name/state.yaml"
+
+  if [ ! -f "$pipeline_state" ]; then
+    echo "❌ No pipeline state found for: $name"
+    echo ""
+    echo "Start fresh with: ./interrogate.sh --build $name"
+    exit 1
+  fi
+
+  # Get last completed step
+  local last_step
+  last_step=$(grep "^last_completed_step:" "$pipeline_state" 2>/dev/null | cut -d: -f2 | tr -d ' ')
+
+  if [ -z "$last_step" ] || [ "$last_step" = "0" ]; then
+    echo "No steps completed yet. Starting from step 1."
+    build_full "$name" 1
+  elif [ "$last_step" = "11" ]; then
+    echo "Pipeline already complete for: $name"
+    echo ""
+    echo "To restart: ./interrogate.sh --resume-from 1 $name"
+    exit 0
+  else
+    local next_step=$((last_step + 1))
+    echo "Resuming from step $next_step (last completed: $last_step)"
+    echo ""
+    build_full "$name" "$next_step"
+  fi
+}
+
+# Resume from specific step
+resume_from_step() {
+  local step="$1"
+  local name="$2"
+
+  if [ -z "$step" ] || [ -z "$name" ]; then
+    echo "❌ Usage: ./interrogate.sh --resume-from <step> <session-name>"
+    echo "   Example: ./interrogate.sh --resume-from 5 my-app"
+    exit 1
+  fi
+
+  if [ "$step" -lt 1 ] || [ "$step" -gt 12 ]; then
+    echo "❌ Invalid step number: $step (must be 1-12)"
+    exit 1
+  fi
+
+  echo "Starting from step $step for session: $name"
+  echo ""
+  build_full "$name" "$step"
+}
+
+# Show pipeline status using library
+show_pipeline_status() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --pipeline-status <session-name>"
+    exit 1
+  fi
+
+  # Source the pipeline library
+  source "$SCRIPT_DIR/pipeline-lib.sh"
+
+  # Initialize to load state
+  init_pipeline_state "$name"
+
+  # Show status
+  show_pipeline_status
 }
 
 # Handle arguments
@@ -724,68 +539,97 @@ case "$1" in
     build_full "$2"
     exit 0
     ;;
+  --resume)
+    if [ -z "$2" ]; then
+      echo "❌ Error: Session name required"
+      echo "Usage: ./interrogate.sh --resume <session-name>"
+      exit 1
+    fi
+    resume_pipeline "$2"
+    exit 0
+    ;;
+  --resume-from)
+    resume_from_step "$2" "$3"
+    exit 0
+    ;;
+  --pipeline-status)
+    show_pipeline_status "$2"
+    exit 0
+    ;;
+  --interrogate-only|-i)
+    if [ -z "$2" ]; then
+      echo "❌ Error: Session name required"
+      echo "Usage: ./interrogate.sh --interrogate-only <session-name>"
+      exit 1
+    fi
+    SESSION_NAME="$2"
+    SESSION_DIR=".claude/interrogations/$SESSION_NAME"
+    CONV_FILE="$SESSION_DIR/conversation.md"
+    echo "=== Interrogate: $SESSION_NAME ==="
+    echo ""
+
+    if [ -f "$CONV_FILE" ]; then
+      # Check if already complete
+      status=$(grep "^Status:" "$CONV_FILE" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
+      if [ "$status" = "complete" ]; then
+        echo "Session already complete."
+        echo ""
+        echo "Next steps:"
+        echo "  Extract scope: ./interrogate.sh --extract $SESSION_NAME"
+        echo "  Full build:    ./interrogate.sh $SESSION_NAME"
+        echo "  Start fresh:   rm -rf $SESSION_DIR && ./interrogate.sh --interrogate-only $SESSION_NAME"
+        exit 0
+      fi
+
+      echo "Resuming existing session..."
+      echo "Conversation file: $CONV_FILE"
+      echo ""
+
+      # Show where we left off
+      last_q=$(grep "^\*\*Claude:\*\*" "$CONV_FILE" 2>/dev/null | tail -1 | sed 's/\*\*Claude:\*\* //')
+      if [ -n "$last_q" ]; then
+        echo "Last question: $last_q"
+        echo ""
+      fi
+    else
+      echo "Starting new session..."
+      mkdir -p "$SESSION_DIR"
+      echo "Session directory: $SESSION_DIR"
+      echo ""
+    fi
+
+    # Launch Claude with the interrogate command
+    echo "Launching interrogation..."
+    echo "---"
+    echo ""
+
+    # Run interactively (no --print flag - this is a conversation)
+    claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
+
+    # After completion, show next steps
+    echo ""
+    echo "---"
+    echo ""
+
+    if [ -f "$CONV_FILE" ]; then
+      status=$(grep "^Status:" "$CONV_FILE" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
+      if [ "$status" = "complete" ]; then
+        echo "✅ Interrogation complete"
+        echo ""
+        echo "Conversation saved: $CONV_FILE"
+        echo ""
+        echo "Next steps:"
+        echo "  Extract scope: ./interrogate.sh --extract $SESSION_NAME"
+        echo "  Full build:    ./interrogate.sh $SESSION_NAME"
+      else
+        echo "Session paused."
+        echo ""
+        echo "Resume with: ./interrogate.sh --interrogate-only $SESSION_NAME"
+      fi
+    fi
+    exit 0
+    ;;
 esac
 
-# Default: Initialize or resume session
-echo "=== Interrogate: $SESSION_NAME ==="
-echo ""
-
-if [ -f "$CONV_FILE" ]; then
-  # Check if already complete
-  status=$(grep "^Status:" "$CONV_FILE" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
-  if [ "$status" = "complete" ]; then
-    echo "Session already complete."
-    echo ""
-    echo "Next steps:"
-    echo "  Extract scope: ./interrogate.sh --extract $SESSION_NAME"
-    echo "  Full build:    ./interrogate.sh --build $SESSION_NAME"
-    echo "  Start fresh:   rm -rf $SESSION_DIR && ./interrogate.sh $SESSION_NAME"
-    exit 0
-  fi
-
-  echo "Resuming existing session..."
-  echo "Conversation file: $CONV_FILE"
-  echo ""
-
-  # Show where we left off
-  last_q=$(grep "^\*\*Claude:\*\*" "$CONV_FILE" 2>/dev/null | tail -1 | sed 's/\*\*Claude:\*\* //')
-  if [ -n "$last_q" ]; then
-    echo "Last question: $last_q"
-    echo ""
-  fi
-else
-  echo "Starting new session..."
-  mkdir -p "$SESSION_DIR"
-  echo "Session directory: $SESSION_DIR"
-  echo ""
-fi
-
-# Launch Claude with the interrogate command
-echo "Launching interrogation..."
-echo "---"
-echo ""
-
-# Run interactively (no --print flag - this is a conversation)
-claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
-
-# After completion, show next steps
-echo ""
-echo "---"
-echo ""
-
-if [ -f "$CONV_FILE" ]; then
-  status=$(grep "^Status:" "$CONV_FILE" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
-  if [ "$status" = "complete" ]; then
-    echo "✅ Interrogation complete"
-    echo ""
-    echo "Conversation saved: $CONV_FILE"
-    echo ""
-    echo "Next steps:"
-    echo "  Extract scope: ./interrogate.sh --extract $SESSION_NAME"
-    echo "  Full build:    ./interrogate.sh --build $SESSION_NAME"
-  else
-    echo "Session paused."
-    echo ""
-    echo "Resume with: ./interrogate.sh $SESSION_NAME"
-  fi
-fi
+# Default: Run full build pipeline (--build is now the default)
+build_full "$SESSION_NAME"
