@@ -49,6 +49,81 @@ PIPELINE_STATE_DIR=""
 PIPELINE_STATE_FILE=""
 
 # ============================================================
+# Database Helper Functions
+# ============================================================
+
+# Get database connection string from .env
+get_db_connection() {
+  if [ -f ".env" ]; then
+    local db_url
+    db_url=$(grep "^DATABASE_URL=" .env | cut -d= -f2-)
+    if [ -n "$db_url" ]; then
+      echo "$db_url"
+      return 0
+    fi
+    # Fallback to individual vars
+    local host port user pass db
+    host=$(grep "^POSTGRES_HOST=" .env | cut -d= -f2-)
+    port=$(grep "^POSTGRES_PORT=" .env | cut -d= -f2-)
+    user=$(grep "^POSTGRES_USER=" .env | cut -d= -f2-)
+    pass=$(grep "^POSTGRES_PASSWORD=" .env | cut -d= -f2-)
+    db=$(grep "^POSTGRES_DB=" .env | cut -d= -f2-)
+    if [ -n "$host" ] && [ -n "$user" ] && [ -n "$db" ]; then
+      echo "postgresql://$user:$pass@$host:${port:-5432}/$db"
+      return 0
+    fi
+  fi
+  echo ""
+  return 1
+}
+
+# Execute a database query and return results
+db_query() {
+  local query="$1"
+  local conn
+  conn=$(get_db_connection)
+  if [ -z "$conn" ]; then
+    echo "0"
+    return 1
+  fi
+  psql "$conn" -t -A -c "$query" 2>/dev/null || echo "0"
+}
+
+# Execute a database query and return scalar result
+db_query_scalar() {
+  local query="$1"
+  local result
+  result=$(db_query "$query")
+  echo "${result:-0}"
+}
+
+# Check if database is available
+db_available() {
+  local conn
+  conn=$(get_db_connection)
+  if [ -z "$conn" ]; then
+    return 1
+  fi
+  psql "$conn" -c "SELECT 1" &>/dev/null
+  return $?
+}
+
+# Get session summary from database
+get_session_summary() {
+  local session="$1"
+  if db_available; then
+    local features journeys user_types integrations
+    features=$(db_query_scalar "SELECT COUNT(*) FROM feature WHERE session_name = '$session' AND status = 'confirmed'")
+    journeys=$(db_query_scalar "SELECT COUNT(*) FROM journey WHERE session_name = '$session' AND confirmation_status = 'confirmed'")
+    user_types=$(db_query_scalar "SELECT COUNT(*) FROM user_type WHERE session_name = '$session'")
+    integrations=$(db_query_scalar "SELECT COUNT(*) FROM integration WHERE session_name = '$session' AND status = 'confirmed'")
+    echo "Features: $features, Journeys: $journeys, User Types: $user_types, Integrations: $integrations"
+  else
+    echo "Database not available"
+  fi
+}
+
+# ============================================================
 # State Management Functions
 # ============================================================
 
@@ -286,14 +361,21 @@ precheck_step_4() {
 }
 
 precheck_step_5() {
-  # extract - conversation file must exist
+  # extract - check database for confirmed features
+  # First check conversation file exists and is complete
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
   if [ -f "$conv" ]; then
-    # Check if interrogation is complete
     local status
     status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
     if [ "$status" = "complete" ]; then
-      return 0
+      # Also verify database has confirmed features
+      local feature_count
+      feature_count=$(db_query_scalar "SELECT COUNT(*) FROM feature WHERE session_name = '$PIPELINE_SESSION' AND status = 'confirmed'")
+      if [ "$feature_count" -gt 0 ]; then
+        return 0
+      fi
+      echo "No confirmed features in database for session: $PIPELINE_SESSION"
+      return 1
     fi
     echo "Interrogation not complete"
     return 1
@@ -411,13 +493,21 @@ postcheck_step_3() {
 }
 
 postcheck_step_4() {
-  # interrogate - conversation file exists and is complete
+  # interrogate - conversation file exists, is complete, and DB has confirmed features
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
   if [ -f "$conv" ]; then
     local status
     status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
     if [ "$status" = "complete" ]; then
-      return 0
+      # Verify database has confirmed features
+      local feature_count
+      feature_count=$(db_query_scalar "SELECT COUNT(*) FROM feature WHERE session_name = '$PIPELINE_SESSION' AND status = 'confirmed'")
+      if [ "$feature_count" -gt 0 ]; then
+        echo "Session summary: $(get_session_summary "$PIPELINE_SESSION")"
+        return 0
+      fi
+      echo "No confirmed features in database"
+      return 1
     fi
     echo "Interrogation not complete (status: $status)"
     return 1
@@ -427,12 +517,24 @@ postcheck_step_4() {
 }
 
 postcheck_step_5() {
-  # extract - scope document exists and has content
+  # extract - scope document and new files exist
   local scope=".claude/scopes/$PIPELINE_SESSION/00_scope_document.md"
+  local tech_ops=".claude/scopes/$PIPELINE_SESSION/03_technical_ops.md"
+  local test_plan=".claude/scopes/$PIPELINE_SESSION/08_test_plan.md"
+
   if [ -f "$scope" ]; then
     local lines
     lines=$(wc -l < "$scope")
     if [ "$lines" -gt 50 ]; then
+      # Check for new required files
+      if [ ! -f "$tech_ops" ]; then
+        echo "Technical ops file not created: $tech_ops"
+        return 1
+      fi
+      if [ ! -f "$test_plan" ]; then
+        echo "Test plan file not created: $test_plan"
+        return 1
+      fi
       return 0
     fi
     echo "Scope document too short ($lines lines, expected >50)"
