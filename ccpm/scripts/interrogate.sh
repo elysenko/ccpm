@@ -9,7 +9,7 @@
 #   ./interrogate.sh --repo [name]            # Step 3: Ensure GitHub repo exists
 #   ./interrogate.sh --interrogate-only <name> # Step 4: Run Q&A conversation
 #   ./interrogate.sh --extract <name>         # Step 5: Extract scope document
-#   ./interrogate.sh --credentials <name>     # Step 6: Gather credentials
+#   ./interrogate.sh --credentials [name]     # Step 6: Gather credentials (auto-detects scope)
 #   ./interrogate.sh --roadmap <name>         # Step 7: Generate MVP roadmap
 #   ./interrogate.sh --decompose <name>       # Step 8: Decompose into PRDs
 #   ./interrogate.sh --batch <name>           # Step 9: Batch process PRDs
@@ -56,7 +56,7 @@ Individual Steps (run independently):
    3. ./interrogate.sh --repo [name]           Ensure GitHub repo exists
    4. ./interrogate.sh --interrogate-only <name>  Run structured Q&A conversation
    5. ./interrogate.sh --extract <name>        Extract scope document
-   6. ./interrogate.sh --credentials <name>    Gather integration credentials
+   6. ./interrogate.sh --credentials [name]    Gather integration credentials (auto-detects)
    7. ./interrogate.sh --roadmap <name>        Generate MVP roadmap
    8. ./interrogate.sh --decompose <name>      Decompose into PRDs (alias: --prds)
    9. ./interrogate.sh --batch <name>          Batch process PRDs
@@ -309,8 +309,31 @@ extract_findings() {
 # Gather credentials for integrations
 gather_credentials() {
   local name="$1"
+
+  # Auto-detect scope if not provided
+  if [ -z "$name" ]; then
+    local scope_count
+    scope_count=$(ls -1d .claude/scopes/*/ 2>/dev/null | wc -l)
+
+    if [ "$scope_count" -eq 0 ]; then
+      echo "❌ No scopes found in .claude/scopes/"
+      echo ""
+      echo "First run: ./interrogate.sh --extract <session-name>"
+      exit 1
+    elif [ "$scope_count" -eq 1 ]; then
+      # Use the only scope
+      name=$(ls -1d .claude/scopes/*/ 2>/dev/null | head -1 | xargs basename)
+      echo "Using scope: $name"
+    else
+      # Use most recently modified scope
+      name=$(ls -1td .claude/scopes/*/ 2>/dev/null | head -1 | xargs basename)
+      echo "Multiple scopes found, using most recent: $name"
+    fi
+    echo ""
+  fi
+
   local scope=".claude/scopes/$name/04_technical_architecture.md"
-  local creds_state=".claude/scopes/$name/credentials.yaml"
+  local creds_state=".claude/credentials.yaml"
 
   if [ ! -f "$scope" ]; then
     echo "❌ Scope not found: $name"
@@ -319,8 +342,9 @@ gather_credentials() {
     exit 1
   fi
 
-  echo "=== Gathering Credentials: $name ==="
+  echo "=== Gathering Credentials ==="
   echo ""
+  echo "Scope: $name"
   echo "This will collect credentials for integrations in your scope document..."
   echo ""
 
@@ -331,13 +355,12 @@ gather_credentials() {
   echo "---"
   echo ""
 
-  if [ -f ".env" ] && [ -f "$creds_state" ]; then
+  if [ -f ".env" ]; then
     echo "✅ Credentials gathered"
     echo ""
     echo "Files created:"
     echo "  .env (actual values - gitignored)"
     echo "  .env.template (template for sharing)"
-    echo "  $creds_state (metadata)"
     echo ""
     echo "Next steps:"
     echo "  1. Review .env for accuracy"
@@ -345,7 +368,7 @@ gather_credentials() {
   else
     echo "⚠️  Credential gathering incomplete"
     echo ""
-    echo "Resume with: ./interrogate.sh --credentials $name"
+    echo "Resume with: ./interrogate.sh --credentials"
   fi
 }
 
@@ -797,11 +820,7 @@ case "$1" in
     exit 0
     ;;
   --credentials|-c)
-    if [ -z "$2" ]; then
-      echo "❌ Error: Session name required"
-      echo "Usage: ./interrogate.sh --credentials <session-name>"
-      exit 1
-    fi
+    # Session name is optional - auto-detects if not provided
     gather_credentials "$2"
     exit 0
     ;;
