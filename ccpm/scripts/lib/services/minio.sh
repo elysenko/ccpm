@@ -25,7 +25,7 @@ deploy_minio() {
   fi
 
   # Apply MinIO manifest
-  local minio_yaml="$PROJECT_ROOT/k8s/minio.yaml"
+  local minio_yaml="$PROJECT_ROOT/.claude/k8s/minio.yaml"
   if [[ ! -f "$minio_yaml" ]]; then
     log_error "MinIO manifest not found: $minio_yaml"
     return 1
