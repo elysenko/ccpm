@@ -666,9 +666,8 @@ run_step_3() {
 }
 
 run_step_4() {
-  # interrogate - Run Structured Q&A
-  # This step is INTERACTIVE and requires user input across multiple turns.
-  # It cannot complete in a single script invocation.
+  # interrogate - Run Structured Q&A via /dr-full
+  # Uses the deep research refine+launch command for structured discovery
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
 
   mkdir -p ".claude/interrogations/$PIPELINE_SESSION"
@@ -683,29 +682,12 @@ run_step_4() {
     fi
   fi
 
-  # Interrogation needs user interaction - pause pipeline
-  echo ""
-  echo "════════════════════════════════════════════════════════════════"
-  echo "  INTERACTIVE STEP: Interrogation requires your input"
-  echo "════════════════════════════════════════════════════════════════"
-  echo ""
-  echo "The interrogation step is a conversation that needs your input."
-  echo ""
-  echo "Please complete it by running:"
-  echo ""
-  echo "    ./interrogate.sh --interrogate-only $PIPELINE_SESSION"
-  echo ""
-  echo "Once complete, resume the pipeline with:"
-  echo ""
-  echo "    ./interrogate.sh --resume $PIPELINE_SESSION"
-  echo ""
-  echo "════════════════════════════════════════════════════════════════"
-  echo ""
-
-  # Return special code to indicate pause (not failure)
-  # Using return code 42 as "paused for interaction"
-  # NOTE: Must use return (not exit) because step 4 runs directly, not in subshell
-  return 42
+  # Run /dr-full to refine the research question and auto-launch deep research
+  echo "Running structured discovery via /dr-full..."
+  echo "Session: $PIPELINE_SESSION"
+  echo "---"
+  claude --dangerously-skip-permissions "/dr-full $PIPELINE_SESSION"
+  echo "---"
 }
 
 run_step_5() {
@@ -1060,29 +1042,9 @@ execute_step() {
   local run_exit_code
   LAST_ERROR_OUTPUT=""
 
-  # Step 4 is interactive - run directly so return codes work and output shows immediately
-  # Other steps run in subshell to capture output
-  if [ "$step_num" -eq 4 ]; then
-    $run_func
-    run_exit_code=$?
-
-    # Handle special return code 42 = paused for interaction
-    if [ "$run_exit_code" -eq 42 ]; then
-      update_step_status "$step_num" "paused"
-      return 42
-    fi
-  else
-    # Run in subshell to capture output while preserving exit code
-    run_error=$($run_func 2>&1)
-    run_exit_code=$?
-
-    # Handle special exit code 42 = paused for interaction (other steps)
-    if [ "$run_exit_code" -eq 42 ]; then
-      echo "$run_error"
-      update_step_status "$step_num" "paused"
-      return 42
-    fi
-  fi
+  # Run in subshell to capture output while preserving exit code
+  run_error=$($run_func 2>&1)
+  run_exit_code=$?
 
   if [ "$run_exit_code" -ne 0 ]; then
     if [ "$is_skippable" = true ]; then
@@ -1093,16 +1055,6 @@ execute_step() {
     else
       echo "❌ Step execution failed"
       echo "$run_error"
-
-      # Skip self-healing for interactive steps (step 4)
-      if [ "$step_num" -eq 4 ]; then
-        echo ""
-        echo "Step 4 is interactive and cannot be auto-fixed."
-        echo "Please complete the interrogation manually."
-        update_step_status "$step_num" "failed"
-        add_error "Step $step_num ($step_name) requires manual interaction"
-        return 1
-      fi
 
       # Try auto-fix for non-skippable steps
       if try_fix_step "$step_num" "${LAST_ERROR_OUTPUT:-$run_error}"; then
@@ -1168,16 +1120,6 @@ run_pipeline_from() {
   for ((i=start_step; i<=TOTAL_STEPS; i++)); do
     execute_step "$i"
     local step_result=$?
-
-    # Handle special exit code 42 = paused for interaction
-    if [ "$step_result" -eq 42 ]; then
-      echo ""
-      echo "Pipeline paused at step $i for user interaction."
-      echo ""
-      echo "State saved: .claude/pipeline/$PIPELINE_SESSION/state.yaml"
-      # Exit cleanly (0) since this is an expected pause, not a failure
-      exit 0
-    fi
 
     # Handle failure
     if [ "$step_result" -ne 0 ]; then
