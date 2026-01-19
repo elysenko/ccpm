@@ -659,6 +659,13 @@ setup_services() {
   echo "Project: $project_name"
   echo "Namespace: $project_name"
   echo ""
+  echo "Initializing services..."
+  echo "  - PostgreSQL (database)"
+  echo "  - MinIO (object storage)"
+  echo "  - CloudBeaver (database UI)"
+  echo ""
+  echo "This may take a few minutes while containers are pulled and started."
+  echo ""
 
   # Run setup-service.sh for all services
   ./.claude/scripts/setup-service.sh all "$project_name" --project="$project_name"
@@ -675,6 +682,7 @@ setup_services() {
   echo "✅ Services ready"
   echo "   PostgreSQL: $project_name namespace"
   echo "   MinIO: $project_name namespace"
+  echo "   CloudBeaver: $project_name namespace"
 }
 
 # Full pipeline using pipeline-lib.sh
