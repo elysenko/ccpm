@@ -555,8 +555,8 @@ run_step_2() {
 }
 
 run_step_3() {
-  # repo - Ensure GitHub Repository
-  ./.claude/scripts/ensure-github-repo.sh
+  # repo - Ensure GitHub Repository (non-interactive: private, auto-push)
+  ./.claude/scripts/ensure-github-repo.sh --private --push
 }
 
 run_step_4() {
