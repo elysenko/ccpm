@@ -226,6 +226,10 @@ update_step_status() {
     if [ "$step_num" -eq "$TOTAL_STEPS" ]; then
       sed -i "s/^status: .*/status: complete/" "$PIPELINE_STATE_FILE"
     fi
+  elif [ "$status" = "paused" ]; then
+    # Step is paused for user interaction
+    sed -i "s/^current_step: .*/current_step: $step_num/" "$PIPELINE_STATE_FILE"
+    sed -i "s/^status: .*/status: paused/" "$PIPELINE_STATE_FILE"
   elif [ "$status" = "failed" ]; then
     sed -i "s/^status: .*/status: failed/" "$PIPELINE_STATE_FILE"
   fi
@@ -663,14 +667,44 @@ run_step_3() {
 
 run_step_4() {
   # interrogate - Run Structured Q&A
+  # This step is INTERACTIVE and requires user input across multiple turns.
+  # It cannot complete in a single script invocation.
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
 
   mkdir -p ".claude/interrogations/$PIPELINE_SESSION"
 
-  echo "Starting/resuming interrogation..."
-  echo "---"
-  claude --dangerously-skip-permissions "/pm:interrogate $PIPELINE_SESSION"
-  echo "---"
+  # Check if interrogation is already complete
+  if [ -f "$conv" ]; then
+    local status
+    status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
+    if [ "$status" = "complete" ]; then
+      echo "Interrogation already complete."
+      return 0
+    fi
+  fi
+
+  # Interrogation needs user interaction - pause pipeline
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+  echo "  INTERACTIVE STEP: Interrogation requires your input"
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+  echo "The interrogation step is a conversation that needs your input."
+  echo ""
+  echo "Please complete it by running:"
+  echo ""
+  echo "    ./interrogate.sh --interrogate-only $PIPELINE_SESSION"
+  echo ""
+  echo "Once complete, resume the pipeline with:"
+  echo ""
+  echo "    ./interrogate.sh --resume $PIPELINE_SESSION"
+  echo ""
+  echo "════════════════════════════════════════════════════════════════"
+  echo ""
+
+  # Exit with special code to indicate pause (not failure)
+  # Using exit code 42 as "paused for interaction"
+  exit 42
 }
 
 run_step_5() {
@@ -1022,8 +1056,22 @@ execute_step() {
   # Run the step implementation
   local run_func="run_step_$step_num"
   local run_error
+  local run_exit_code
   LAST_ERROR_OUTPUT=""
-  if ! run_error=$($run_func 2>&1); then
+
+  # Run in subshell to capture output while preserving exit code
+  run_error=$($run_func 2>&1)
+  run_exit_code=$?
+
+  # Handle special exit code 42 = paused for interaction
+  if [ "$run_exit_code" -eq 42 ]; then
+    echo "$run_error"
+    update_step_status "$step_num" "paused"
+    # Return 42 to signal pause to the caller
+    return 42
+  fi
+
+  if [ "$run_exit_code" -ne 0 ]; then
     if [ "$is_skippable" = true ]; then
       echo "⚠️ Step failed but is optional - marking skipped"
       update_step_status "$step_num" "skipped"
@@ -1032,6 +1080,16 @@ execute_step() {
     else
       echo "❌ Step execution failed"
       echo "$run_error"
+
+      # Skip self-healing for interactive steps (step 4)
+      if [ "$step_num" -eq 4 ]; then
+        echo ""
+        echo "Step 4 is interactive and cannot be auto-fixed."
+        echo "Please complete the interrogation manually."
+        update_step_status "$step_num" "failed"
+        add_error "Step $step_num ($step_name) requires manual interaction"
+        return 1
+      fi
 
       # Try auto-fix for non-skippable steps
       if try_fix_step "$step_num" "${LAST_ERROR_OUTPUT:-$run_error}"; then
@@ -1094,7 +1152,21 @@ run_pipeline_from() {
   echo ""
 
   for ((i=start_step; i<=TOTAL_STEPS; i++)); do
-    if ! execute_step "$i"; then
+    execute_step "$i"
+    local step_result=$?
+
+    # Handle special exit code 42 = paused for interaction
+    if [ "$step_result" -eq 42 ]; then
+      echo ""
+      echo "Pipeline paused at step $i for user interaction."
+      echo ""
+      echo "State saved: .claude/pipeline/$PIPELINE_SESSION/state.yaml"
+      # Exit cleanly (0) since this is an expected pause, not a failure
+      exit 0
+    fi
+
+    # Handle failure
+    if [ "$step_result" -ne 0 ]; then
       echo ""
       echo "❌ Pipeline stopped at step $i"
       echo ""
@@ -1140,6 +1212,7 @@ show_pipeline_status() {
     case "$status" in
       complete) indicator="✓" ;;
       running) indicator="►" ;;
+      paused) indicator="⏸" ;;
       failed) indicator="✗" ;;
       skipped) indicator="⊘" ;;
     esac
