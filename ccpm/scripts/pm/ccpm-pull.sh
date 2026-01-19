@@ -44,7 +44,7 @@ echo "Updating canonical CCPM repo..."
 echo ""
 
 # Directories to sync (framework components)
-SYNC_DIRS=("commands" "scripts" "rules" "agents" "hooks" "schemas" "services" "testing" "templates")
+SYNC_DIRS=("commands" "scripts" "rules" "agents" "hooks" "schemas" "services" "testing" "templates" "k8s")
 
 # Files to sync
 SYNC_FILES=("ccpm.config")
