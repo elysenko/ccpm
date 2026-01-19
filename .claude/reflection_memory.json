@@ -1,0 +1,72 @@
+{
+  "version": "1.0",
+  "last_updated": "2026-01-19",
+  "description": "Cross-project learning from QA failures. Updated after each research project.",
+  "failure_patterns": [
+    {
+      "pattern_id": "FP-001",
+      "category": "CD",
+      "description": "Dropping qualifiers when citing statistics (up to, approximately, under conditions)",
+      "frequency": 0,
+      "first_seen": null,
+      "last_seen": null,
+      "prevention_rule": "Always preserve qualifiers: 'up to', 'approximately', 'under X conditions', 'in Y contexts'",
+      "example_failures": []
+    },
+    {
+      "pattern_id": "FP-002",
+      "category": "IV",
+      "description": "News articles citing same press release counted as independent sources",
+      "frequency": 0,
+      "first_seen": null,
+      "last_seen": null,
+      "prevention_rule": "For breaking news, trace all articles to original source before counting independence",
+      "example_failures": []
+    },
+    {
+      "pattern_id": "FP-003",
+      "category": "NE",
+      "description": "Mixing fiscal year and calendar year data without noting discrepancy",
+      "frequency": 0,
+      "first_seen": null,
+      "last_seen": null,
+      "prevention_rule": "Always note FY vs CY; normalize to consistent timeframe or flag explicitly",
+      "example_failures": []
+    },
+    {
+      "pattern_id": "FP-004",
+      "category": "SD",
+      "description": "Using outdated data for 'current state' claims",
+      "frequency": 0,
+      "first_seen": null,
+      "last_seen": null,
+      "prevention_rule": "Verify publication date; flag if >12 months old for fast-moving topics",
+      "example_failures": []
+    },
+    {
+      "pattern_id": "FP-005",
+      "category": "CM",
+      "description": "Using definitive language without strong evidence (clearly, proves, definitely)",
+      "frequency": 0,
+      "first_seen": null,
+      "last_seen": null,
+      "prevention_rule": "Flag definitive language for evidence strength check; prefer 'suggests', 'indicates'",
+      "example_failures": []
+    }
+  ],
+  "prevention_checklist": [
+    "Preserve all statistical qualifiers (up to, approximately, under conditions)",
+    "Trace news articles to original source for independence check",
+    "Verify fiscal year vs calendar year alignment",
+    "Check publication date against 'current' claims",
+    "Match units when combining multi-source data",
+    "Flag definitive language (clearly, proves, definitely) for evidence check",
+    "Verify claim confidence matches evidence strength"
+  ],
+  "stats": {
+    "total_failures_logged": 0,
+    "total_projects_analyzed": 0,
+    "most_common_category": null,
+    "improvement_trend": null
+  }
+}
