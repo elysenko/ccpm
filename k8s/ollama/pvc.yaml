@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  namespace: robert
+  labels:
+    app: ollama
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      # Phi-3 mini: ~2.3GB, Qwen2 1.5B: ~1GB
+      # Allow room for multiple models
+      storage: 10Gi
+  # Use default storage class (local-path on k3s)
+  # storageClassName: local-path

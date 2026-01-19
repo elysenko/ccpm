@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-pull-model
+  namespace: robert
+  labels:
+    app: ollama
+spec:
+  ttlSecondsAfterFinished: 300  # Cleanup after 5 min
+  template:
+    spec:
+      containers:
+      - name: pull-model
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for Ollama to be ready..."
+          until curl -s http://ollama:11434/api/tags > /dev/null 2>&1; do
+            echo "Ollama not ready, waiting..."
+            sleep 5
+          done
+          echo "Ollama is ready. Pulling model..."
+
+          # Pull Qwen2 1.5B (fast, good for trigger decisions, ~1GB)
+          curl -X POST http://ollama:11434/api/pull \
+            -H "Content-Type: application/json" \
+            -d '{"name": "qwen2:1.5b"}'
+
+          echo ""
+          echo "Model pull complete. Verifying..."
+          curl -s http://ollama:11434/api/tags | head -20
+
+          # Optional: Also pull Phi-3 mini for comparison
+          # curl -X POST http://ollama:11434/api/pull \
+          #   -H "Content-Type: application/json" \
+          #   -d '{"name": "phi3:mini"}'
+
+          echo "Done!"
+      restartPolicy: OnFailure
+      nodeSelector:
+        kubernetes.io/arch: arm64

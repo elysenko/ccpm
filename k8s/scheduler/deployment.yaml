@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meeting-scheduler
+  namespace: robert
+  labels:
+    app: meeting-scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: meeting-scheduler
+  template:
+    metadata:
+      labels:
+        app: meeting-scheduler
+    spec:
+      serviceAccountName: meeting-scheduler
+      containers:
+      - name: scheduler
+        image: ubuntu.desmana-truck.ts.net:30500/meeting-scheduler:latest
+        imagePullPolicy: Always
+        envFrom:
+        - secretRef:
+            name: meeting-scheduler-secrets
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+      restartPolicy: Always

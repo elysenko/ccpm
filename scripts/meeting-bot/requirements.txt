@@ -1,0 +1,8 @@
+playwright>=1.40.0
+faster-whisper>=1.0.0
+psycopg2-binary
+
+# Listen-only mode (streaming ASR + trigger)
+vosk>=0.3.45
+sounddevice>=0.4.6
+httpx>=0.25.0

@@ -1,0 +1,20 @@
+#!/usr/bin/pulseaudio -nF
+.fail
+
+# Create null sink for browser audio capture
+load-module module-null-sink sink_name=browser_audio sink_properties=device.description="Browser_Audio"
+
+# Set as default sink - all audio goes here
+set-default-sink browser_audio
+
+# Unix socket for container communication (anonymous auth for simplicity)
+load-module module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse/native
+
+# Stream management modules
+load-module module-stream-restore
+load-module module-card-restore
+
+# Keep running even when no audio is playing
+load-module module-always-sink
+
+.nofail

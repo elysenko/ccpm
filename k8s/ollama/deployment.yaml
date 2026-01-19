@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: robert
+  labels:
+    app: ollama
+    component: trigger-llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  strategy:
+    type: Recreate  # Models are large, avoid duplicate downloads
+  template:
+    metadata:
+      labels:
+        app: ollama
+        component: trigger-llm
+    spec:
+      containers:
+      - name: ollama
+        image: ollama/ollama:latest
+        ports:
+        - containerPort: 11434
+          name: http
+        env:
+        # Keep models loaded in memory for fast inference
+        - name: OLLAMA_KEEP_ALIVE
+          value: "24h"
+        # Number of parallel requests (increase for GPU)
+        - name: OLLAMA_NUM_PARALLEL
+          value: "2"
+        # Limit context size for trigger decisions (saves memory)
+        - name: OLLAMA_MAX_LOADED_MODELS
+          value: "1"
+        # Reduce context window to save memory (2k is enough for trigger)
+        - name: OLLAMA_NUM_CTX
+          value: "2048"
+        volumeMounts:
+        - name: ollama-data
+          mountPath: /root/.ollama
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+        # Liveness: is Ollama responding?
+        livenessProbe:
+          httpGet:
+            path: /api/tags
+            port: 11434
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+        # Readiness: is model loaded?
+        readinessProbe:
+          httpGet:
+            path: /api/tags
+            port: 11434
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: ollama-data
+        persistentVolumeClaim:
+          claimName: ollama-models
+
+      # --- ARM64 / GPU Node Selection ---
+      # Uncomment ONE of the following based on your setup:
+
+      # Option 1: ARM64 CPU-only (default)
+      nodeSelector:
+        kubernetes.io/arch: arm64
+
+      # Option 2: GPU node (uncomment when GPU available)
+      # nodeSelector:
+      #   kubernetes.io/arch: amd64
+      #   nvidia.com/gpu.present: "true"
+      #
+      # resources:
+      #   limits:
+      #     nvidia.com/gpu: 1
+
+      tolerations:
+      # Tolerate ARM64 nodes
+      - key: "kubernetes.io/arch"
+        operator: "Equal"
+        value: "arm64"
+        effect: "NoSchedule"
+      # Tolerate GPU nodes (for future)
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"

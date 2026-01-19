@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: meeting-scheduler
+  namespace: robert
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: meeting-scheduler-role
+  namespace: robert
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: meeting-scheduler-binding
+  namespace: robert
+subjects:
+- kind: ServiceAccount
+  name: meeting-scheduler
+  namespace: robert
+roleRef:
+  kind: Role
+  name: meeting-scheduler-role
+  apiGroup: rbac.authorization.k8s.io
