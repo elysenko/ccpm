@@ -107,14 +107,77 @@ if [[ -z "$GH_USER" ]]; then
   exit 1
 fi
 
-FULL_REPO="$GH_USER/$REPO_NAME"
+# Function to find available repo name (appends _1, _2, etc. if name taken)
+find_available_repo_name() {
+  local base_name="$1"
+  local candidate="$base_name"
+  local suffix=1
+
+  while gh repo view "$GH_USER/$candidate" &> /dev/null; do
+    # Repo exists - check if it's already ours (same origin)
+    local current_origin=$(git remote get-url origin 2>/dev/null || echo "")
+    if [[ "$current_origin" == *"$GH_USER/$candidate"* ]]; then
+      # This repo is already ours, use it
+      echo "$candidate"
+      return 0
+    fi
+
+    # Try next suffix
+    candidate="${base_name}_${suffix}"
+    ((suffix++))
+
+    # Safety limit
+    if [[ $suffix -gt 100 ]]; then
+      echo ""
+      return 1
+    fi
+  done
+
+  echo "$candidate"
+  return 0
+}
 
 echo "=== Ensure GitHub Repository ==="
 echo ""
+
+# Check if we already have a remote origin configured that works
+current_origin=$(git remote get-url origin 2>/dev/null || echo "")
+if [[ -n "$current_origin" ]] && [[ "$current_origin" == *"github.com"* ]]; then
+  # Extract repo name from origin
+  origin_repo=$(echo "$current_origin" | sed 's|.*github.com[:/]||' | sed 's|\.git$||')
+  if gh repo view "$origin_repo" &> /dev/null; then
+    echo "✓ Repository exists: https://github.com/$origin_repo"
+    echo "✓ Remote origin already configured"
+    FULL_REPO="$origin_repo"
+    REPO_NAME=$(basename "$FULL_REPO")
+
+    echo ""
+    echo "Repository ready: https://github.com/$FULL_REPO"
+    exit 0
+  fi
+fi
+
+# Find an available repo name
+ORIGINAL_NAME="$REPO_NAME"
+REPO_NAME=$(find_available_repo_name "$ORIGINAL_NAME")
+
+if [[ -z "$REPO_NAME" ]]; then
+  echo "❌ Could not find available repository name after 100 attempts"
+  exit 1
+fi
+
+if [[ "$REPO_NAME" != "$ORIGINAL_NAME" ]]; then
+  echo "Repository name '$ORIGINAL_NAME' is taken."
+  echo "Using available name: $REPO_NAME"
+  echo ""
+fi
+
+FULL_REPO="$GH_USER/$REPO_NAME"
+
 echo "Repository: $FULL_REPO"
 echo ""
 
-# Check if repo already exists
+# Check if repo already exists (it's ours from find_available_repo_name)
 if gh repo view "$FULL_REPO" &> /dev/null; then
   echo "✓ Repository exists: https://github.com/$FULL_REPO"
 
