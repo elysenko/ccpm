@@ -218,27 +218,26 @@ if [ -n "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
     gh pr edit "$PR_NUMBER" --body "$PR_BODY" 2>/dev/null || true
 else
     echo "Creating new PR..."
-    # Create PR and capture URL properly (redirect stderr to avoid mixing warnings)
+    # Create PR - use || true to prevent set -e from exiting
     PR_URL=$(gh pr create \
         --title "$PR_TITLE" \
         --body "$PR_BODY" \
         --base "$MAIN_BRANCH" \
-        --head "$BRANCH_NAME" \
-        --json url -q .url 2>/dev/null)
+        --head "$BRANCH_NAME" 2>&1) || true
 
-    # If json output failed, try without json flag
-    if [ -z "$PR_URL" ]; then
-        gh pr create \
-            --title "$PR_TITLE" \
-            --body "$PR_BODY" \
-            --base "$MAIN_BRANCH" \
-            --head "$BRANCH_NAME" 2>&1 | tail -1 | grep -o 'https://[^ ]*' > /tmp/pr_url.txt || true
-        PR_URL=$(cat /tmp/pr_url.txt 2>/dev/null || echo "")
-    fi
-
-    # Fallback: try to get PR URL from view
-    if [ -z "$PR_URL" ]; then
-        PR_URL=$(gh pr view --json url -q .url 2>/dev/null || echo "(check GitHub for PR)")
+    # Extract URL from output if present
+    if echo "$PR_URL" | grep -q "https://"; then
+        PR_URL=$(echo "$PR_URL" | grep -o 'https://github.com[^ ]*' | head -1)
+    else
+        # PR creation may have failed - show the error
+        echo "⚠️  PR creation returned: $PR_URL"
+        # Try to get PR URL if it was created anyway
+        PR_URL=$(gh pr view --json url -q .url 2>/dev/null || echo "")
+        if [ -z "$PR_URL" ]; then
+            echo "PR not created. You may need to create it manually at:"
+            echo "  https://github.com/elysenko/ccpm/pull/new/$BRANCH_NAME"
+            PR_URL="(manual creation needed)"
+        fi
     fi
 fi
 
@@ -249,19 +248,39 @@ PR_NUMBER=$(gh pr view --json number -q .number 2>/dev/null || echo "")
 MERGE_STATUS=""
 if [ -n "$PR_NUMBER" ]; then
     echo ""
-    echo "Merging PR #$PR_NUMBER..."
+    echo "Attempting to merge PR #$PR_NUMBER..."
 
-    # Try to merge with squash
-    if gh pr merge "$PR_NUMBER" --squash --delete-branch 2>/dev/null; then
-        MERGE_STATUS="merged"
+    # Capture merge output to show actual errors
+    MERGE_OUTPUT=$(gh pr merge "$PR_NUMBER" --squash --delete-branch 2>&1) && MERGE_RC=$? || MERGE_RC=$?
+
+    if [ $MERGE_RC -eq 0 ]; then
+        MERGE_STATUS="✅ merged and branch deleted"
     else
-        # If merge fails, try to enable auto-merge
-        if gh pr merge "$PR_NUMBER" --squash --auto 2>/dev/null; then
-            MERGE_STATUS="auto-merge enabled"
+        echo "  Direct merge failed: $MERGE_OUTPUT"
+
+        # Try auto-merge (requires repo setting enabled)
+        echo "  Trying auto-merge..."
+        AUTO_OUTPUT=$(gh pr merge "$PR_NUMBER" --squash --auto 2>&1) && AUTO_RC=$? || AUTO_RC=$?
+
+        if [ $AUTO_RC -eq 0 ]; then
+            MERGE_STATUS="⏳ auto-merge enabled (will merge when checks pass)"
         else
-            MERGE_STATUS="pending review (cannot self-merge)"
+            # Check if it's a permission issue
+            if echo "$MERGE_OUTPUT $AUTO_OUTPUT" | grep -qi "permission\|authorized\|403\|pull request is not mergeable"; then
+                MERGE_STATUS="⚠️  no merge permission (need collaborator access or repo owner approval)"
+            elif echo "$MERGE_OUTPUT $AUTO_OUTPUT" | grep -qi "review\|approval"; then
+                MERGE_STATUS="⚠️  requires review approval before merge"
+            elif echo "$MERGE_OUTPUT $AUTO_OUTPUT" | grep -qi "checks\|status"; then
+                MERGE_STATUS="⚠️  waiting for status checks to pass"
+            else
+                MERGE_STATUS="⚠️  merge failed: $AUTO_OUTPUT"
+            fi
         fi
     fi
+else
+    echo ""
+    echo "⚠️  Could not get PR number - skipping merge attempt"
+    MERGE_STATUS="⚠️  PR number not found"
 fi
 
 # Sync ccpm/ccpm/ to ccpm/.claude/ (Claude pulls from .claude/)
