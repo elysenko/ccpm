@@ -1,21 +1,35 @@
 #!/bin/bash
 # interrogate.sh - Orchestrate structured discovery conversations
 #
-# Usage:
-#   ./interrogate.sh [session-name]           # Start or resume session (full pipeline)
+# Each step can be run independently or as part of the full pipeline.
+#
+# Individual Steps:
+#   ./interrogate.sh --services [name]        # Step 1: Setup PostgreSQL, MinIO, CloudBeaver
+#   ./interrogate.sh --schema [name]          # Step 2: Create database schema
+#   ./interrogate.sh --repo [name]            # Step 3: Ensure GitHub repo exists
+#   ./interrogate.sh --interrogate-only <name> # Step 4: Run Q&A conversation
+#   ./interrogate.sh --extract <name>         # Step 5: Extract scope document
+#   ./interrogate.sh --credentials <name>     # Step 6: Gather credentials
+#   ./interrogate.sh --roadmap <name>         # Step 7: Generate MVP roadmap
+#   ./interrogate.sh --decompose <name>       # Step 8: Decompose into PRDs
+#   ./interrogate.sh --batch <name>           # Step 9: Batch process PRDs
+#   ./interrogate.sh --deploy <name>          # Step 10: Deploy to Kubernetes
+#   ./interrogate.sh --synthetic <name>       # Step 11: Synthetic testing
+#   ./interrogate.sh --remediation <name>     # Step 12: Generate remediation PRDs
+#
+# Pipeline Commands:
+#   ./interrogate.sh [session-name]           # Run full pipeline
+#   ./interrogate.sh --build <name>           # Run full pipeline (explicit)
+#   ./interrogate.sh --resume <name>          # Resume from last step
+#   ./interrogate.sh --resume-from <N> <name> # Resume from specific step
+#
+# Session Management:
 #   ./interrogate.sh --list                   # List all sessions
 #   ./interrogate.sh --status [name]          # Show session status
-#   ./interrogate.sh --extract <name>         # Extract scope document
-#   ./interrogate.sh --credentials <name>     # Gather credentials for integrations
-#   ./interrogate.sh --repo [name]            # Ensure GitHub repo exists
-#   ./interrogate.sh --services [name]        # Setup PostgreSQL and MinIO services
-#   ./interrogate.sh --build <name>           # Full pipeline → batch process PRDs
-#   ./interrogate.sh --resume <name>          # Resume pipeline from last completed step
-#   ./interrogate.sh --resume-from <N> <name> # Resume from specific step
 #   ./interrogate.sh --pipeline-status <name> # Show pipeline progress
 #
-# Pipeline:
-#   services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch-process → synthetic-test → remediation
+# Pipeline Flow:
+#   services → schema → repo → interrogate → extract → credentials → roadmap → PRDs → batch → deploy → synthetic → remediation
 
 set -e
 
@@ -34,44 +48,46 @@ Interrogate - Structured Discovery Conversations
 
 Usage:
   ./interrogate.sh [session-name]             Full pipeline (default): services → PRDs → batch-process
-  ./interrogate.sh --interrogate-only <name>  Just run the Q&A conversation
-  ./interrogate.sh --list                     List all sessions
-  ./interrogate.sh --status [name]            Show session status
-  ./interrogate.sh --extract <name>           Extract scope document from session
-  ./interrogate.sh --credentials <name>       Gather credentials for integrations
-  ./interrogate.sh --repo [name]              Ensure GitHub repository exists
-  ./interrogate.sh --services [name]          Setup PostgreSQL and MinIO services
-  ./interrogate.sh --build <name>             Alias for default (full pipeline)
-  ./interrogate.sh --resume <name>            Resume pipeline from last completed step
-  ./interrogate.sh --resume-from <N> <name>   Resume from specific step (1-12)
-  ./interrogate.sh --pipeline-status <name>   Show pipeline progress
   ./interrogate.sh --help                     Show this help
 
-Pipeline Flow:
-   1. ./interrogate.sh --services [name]     Setup PostgreSQL, MinIO, CloudBeaver
-   2. (auto) Create interview database schema
-   3. ./interrogate.sh --repo [name]         Ensure GitHub repo exists
-   4. ./interrogate.sh <name>                Structured Q&A → conversation.md
-   5. ./interrogate.sh --extract <name>      Generate scope document
-   6. ./interrogate.sh --credentials <name>  Collect integration credentials
-   7. (auto) Generate MVP roadmap            /pm:roadmap-generate
-   8. (auto) Decompose into PRDs             /pm:scope-decompose --generate
-   9. (auto) Batch process PRDs              /pm:batch-process
-  10. (auto) Deploy to Kubernetes            /pm:deploy
-  11. (auto) Synthetic persona testing       /pm:generate-personas → tests → feedback
-  12. (auto) Generate remediation PRDs       /pm:generate-remediation
+Individual Steps (run independently):
+   1. ./interrogate.sh --services [name]       Setup PostgreSQL, MinIO, CloudBeaver
+   2. ./interrogate.sh --schema [name]         Create interview database schema
+   3. ./interrogate.sh --repo [name]           Ensure GitHub repo exists
+   4. ./interrogate.sh --interrogate-only <name>  Run structured Q&A conversation
+   5. ./interrogate.sh --extract <name>        Extract scope document
+   6. ./interrogate.sh --credentials <name>    Gather integration credentials
+   7. ./interrogate.sh --roadmap <name>        Generate MVP roadmap
+   8. ./interrogate.sh --decompose <name>      Decompose into PRDs (alias: --prds)
+   9. ./interrogate.sh --batch <name>          Batch process PRDs
+  10. ./interrogate.sh --deploy <name>         Deploy to Kubernetes
+  11. ./interrogate.sh --synthetic <name>      Synthetic persona testing (alias: --test)
+  12. ./interrogate.sh --remediation <name>    Generate remediation PRDs (alias: --fix)
 
-Resume Options:
-  --resume <name>             Continue from where pipeline stopped
-  --resume-from <N> <name>    Start from specific step (1-12)
+Pipeline Commands:
+  ./interrogate.sh --build <name>             Run full pipeline from step 1
+  ./interrogate.sh --resume <name>            Resume from last completed step
+  ./interrogate.sh --resume-from <N> <name>   Resume from specific step (1-12)
+  ./interrogate.sh --pipeline-status <name>   Show pipeline progress
+
+Session Management:
+  ./interrogate.sh --list                     List all sessions
+  ./interrogate.sh --status [name]            Show session status
+
+Example - Run steps independently:
+  ./interrogate.sh --services myapp           # Step 1: Setup infrastructure
+  ./interrogate.sh --repo myapp               # Step 3: Setup GitHub repo
+  ./interrogate.sh --interrogate-only myapp   # Step 4: Run Q&A
+  ./interrogate.sh --extract myapp            # Step 5: Generate scope
+  ./interrogate.sh --roadmap myapp            # Step 7: Create roadmap
+  ./interrogate.sh --decompose myapp          # Step 8: Create PRDs
+  ./interrogate.sh --batch myapp              # Step 9: Process PRDs
+  ./interrogate.sh --deploy myapp             # Step 10: Deploy app
 
 Self-Healing:
-  When a step fails, the pipeline automatically invokes /pm:fix_problem
+  When a step fails in pipeline mode, it automatically invokes /pm:fix_problem
   to diagnose and fix the issue. Up to 3 fix attempts are made before
   escalating to manual intervention.
-
-Or run the full pipeline at once:
-  ./interrogate.sh --build <name>           Does all steps automatically
 
 Output Files:
   .claude/interrogations/<name>/conversation.md   Raw Q&A transcript
@@ -344,6 +360,273 @@ ensure_repo() {
   ./.claude/scripts/ensure-github-repo.sh "$repo_name"
 }
 
+# Create database schema (Step 2)
+create_schema() {
+  local name="${1:-$(basename "$(pwd)")}"
+
+  echo "=== Create Database Schema ==="
+  echo ""
+
+  if [ -f "./.claude/scripts/create-interview-schema.sh" ]; then
+    ./.claude/scripts/create-interview-schema.sh
+    echo ""
+    echo "✅ Schema created"
+  else
+    echo "⚠️ Schema script not found: .claude/scripts/create-interview-schema.sh"
+    echo "Skipping schema creation"
+  fi
+}
+
+# Generate MVP roadmap (Step 7)
+generate_roadmap() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --roadmap <session-name>"
+    exit 1
+  fi
+
+  local scope=".claude/scopes/$name/00_scope_document.md"
+  if [ ! -f "$scope" ]; then
+    echo "❌ Scope document not found: $scope"
+    echo ""
+    echo "First run: ./interrogate.sh --extract $name"
+    exit 1
+  fi
+
+  echo "=== Generate MVP Roadmap: $name ==="
+  echo ""
+
+  claude --dangerously-skip-permissions --print "/pm:roadmap-generate $name"
+
+  echo ""
+  echo "---"
+
+  local roadmap=".claude/scopes/$name/07_roadmap.md"
+  if [ -f "$roadmap" ]; then
+    echo "✅ Roadmap generated: $roadmap"
+    echo ""
+    echo "Next: ./interrogate.sh --decompose $name"
+  else
+    echo "❌ Roadmap generation failed"
+  fi
+}
+
+# Decompose into PRDs (Step 8)
+decompose_prds() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --decompose <session-name>"
+    exit 1
+  fi
+
+  local roadmap=".claude/scopes/$name/07_roadmap.md"
+  if [ ! -f "$roadmap" ]; then
+    echo "❌ Roadmap not found: $roadmap"
+    echo ""
+    echo "First run: ./interrogate.sh --roadmap $name"
+    exit 1
+  fi
+
+  echo "=== Decompose into PRDs: $name ==="
+  echo ""
+
+  claude --dangerously-skip-permissions --print "/pm:scope-decompose $name --generate"
+
+  echo ""
+  echo "---"
+
+  local prd_count
+  prd_count=$(ls -1 .claude/prds/*.md 2>/dev/null | wc -l)
+  if [ "$prd_count" -gt 0 ]; then
+    echo "✅ Generated $prd_count PRDs in .claude/prds/"
+    echo ""
+    echo "Next: ./interrogate.sh --batch $name"
+  else
+    echo "❌ No PRDs generated"
+  fi
+}
+
+# Batch process PRDs (Step 9)
+batch_process() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --batch <session-name>"
+    exit 1
+  fi
+
+  local prd_count
+  prd_count=$(ls -1 .claude/prds/*.md 2>/dev/null | wc -l)
+  if [ "$prd_count" -eq 0 ]; then
+    echo "❌ No PRDs found in .claude/prds/"
+    echo ""
+    echo "First run: ./interrogate.sh --decompose $name"
+    exit 1
+  fi
+
+  echo "=== Batch Process PRDs: $name ==="
+  echo "PRDs to process: $prd_count"
+  echo ""
+
+  claude --dangerously-skip-permissions "/pm:batch-process"
+
+  echo ""
+  echo "---"
+
+  local complete_count
+  complete_count=$(grep -l "^status: complete" .claude/prds/*.md 2>/dev/null | wc -l)
+  echo "✅ Batch processing complete"
+  echo "   Completed PRDs: $complete_count / $prd_count"
+  echo ""
+  echo "Next: ./interrogate.sh --deploy $name"
+}
+
+# Deploy to Kubernetes (Step 10)
+deploy_app() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --deploy <session-name>"
+    exit 1
+  fi
+
+  local complete_count
+  complete_count=$(grep -l "^status: complete" .claude/prds/*.md 2>/dev/null | wc -l)
+  if [ "$complete_count" -eq 0 ]; then
+    echo "❌ No completed PRDs found"
+    echo ""
+    echo "First run: ./interrogate.sh --batch $name"
+    exit 1
+  fi
+
+  local project_name
+  project_name=$(basename "$(pwd)")
+
+  echo "=== Deploy to Kubernetes: $name ==="
+  echo "Namespace: $project_name"
+  echo ""
+
+  claude --dangerously-skip-permissions "/pm:deploy $name"
+
+  echo ""
+  echo "---"
+
+  echo "✅ Deployment complete"
+  echo ""
+  echo "Check status: kubectl get pods -n $project_name"
+  echo ""
+  echo "Next: ./interrogate.sh --synthetic $name"
+}
+
+# Synthetic persona testing (Step 11)
+synthetic_testing() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --synthetic <session-name>"
+    exit 1
+  fi
+
+  local journeys=".claude/scopes/$name/02_user_journeys.md"
+  if [ ! -f "$journeys" ]; then
+    echo "❌ User journeys not found: $journeys"
+    echo ""
+    echo "First run: ./interrogate.sh --extract $name"
+    exit 1
+  fi
+
+  echo "=== Synthetic Persona Testing: $name ==="
+  echo ""
+
+  echo "Step 1: Generating personas..."
+  claude --dangerously-skip-permissions --print "/pm:generate-personas $name --count 10"
+
+  local personas=".claude/testing/personas/$name-personas.json"
+  if [ ! -f "$personas" ]; then
+    echo "⚠️ Persona generation may have failed"
+  else
+    echo "✅ Personas generated"
+  fi
+  echo ""
+
+  echo "Step 2: Generating E2E tests..."
+  claude --dangerously-skip-permissions --print "/pm:generate-tests $name"
+  echo ""
+
+  echo "Step 3: Generating synthetic feedback..."
+  claude --dangerously-skip-permissions --print "/pm:generate-feedback $name"
+
+  local feedback=".claude/testing/feedback/$name-feedback.json"
+  if [ ! -f "$feedback" ]; then
+    echo "⚠️ Feedback generation may have failed"
+  else
+    echo "✅ Feedback generated"
+  fi
+  echo ""
+
+  echo "Step 4: Analyzing feedback..."
+  claude --dangerously-skip-permissions --print "/pm:analyze-feedback $name"
+
+  local analysis=".claude/testing/feedback/$name-analysis.md"
+  if [ -f "$analysis" ]; then
+    echo "✅ Analysis complete: $analysis"
+  fi
+
+  echo ""
+  echo "---"
+  echo ""
+  echo "Outputs:"
+  echo "  Personas: .claude/testing/personas/$name-personas.json"
+  echo "  Feedback: .claude/testing/feedback/$name-feedback.json"
+  echo "  Analysis: .claude/testing/feedback/$name-analysis.md"
+  echo ""
+  echo "Next: ./interrogate.sh --remediation $name"
+}
+
+# Generate remediation PRDs (Step 12)
+generate_remediation() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --remediation <session-name>"
+    exit 1
+  fi
+
+  local feedback=".claude/testing/feedback/$name-feedback.json"
+  if [ ! -f "$feedback" ]; then
+    echo "❌ Feedback file not found: $feedback"
+    echo ""
+    echo "First run: ./interrogate.sh --synthetic $name"
+    exit 1
+  fi
+
+  echo "=== Generate Remediation PRDs: $name ==="
+  echo ""
+
+  claude --dangerously-skip-permissions --print "/pm:generate-remediation $name --max 10"
+
+  echo ""
+  echo "---"
+
+  local remediation_count
+  remediation_count=$(ls -1 .claude/prds/*-fix-*.md .claude/prds/*-improve-*.md .claude/prds/*-add-*.md 2>/dev/null | wc -l)
+  if [ "$remediation_count" -gt 0 ]; then
+    echo "✅ Generated $remediation_count remediation PRDs"
+    echo ""
+    echo "Process them with: ./interrogate.sh --batch $name"
+  else
+    echo "No remediation PRDs needed (or generation failed)"
+  fi
+}
+
 # Setup infrastructure services (PostgreSQL, MinIO)
 setup_services() {
   local project_name="${1:-$(basename "$(pwd)")}"
@@ -528,6 +811,34 @@ case "$1" in
     ;;
   --services)
     setup_services "$2"
+    exit 0
+    ;;
+  --schema)
+    create_schema "$2"
+    exit 0
+    ;;
+  --roadmap)
+    generate_roadmap "$2"
+    exit 0
+    ;;
+  --decompose|--prds)
+    decompose_prds "$2"
+    exit 0
+    ;;
+  --batch)
+    batch_process "$2"
+    exit 0
+    ;;
+  --deploy)
+    deploy_app "$2"
+    exit 0
+    ;;
+  --synthetic|--test)
+    synthetic_testing "$2"
+    exit 0
+    ;;
+  --remediation|--fix)
+    generate_remediation "$2"
     exit 0
     ;;
   --build|-b)
