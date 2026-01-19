@@ -521,11 +521,9 @@ For significant decisions:
 1. **Review this document** with stakeholders
 2. **Resolve critical gaps** (see 06_gap_analysis.md)
 3. **Research unknowns** using `/pm:scope-research`
-4. **Build application** using Loki Mode:
+4. **Build application** using the pipeline:
    ```bash
    ./interrogate.sh --build {session-name}
-   # Or directly:
-   ./build-from-scope.sh {session-name}
    ```
 
 ---
