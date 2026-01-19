@@ -32,7 +32,7 @@ deploy_cloudbeaver() {
   local cb_password="$CLOUDBEAVER_ADMIN_PASSWORD"
 
   # Create temp file for sed replacement
-  local cloudbeaver_yaml="$PROJECT_ROOT/k8s/cloudbeaver.yaml"
+  local cloudbeaver_yaml="$PROJECT_ROOT/.claude/k8s/cloudbeaver.yaml"
   if [[ ! -f "$cloudbeaver_yaml" ]]; then
     log_error "CloudBeaver manifest not found: $cloudbeaver_yaml"
     return 1

@@ -27,8 +27,6 @@ PIPELINE_STEPS=(
   "extract:Extract Scope Document"
   "credentials:Gather Credentials"
   "roadmap:Generate MVP Roadmap"
-  "template:Generate App Template"
-  "skeleton:Deploy Skeleton"
   "decompose:Decompose into PRDs"
   "batch:Batch Process PRDs"
   "deploy:Deploy to Kubernetes"
@@ -37,7 +35,7 @@ PIPELINE_STEPS=(
 )
 
 # Total steps
-TOTAL_STEPS=14
+TOTAL_STEPS=12
 
 # Steps that can be skipped on failure
 SKIPPABLE_STEPS="2 6"
@@ -91,13 +89,11 @@ steps:
   5: {name: extract, status: pending}
   6: {name: credentials, status: pending}
   7: {name: roadmap, status: pending}
-  8: {name: template, status: pending}
-  9: {name: skeleton, status: pending}
-  10: {name: decompose, status: pending}
-  11: {name: batch, status: pending}
-  12: {name: deploy, status: pending}
-  13: {name: synthetic, status: pending}
-  14: {name: remediation, status: pending}
+  8: {name: decompose, status: pending}
+  9: {name: batch, status: pending}
+  10: {name: deploy, status: pending}
+  11: {name: synthetic, status: pending}
+  12: {name: remediation, status: pending}
 errors: []
 warnings: []
 fix_attempts: []
@@ -327,26 +323,6 @@ precheck_step_7() {
 }
 
 precheck_step_8() {
-  # template - technical architecture must exist
-  local arch=".claude/scopes/$PIPELINE_SESSION/04_technical_architecture.md"
-  if [ -f "$arch" ]; then
-    return 0
-  fi
-  echo "Technical architecture not found: $arch"
-  return 1
-}
-
-precheck_step_9() {
-  # skeleton - templates must exist
-  local template_dir=".claude/templates/$PIPELINE_SESSION"
-  if [ -d "$template_dir/k8s" ]; then
-    return 0
-  fi
-  echo "K8s templates not found: $template_dir/k8s"
-  return 1
-}
-
-precheck_step_10() {
   # decompose - roadmap must exist
   local roadmap=".claude/scopes/$PIPELINE_SESSION/07_roadmap.md"
   if [ -f "$roadmap" ]; then
@@ -356,7 +332,7 @@ precheck_step_10() {
   return 1
 }
 
-precheck_step_11() {
+precheck_step_9() {
   # batch - PRD files must exist
   local prd_count
   prd_count=$(ls -1 .claude/prds/*.md 2>/dev/null | wc -l)
@@ -367,7 +343,7 @@ precheck_step_11() {
   return 1
 }
 
-precheck_step_12() {
+precheck_step_10() {
   # deploy - All PRDs must be complete
   local complete_count
   complete_count=$(grep -l "^status: complete" .claude/prds/*.md 2>/dev/null | wc -l)
@@ -378,7 +354,7 @@ precheck_step_12() {
   return 1
 }
 
-precheck_step_13() {
+precheck_step_11() {
   # synthetic - user journeys must exist
   local journeys=".claude/scopes/$PIPELINE_SESSION/02_user_journeys.md"
   if [ -f "$journeys" ]; then
@@ -388,7 +364,7 @@ precheck_step_13() {
   return 1
 }
 
-precheck_step_14() {
+precheck_step_12() {
   # remediation - feedback file must exist
   local feedback=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
   if [ -f "$feedback" ]; then
@@ -492,25 +468,6 @@ postcheck_step_7() {
 }
 
 postcheck_step_8() {
-  # template - k8s and scaffold dirs exist
-  local template_dir=".claude/templates/$PIPELINE_SESSION"
-  if [ -d "$template_dir/k8s" ] && [ -d "$template_dir/scaffold" ]; then
-    return 0
-  fi
-  echo "Template directories incomplete: $template_dir"
-  return 1
-}
-
-postcheck_step_9() {
-  # skeleton - at least one pod running in namespace
-  if kubectl get pods -n "$PIPELINE_SESSION" --no-headers 2>/dev/null | grep -q "Running"; then
-    return 0
-  fi
-  echo "No running pods found in namespace: $PIPELINE_SESSION"
-  return 1
-}
-
-postcheck_step_10() {
   # decompose - at least 1 PRD file exists
   local prd_count
   prd_count=$(ls -1 .claude/prds/*.md 2>/dev/null | wc -l)
@@ -521,7 +478,7 @@ postcheck_step_10() {
   return 1
 }
 
-postcheck_step_11() {
+postcheck_step_9() {
   # batch - at least 1 PRD marked complete
   local complete_count
   complete_count=$(grep -l "^status: complete" .claude/prds/*.md 2>/dev/null | wc -l)
@@ -532,7 +489,7 @@ postcheck_step_11() {
   return 1
 }
 
-postcheck_step_12() {
+postcheck_step_10() {
   # deploy - all pods running in namespace
   local project_name
   project_name=$(basename "$(pwd)")
@@ -548,7 +505,7 @@ postcheck_step_12() {
   return 1
 }
 
-postcheck_step_13() {
+postcheck_step_11() {
   # synthetic - personas.json exists
   local personas=".claude/testing/personas/$PIPELINE_SESSION-personas.json"
   if [ -f "$personas" ]; then
@@ -558,7 +515,7 @@ postcheck_step_13() {
   return 1
 }
 
-postcheck_step_14() {
+postcheck_step_12() {
   # remediation - analysis.md exists
   local analysis=".claude/testing/feedback/$PIPELINE_SESSION-analysis.md"
   if [ -f "$analysis" ]; then
@@ -639,22 +596,6 @@ run_step_7() {
 }
 
 run_step_8() {
-  # template - Generate App Template
-  echo "Generating app infrastructure template..."
-  echo "---"
-  claude --dangerously-skip-permissions --print "/pm:generate-template $PIPELINE_SESSION"
-  echo "---"
-}
-
-run_step_9() {
-  # skeleton - Deploy Skeleton
-  echo "Deploying skeleton to Kubernetes..."
-  echo "---"
-  claude --dangerously-skip-permissions --print "/pm:deploy-skeleton $PIPELINE_SESSION"
-  echo "---"
-}
-
-run_step_10() {
   # decompose - Decompose into PRDs
   echo "Decomposing scope into PRDs..."
   echo "---"
@@ -662,14 +603,14 @@ run_step_10() {
   echo "---"
 }
 
-run_step_11() {
+run_step_9() {
   # batch - Batch Process PRDs
   echo "=== Starting Batch Processing ==="
   echo ""
   verify_claude_command "/pm:batch-process" "complete" 1800
 }
 
-run_step_12() {
+run_step_10() {
   # deploy - Deploy to Kubernetes
   local project_name
   project_name=$(basename "$(pwd)")
@@ -682,7 +623,7 @@ run_step_12() {
   verify_claude_command "/pm:deploy $PIPELINE_SESSION" "Deployed" 600
 }
 
-run_step_13() {
+run_step_11() {
   # synthetic - Synthetic Persona Testing
   echo "Generating synthetic personas..."
   verify_claude_command "/pm:generate-personas $PIPELINE_SESSION --count 10" "personas" 300
@@ -747,7 +688,7 @@ run_step_13() {
   fi
 }
 
-run_step_14() {
+run_step_12() {
   # remediation - Generate Remediation PRDs
   local issues_file=".claude/testing/feedback/$PIPELINE_SESSION-issues.json"
   local feedback_file=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
