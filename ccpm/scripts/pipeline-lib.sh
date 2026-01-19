@@ -702,9 +702,10 @@ run_step_4() {
   echo "════════════════════════════════════════════════════════════════"
   echo ""
 
-  # Exit with special code to indicate pause (not failure)
-  # Using exit code 42 as "paused for interaction"
-  exit 42
+  # Return special code to indicate pause (not failure)
+  # Using return code 42 as "paused for interaction"
+  # NOTE: Must use return (not exit) because step 4 runs directly, not in subshell
+  return 42
 }
 
 run_step_5() {
@@ -1059,16 +1060,28 @@ execute_step() {
   local run_exit_code
   LAST_ERROR_OUTPUT=""
 
-  # Run in subshell to capture output while preserving exit code
-  run_error=$($run_func 2>&1)
-  run_exit_code=$?
+  # Step 4 is interactive - run directly so return codes work and output shows immediately
+  # Other steps run in subshell to capture output
+  if [ "$step_num" -eq 4 ]; then
+    $run_func
+    run_exit_code=$?
 
-  # Handle special exit code 42 = paused for interaction
-  if [ "$run_exit_code" -eq 42 ]; then
-    echo "$run_error"
-    update_step_status "$step_num" "paused"
-    # Return 42 to signal pause to the caller
-    return 42
+    # Handle special return code 42 = paused for interaction
+    if [ "$run_exit_code" -eq 42 ]; then
+      update_step_status "$step_num" "paused"
+      return 42
+    fi
+  else
+    # Run in subshell to capture output while preserving exit code
+    run_error=$($run_func 2>&1)
+    run_exit_code=$?
+
+    # Handle special exit code 42 = paused for interaction (other steps)
+    if [ "$run_exit_code" -eq 42 ]; then
+      echo "$run_error"
+      update_step_status "$step_num" "paused"
+      return 42
+    fi
   fi
 
   if [ "$run_exit_code" -ne 0 ]; then
@@ -1102,7 +1115,8 @@ execute_step() {
       fi
     fi
   else
-    echo "$run_error"
+    # Echo captured output (only for steps that capture output, not step 4)
+    [ -n "$run_error" ] && echo "$run_error"
   fi
 
   echo ""

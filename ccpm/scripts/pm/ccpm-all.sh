@@ -1,8 +1,10 @@
 #!/bin/bash
-# ccpm-push-pull-all.sh - Push local changes then pull to all repos
+# ccpm-all.sh - Push local changes then pull to all repos
 #
 # Combines ccpm-push and ccpm-pull-all-repos into a single operation.
 # Useful for syncing changes across all projects after making local modifications.
+#
+# Usage: /pm:ccpm-all
 
 set -e
 
