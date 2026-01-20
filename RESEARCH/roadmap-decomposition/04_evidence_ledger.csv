@@ -1,0 +1,21 @@
+claim_id,claim_type,claim_text,source_ids,independence_check,confidence,verification_status
+C001,C1,"Vertical slice decomposition produces end-to-end functionality that enables faster feedback and reduces integration risk compared to horizontal slicing","S01,S02,S07,S13",PASS-3_independent,"HIGH",Verified
+C002,C1,"SPIDR framework (Spikes, Paths, Interface, Data, Rules) provides 5 systematic techniques for story splitting that cover nearly all decomposition needs","S07",SINGLE_SOURCE,"HIGH",Verified
+C003,C1,"INVEST criteria (Independent, Negotiable, Valuable, Estimable, Small, Testable) provide automatable quality heuristics for user story assessment","S04,S05,S18",PASS-3_independent,"HIGH",Verified
+C004,C1,"LLMs are being used for requirements elicitation and validation (20% each) with 58.2% industry adoption, but only 5.4% full automation - human-AI collaboration dominates at 54.4%","S06,S16",PASS-2_independent,"HIGH",Verified
+C005,C1,"Topological sort runs in O(V+E) time; incremental algorithms (Haeupler et al.) achieve O(m^3/2) total update time for dynamic DAGs","S08,S09",PASS-2_independent,"HIGH",Verified
+C006,C1,"Tarjan's algorithm detects cycles/SCCs in O(V+E) linear time using single DFS pass","S10",SINGLE_SOURCE_AUTHORITATIVE,"HIGH",Verified
+C007,C1,"SAFe hierarchy follows Epic > Capability > Feature > Story breakdown, with Portfolio Kanban stages for epic flow","S12",SINGLE_SOURCE_AUTHORITATIVE,"HIGH",Verified
+C008,C1,"10 user story splitting anti-patterns documented: split by component, process step, scenario, core-first, CRUD, non-varying data, interface, conjunction, non-varying roles, test cases","S13,S14,S15",PASS-3_independent,"HIGH",Verified
+C009,C2,"Zero-shot prompting (38%) and few-shot (26%) dominate LLM4RE; advanced techniques like RAG (7%) are underexplored","S06",NA,"MEDIUM",Verified
+C010,C2,"Requirements dependency types include: refinement, constraint, influence, interaction (feature-driven) plus intrinsic vs additional dependencies","S11",NA,"MEDIUM",Verified
+C011,C2,"Diamond dependency problem is canonical example of version incompatibility in dependency management","S04",NA,"MEDIUM",Verified
+C012,C2,"LLM hallucination detection methods include: self-consistency validation, metamorphic testing (MetaQA), external reference validation, LLM-as-judge, token-level detection","S16",NA,"MEDIUM",Verified
+C013,C2,"IEEE Std 830 and ISO/IEC/IEEE 29148 define quality attributes: clear, concise, complete, consistent, measurable, testable, valuable, design-free","S18",NA,"MEDIUM",Verified
+C014,C2,"Story splitting should focus on value delivery - test: can you demo this story to a stakeholder and have them care?","S07,S13,S14",PASS-3_independent,"HIGH",Verified
+C015,C2,"Functional decomposition remains relevant for enterprise Agile despite being viewed as traditional plan-driven practice","S06",NA,"MEDIUM",Verified
+C016,C2,"Requirements decomposition is team-dependent and process-dependent; traditional techniques still used in Agile which may reduce project agility","S06",NA,"MEDIUM",Verified
+C017,C3,"Large Product Backlog anti-pattern (wishlist) is one of the most common, caused by failure to fix bugs when found and lack of portfolio management","S20",NA,"LOW",Verified
+C018,C3,"Build systems like Bazel require DAG because cycles lead to infinite build loops","S04",NA,"LOW",Verified
+C019,C1,"AI model precision issues limit reliability for fully replacing manual effort, especially in safety-critical systems; models struggle with implied relationships","S16,S17",PASS-2_independent,"HIGH",Verified
+C020,C1,"Full AI autonomy rejected by practitioners: 2% believe AI can handle elicitation independently, 0% for analysis/specification/validation","S16",SINGLE_SOURCE,"HIGH",Verified

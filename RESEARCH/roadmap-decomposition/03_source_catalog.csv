@@ -1,0 +1,21 @@
+source_id,url,title,quality_grade,source_type,date_accessed,subquestions_covered,independence_group
+S01,https://www.jimmybogard.com/vertical-slice-architecture/,Vertical Slice Architecture - Jimmy Bogard,B,practitioner_blog,2026-01-20,"SQ1",VSA
+S02,https://www.visual-paradigm.com/scrum/user-story-splitting-vertical-slice-vs-horizontal-slice/,Vertical vs Horizontal Slice - Visual Paradigm,B,methodology_guide,2026-01-20,"SQ1",VP
+S03,https://jpattonassociates.com/story-mapping/,User Story Mapping - Jeff Patton,A,authoritative_source,2026-01-20,"SQ1",Patton
+S04,https://agilealliance.org/glossary/invest/,INVEST Criteria - Agile Alliance,A,standards_body,2026-01-20,"SQ2",AgileAlliance
+S05,https://www.researchgate.net/publication/260741443,Improving User Story with INVEST Criteria,B,academic_paper,2026-01-20,"SQ2",IEEE
+S06,https://arxiv.org/html/2509.11446v1,LLMs for Requirements Engineering SLR,A,systematic_review,2026-01-20,"SQ4",ArxivLLM
+S07,https://www.mountaingoatsoftware.com/blog/five-simple-but-powerful-ways-to-split-user-stories,SPIDR - Mountain Goat Software,A,authoritative_source,2026-01-20,"SQ1,SQ2",Cohn
+S08,https://en.wikipedia.org/wiki/Topological_sorting,Topological Sorting - Wikipedia,B,reference,2026-01-20,"SQ3",Wiki
+S09,https://www3.cs.stonybrook.edu/~bender/newpub/BenderFiGi-soda09.pdf,Incremental Topological Ordering,A,academic_paper,2026-01-20,"SQ3",Bender
+S10,https://en.wikipedia.org/wiki/Tarjan%27s_strongly_connected_components_algorithm,Tarjan's Algorithm - Wikipedia,B,reference,2026-01-20,"SQ3",Wiki
+S11,https://link.springer.com/article/10.1007/s00766-006-0033-x,Feature-driven Requirement Dependency Analysis,A,academic_journal,2026-01-20,"SQ3",Springer
+S12,https://framework.scaledagile.com/epic,Epic - Scaled Agile Framework,A,standards_body,2026-01-20,"SQ6",SAFe
+S13,https://www.humanizingwork.com/10-anti-patterns-for-user-story-splitting-a-k-a-how-not-to-split-user-stories/,10 Anti-Patterns for Story Splitting,A,authoritative_source,2026-01-20,"SQ5",HumanizingWork
+S14,https://www.easyagile.com/blog/how-not-to-split-a-user-story/,How NOT to Split a User Story,B,practitioner_blog,2026-01-20,"SQ5",EasyAgile
+S15,https://www.romanpichler.com/blog/user-stories-10-anti-patterns-to-avoid/,10 User Story Anti-Patterns - Roman Pichler,A,authoritative_source,2026-01-20,"SQ5",Pichler
+S16,https://arxiv.org/html/2511.01324v2,AI for Requirements Engineering Industry Adoption,A,academic_paper,2026-01-20,"SQ4",ArxivAI
+S17,https://www.arxiv.org/pdf/2510.25016,Human-AI Synergy in Requirements,B,academic_paper,2026-01-20,"SQ4",ArxivHuman
+S18,https://www.ppi-int.com/wp-content/uploads/2019/05/Requirements-Quality-Metrics-Paper-with-Addendum-PPA-005330-9-140710.pdf,Requirements Quality Metrics - PPI,B,industry_report,2026-01-20,"SQ2",PPI
+S19,https://age-of-product.com/sprint-anti-patterns-2/,Sprint Anti-Patterns - Age of Product,B,practitioner_blog,2026-01-20,"SQ5",AgeOfProduct
+S20,https://www.scrumalliance.org/Article/scrum-anti-patterns-large-product-backlog,Large Product Backlog Anti-Pattern,B,standards_body,2026-01-20,"SQ5",ScrumAlliance
