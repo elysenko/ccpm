@@ -72,7 +72,7 @@ PHASE 1: Input Analysis
 PHASE 2: Discovery (conditional)
     - Simple: Skip to Phase 3
     - Medium: /pm:decompose → PRDs
-    - Complex: /pm:interrogate → /pm:extract-findings → /pm:decompose
+    - Complex: /pm:interrogate → /pm:extract-findings → /pm:roadmap-generate → /pm:decompose
     ↓
 PHASE 3: PRD Validation
     - Verify at least 1 PRD exists
@@ -380,10 +380,16 @@ Needs research and structured discovery:
 2. **After interrogate returns:** Invoke Skill tool: `pm:extract-findings` with args: `$SESSION_NAME`
    - Generates scope documents in `.claude/scopes/$SESSION_NAME/`
 
-3. **Invoke:** Use Skill tool: `pm:decompose` with args: `.claude/scopes/$SESSION_NAME/00_scope_document.md`
-   - Breaks scope into PRDs
+3. **Invoke:** Use Skill tool: `pm:roadmap-generate` with args: `$SESSION_NAME`
+   - Reads scope documents from `.claude/scopes/$SESSION_NAME/`
+   - Generates MVP roadmap with phases and dependencies
+   - Outputs to `.claude/scopes/$SESSION_NAME/07_roadmap.md`
 
-4. **Record PRDs:**
+4. **Invoke:** Use Skill tool: `pm:decompose` with args: `.claude/scopes/$SESSION_NAME/07_roadmap.md`
+   - Breaks roadmap into independent PRDs with dependency management
+   - Outputs PRDs to `.claude/prds/{epic_id}/`
+
+5. **Record PRDs:**
 ```bash
 ls -t .claude/prds/*.md | head -30 > "$SESSION_DIR/prds.txt"
 ```
@@ -735,6 +741,7 @@ Input: Vague "build an e-commerce platform" request
 |------------|---------|------|
 | `Skill: pm:interrogate` | Deep discovery | Complex path |
 | `Skill: pm:extract-findings` | Generate scope docs | After interrogate |
+| `Skill: pm:roadmap-generate` | Create phased roadmap | After extract-findings (Complex) |
 | `Skill: pm:decompose` | Break into PRDs | Medium/Complex paths |
 | `Task: pm:prd-complete` | Execute single PRD | Single PRD (via Task agent) |
 | `Skill: pm:batch-process` | Execute multiple PRDs | Multiple PRDs |
