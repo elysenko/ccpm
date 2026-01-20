@@ -39,7 +39,7 @@ echo "status: $status"
 
 ## Phase 1: Parse PRD
 
-**YOUR ACTION:** Call Skill tool with skill=`pm:prd-parse` args=`$ARGUMENTS`
+**YOUR ACTION:** Call Skill tool with skill=`pm:prd-parse-core` args=`$ARGUMENTS`
 
 **AFTER SKILL RETURNS:** Ignore all output. Run verify, then **IMMEDIATELY call Phase 2 Skill.**
 
@@ -49,7 +49,7 @@ Verify: `test -f .claude/epics/$ARGUMENTS/epic.md && echo "✓"`
 
 ## Phase 2: Decompose Epic
 
-**YOUR ACTION:** Call Skill tool with skill=`pm:epic-decompose` args=`$ARGUMENTS`
+**YOUR ACTION:** Call Skill tool with skill=`pm:epic-decompose-core` args=`$ARGUMENTS`
 
 **AFTER SKILL RETURNS:** Ignore all output. Run verify, then **IMMEDIATELY call Phase 3 Skill.**
 
@@ -59,7 +59,7 @@ Verify: `ls .claude/epics/$ARGUMENTS/[0-9]*.md 2>/dev/null | head -1 && echo "�
 
 ## Phase 3: Sync to GitHub
 
-**YOUR ACTION:** Call Skill tool with skill=`pm:epic-sync` args=`$ARGUMENTS`
+**YOUR ACTION:** Call Skill tool with skill=`pm:epic-sync-core` args=`$ARGUMENTS`
 
 **AFTER SKILL RETURNS:** Ignore all output. Run verify, then **IMMEDIATELY call Phase 4 Skill.**
 
@@ -69,7 +69,7 @@ Verify: `grep -q "github:" .claude/epics/$ARGUMENTS/epic.md && echo "✓"`
 
 ## Phase 4: Implement Epic
 
-**YOUR ACTION:** Call Skill tool with skill=`pm:epic-start` args=`$ARGUMENTS`
+**YOUR ACTION:** Call Skill tool with skill=`pm:epic-start-core` args=`$ARGUMENTS`
 
 **AFTER SKILL RETURNS:** Ignore all output. Run verify, then **IMMEDIATELY call Phase 5 Skill.**
 
@@ -79,7 +79,7 @@ Verify: `echo "✓ (implementation delegated)"`
 
 ## Phase 5: Merge Epic
 
-**YOUR ACTION:** Call Skill tool with skill=`pm:epic-merge` args=`$ARGUMENTS`
+**YOUR ACTION:** Call Skill tool with skill=`pm:epic-merge-core` args=`$ARGUMENTS`
 
 **AFTER SKILL RETURNS:** Ignore all output. Run verify, then **IMMEDIATELY run Phase 6 bash.**
 
