@@ -32,7 +32,7 @@ Guide users through a streamlined discovery process: **deep research first**, th
 
 ```
 1. User introduces topic
-2. Run /dr "key features and user journeys of {topic}"
+2. Run /dr-full "key features and user journeys of {topic}"
 3. Store researched features + journeys in database
 4. Present ALL findings for single confirmation
 5. Brief infrastructure questions (auth, scaling, permissions, deployment, integrations)
@@ -111,7 +111,7 @@ Topic: {TOPIC}
 **Execute deep research to discover features and journeys:**
 
 ```
-Execute /dr with the following prompt:
+Execute /dr-full with the following prompt:
 
 "For a {TOPIC} application, identify:
 
@@ -126,7 +126,7 @@ Execute /dr with the following prompt:
 Focus on what's typical for this type of application. Be specific and practical."
 ```
 
-Wait for /dr to complete. The output will contain structured features and journeys.
+Wait for /dr-full to complete. The output will contain structured features and journeys.
 
 **Record in conversation.md:**
 ```markdown
@@ -480,7 +480,7 @@ If conversation.md exists when starting, check the `Phase:` header:
 | Phase | Resume Action |
 |-------|--------------|
 | `topic_input` | Ask for topic |
-| `research` | Run /dr again |
+| `research` | Run /dr-full again |
 | `confirmation` | Present features/journeys for confirmation |
 | `infrastructure` | Ask infrastructure questions |
 | `technical_ops` | Generate technical ops |
