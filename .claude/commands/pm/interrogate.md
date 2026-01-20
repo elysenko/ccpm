@@ -32,12 +32,13 @@ Guide users through a streamlined discovery process: **deep research first**, th
 
 ```
 1. User introduces topic
-2. Run /dr-full "key features and user journeys of {topic}"
-3. Store researched features + journeys in database
-4. Present ALL findings for single confirmation
-5. Brief infrastructure questions (auth, scaling, permissions, deployment, integrations)
-6. Auto-generate technical ops per journey step
-7. Output: Confirmed Features → Confirmed Journeys → Technical Ops
+2. Run /dr-refine to clarify and narrow scope
+3. Run /dr-full with refined question for features and journeys
+4. Store researched features + journeys in database
+5. Present ALL findings for single confirmation
+6. Brief infrastructure questions (auth, scaling, permissions, deployment, integrations)
+7. Auto-generate technical ops per journey step
+8. Output: Confirmed Features → Confirmed Journeys → Technical Ops
 ```
 
 ---
@@ -106,14 +107,45 @@ Topic: {TOPIC}
 
 ---
 
-### Step 3: Deep Research
+### Step 3: Refine Research Question
 
-**Execute deep research to discover features and journeys:**
+**Before running deep research, refine the topic with the user.**
+
+Execute `/dr-refine` with the topic:
 
 ```
-Execute /dr-full with the following prompt:
+/dr-refine "Build a {TOPIC} application"
+```
 
-"For a {TOPIC} application, identify:
+This will:
+1. Ask 2-3 clarifying questions about the topic
+2. Help narrow scope and identify key aspects
+3. Generate a refined research question
+
+**Record in conversation.md:**
+```markdown
+---
+
+## Research Refinement
+
+Topic: {TOPIC}
+Refined question: {output from dr-refine}
+
+---
+```
+
+**After dr-refine completes, proceed to Step 4.**
+
+---
+
+### Step 4: Deep Research
+
+**Execute deep research with the refined question from dr-refine.**
+
+```
+Execute /dr-full with the refined prompt, structured as:
+
+"For a {REFINED_TOPIC} application, identify:
 
 1. KEY FEATURES (capabilities users need):
    - List 8-15 core features
@@ -141,7 +173,7 @@ Wait for /dr-full to complete. The output will contain structured features and j
 
 ---
 
-### Step 4: Store in Database
+### Step 5: Store in Database
 
 Parse the /dr output and insert into database. For each feature found:
 
@@ -191,7 +223,7 @@ Journeys stored: {count}
 
 ---
 
-### Step 5: Single Confirmation Phase
+### Step 6: Single Confirmation Phase
 
 **Present EVERYTHING at once for user review:**
 
@@ -266,7 +298,7 @@ Journeys confirmed: {count}
 
 ---
 
-### Step 6: Cross-Cutting Concerns (Brief)
+### Step 7: Cross-Cutting Concerns (Brief)
 
 Ask these quick infrastructure questions. These are selections, not deep interrogation.
 
@@ -381,7 +413,7 @@ Integrations: {list}
 
 ---
 
-### Step 7: Generate Technical Operations
+### Step 8: Generate Technical Operations
 
 For each confirmed journey, auto-generate technical operations per step.
 
@@ -418,7 +450,7 @@ VALUES ({journey_id}, {n}, '{step_name}', '{user_action}', '{operation}');
 
 ---
 
-### Step 8: Close Session
+### Step 9: Close Session
 
 Update conversation.md:
 ```markdown
@@ -480,7 +512,8 @@ If conversation.md exists when starting, check the `Phase:` header:
 | Phase | Resume Action |
 |-------|--------------|
 | `topic_input` | Ask for topic |
-| `research` | Run /dr-full again |
+| `refine` | Run /dr-refine to clarify |
+| `research` | Run /dr-full with refined question |
 | `confirmation` | Present features/journeys for confirmation |
 | `infrastructure` | Ask infrastructure questions |
 | `technical_ops` | Generate technical ops |
@@ -506,13 +539,14 @@ Format:
 
 ## Important Rules
 
-1. **Research first** - Run /dr before asking questions
-2. **Single confirmation** - Present all features+journeys at once
-3. **Brief questions** - Infrastructure questions are quick selections
-4. **Store in database** - All data goes to database tables
-5. **Record everything** - Every exchange goes to conversation.md
-6. **Auto-generate tech ops** - Technical operations derived from journeys
-7. **Trust defaults** - If user says "looks good", confirm everything
+1. **Refine first** - Run /dr-refine before /dr-full to clarify scope
+2. **Research populates** - /dr-full discovers features and journeys
+3. **Single confirmation** - Present all features+journeys at once
+4. **Brief questions** - Infrastructure questions are quick selections
+5. **Store in database** - All data goes to database tables
+6. **Record everything** - Every exchange goes to conversation.md
+7. **Auto-generate tech ops** - Technical operations derived from journeys
+8. **Trust defaults** - If user says "looks good", confirm everything
 
 ---
 
@@ -538,9 +572,20 @@ Claude: What would you like to build?
 
 User: An e-commerce platform for selling handmade goods
 
-Claude: Running deep research on "e-commerce platform for selling handmade goods"...
+Claude: Let me refine this topic to ensure we research the right aspects...
 
-[/dr executes and returns features and journeys]
+[/dr-refine asks clarifying questions]
+
+Claude: A few quick questions to narrow scope:
+- Is this a marketplace (multiple sellers) or single seller?
+- Do sellers handle their own shipping or centralized?
+- Any specific payment requirements?
+
+User: Marketplace with multiple sellers, sellers handle shipping, just need Stripe
+
+Claude: Great, running deep research on "multi-vendor handmade goods marketplace with seller-managed shipping"...
+
+[/dr-full executes and returns features and journeys]
 
 Claude: Based on research, here's what I found:
 

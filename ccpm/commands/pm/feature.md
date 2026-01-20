@@ -33,19 +33,22 @@ This command runs autonomously through all phases. You must:
 ## Execution Constraints
 
 **FORBIDDEN:**
-- ❌ Stopping to ask "should I continue?"
+- ❌ Stopping to ask "should I continue?" (after Phase 0)
 - ❌ Outputting progress between phases
-- ❌ Waiting for user confirmation
+- ❌ Waiting for user confirmation (after Phase 0)
 - ❌ Following sub-skill "Next step" suggestions
 - ❌ Stopping to report intermediate results
-- ❌ Asking for clarification mid-flow (decide yourself)
+- ❌ Asking for clarification after Phase 1 begins
+
+**ALLOWED:**
+- ✅ Asking clarifying questions in Phase 0 (requirements gathering)
 
 **REQUIRED:**
 - ✅ Continue to next phase immediately after each skill completes
 - ✅ Only output after ALL phases complete OR escalation
 - ✅ Track progress via TodoWrite (not output)
 - ✅ Use file-based state between phases
-- ✅ Use your judgment to resolve ambiguity
+- ✅ Use your judgment to resolve ambiguity (after Phase 0)
 - ✅ Continue on partial failures, report at end
 
 ---
@@ -54,6 +57,12 @@ This command runs autonomously through all phases. You must:
 
 ```
 INPUT (file path OR conversation context)
+    ↓
+PHASE 0: Requirements & Research (ALWAYS)
+    - Step 0.1: /dr-refine → Clarify what to build
+    - Step 0.2: Codebase search → Find existing patterns
+    - Step 0.3: /dr → Research implementation best practices
+    - Step 0.4: Synthesize findings
     ↓
 PHASE 1: Input Analysis
     - Detect input type (file vs context)
@@ -85,6 +94,163 @@ OUTPUT: Final status report
 ---
 
 ## Instructions
+
+### Phase 0: Requirements & Research
+
+**Before classifying complexity: clarify → search codebase → research web.**
+
+```
+Step 0.1: /dr-refine     → Clarify what user wants to build
+Step 0.2: Codebase search → Find existing patterns, similar code, dependencies
+Step 0.3: /dr            → Research implementation best practices
+```
+
+---
+
+**Step 0.1: Refine Requirements (ALWAYS FIRST)**
+
+Run `/dr-refine` to clarify requirements through dialogue:
+
+```
+/dr-refine "{feature description from input}"
+```
+
+This will:
+- Ask 2-3 clarifying questions about the feature
+- Narrow scope and identify key requirements
+- Generate a refined feature description
+
+**Record refined requirements:**
+
+```bash
+mkdir -p "$SESSION_DIR"
+cat >> "$SESSION_DIR/requirements.md" << 'EOF'
+## Requirements (from dr-refine)
+
+**Original Input:** {user's original input}
+**Refined Description:** {output from dr-refine}
+
+---
+EOF
+```
+
+---
+
+**Step 0.2: Search Existing Codebase**
+
+Use Task tool with Explore agent to understand what already exists:
+
+```yaml
+Task:
+  subagent_type: "Explore"
+  description: "Search codebase for {feature}"
+  prompt: |
+    Search this codebase to understand:
+    1. Similar features already implemented
+    2. Existing patterns and architecture used
+    3. Relevant utilities, helpers, or base classes
+    4. Database models or schemas that may be affected
+    5. Test patterns used in this project
+
+    Feature to build: {refined feature description}
+
+    Return:
+    - Relevant files found
+    - Patterns to follow
+    - Code to reuse or extend
+    - Potential conflicts or dependencies
+```
+
+**Record codebase findings:**
+
+```bash
+cat >> "$SESSION_DIR/codebase-analysis.md" << 'EOF'
+## Codebase Analysis
+
+### Relevant Existing Code
+{files and patterns found}
+
+### Patterns to Follow
+{architecture patterns used in this codebase}
+
+### Code to Reuse
+{utilities, base classes, helpers}
+
+### Dependencies/Conflicts
+{what this feature might affect}
+
+---
+EOF
+```
+
+---
+
+**Step 0.3: Web Research (ALWAYS)**
+
+Run `/dr` to research implementation best practices:
+
+```
+/dr "How to build {refined feature} - best practices, libraries, architecture patterns, common pitfalls"
+```
+
+Example queries:
+- "How to build real-time notifications - WebSockets vs SSE, scaling patterns"
+- "How to implement OAuth2 authentication - security best practices, libraries"
+- "How to build data export feature - streaming large files, CSV/Excel libraries"
+
+**Record research results:**
+
+```bash
+cat >> "$SESSION_DIR/research.md" << 'EOF'
+## Web Research
+
+**Query:** {the /dr query used}
+
+### Best Practices
+{key findings}
+
+### Recommended Libraries
+{relevant libraries for this stack}
+
+### Common Pitfalls
+{things to avoid}
+
+### Recommended Approach
+{synthesis of research + codebase patterns}
+
+---
+EOF
+```
+
+---
+
+**Step 0.4: Synthesize Findings**
+
+Before proceeding to Phase 1, combine all research:
+
+```bash
+cat >> "$SESSION_DIR/synthesis.md" << 'EOF'
+## Phase 0 Synthesis
+
+**Feature:** {refined description}
+
+### Implementation Approach
+{combining codebase patterns + web research}
+
+### Key Decisions
+- {decision 1 based on research}
+- {decision 2 based on codebase}
+
+### Risks Identified
+- {risk from research}
+
+---
+EOF
+```
+
+**Then proceed to Phase 1.**
+
+---
 
 ### Phase 1: Input Analysis
 
@@ -264,9 +430,25 @@ If only 1 PRD:
 PRD_NAME=$(head -1 "$SESSION_DIR/prd_names.txt")
 ```
 
-**Invoke:** Use Skill tool: `pm:prd-complete` with args: `$PRD_NAME`
+**Invoke:** Use Task tool to spawn a sub-agent for prd-complete:
 
-**After skill returns:** Ignore output, verify completion:
+```yaml
+Task:
+  description: "PRD $PRD_NAME complete"
+  subagent_type: "general-purpose"
+  prompt: |
+    Run /pm:prd-complete $PRD_NAME to completion.
+
+    Do not stop for confirmation. Execute all 6 phases until the PRD status is complete.
+    Ignore any "Next step" suggestions from sub-skills.
+
+    Return a summary of:
+    - Phases completed
+    - Any errors encountered
+    - Final PRD status
+```
+
+**After Task returns:** Ignore output, verify completion:
 ```bash
 status=$(grep "^status:" .claude/prds/$PRD_NAME.md | cut -d: -f2 | tr -d ' ')
 echo "PRD status: $status"
@@ -363,7 +545,8 @@ while iteration < max_iterations:
     else:
         # Create auto-fix PRD
         create_prd("auto-fix-{n}-{slug}")
-        invoke pm:prd-complete
+        # Use Task agent for prd-complete
+        Task(subagent_type="general-purpose", prompt="Run /pm:prd-complete auto-fix-{n}-{slug}")
 
     # Loop continues
 ```
@@ -546,15 +729,17 @@ Input: Vague "build an e-commerce platform" request
 
 ---
 
-## Skill Invocation Reference
+## Skill/Task Invocation Reference
 
-| Skill | Purpose | When |
-|-------|---------|------|
-| `pm:interrogate` | Deep discovery | Complex path |
-| `pm:extract-findings` | Generate scope docs | After interrogate |
-| `pm:decompose` | Break into PRDs | Medium/Complex paths |
-| `pm:prd-complete` | Execute single PRD | Single PRD |
-| `pm:batch-process` | Execute multiple PRDs | Multiple PRDs |
+| Invocation | Purpose | When |
+|------------|---------|------|
+| `Skill: pm:interrogate` | Deep discovery | Complex path |
+| `Skill: pm:extract-findings` | Generate scope docs | After interrogate |
+| `Skill: pm:decompose` | Break into PRDs | Medium/Complex paths |
+| `Task: pm:prd-complete` | Execute single PRD | Single PRD (via Task agent) |
+| `Skill: pm:batch-process` | Execute multiple PRDs | Multiple PRDs |
+
+**Note:** `batch-process` runs as a Skill but internally spawns Task agents for each PRD's `prd-complete`.
 
 ---
 

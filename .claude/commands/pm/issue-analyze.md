@@ -56,6 +56,18 @@ Analyze the issue to identify independent work that can run in parallel:
 - What are the dependencies between changes?
 - Where might conflicts occur?
 
+### Exploration Depth Guidelines
+
+Set based on issue complexity and codebase familiarity:
+
+| Depth | When to Use | Scope |
+|-------|-------------|-------|
+| **shallow** | Simple changes, well-defined files, bug fixes | Specified files + direct imports only |
+| **moderate** | Standard features, need some context | + sibling files in same directories |
+| **deep** | Complex integrations, new patterns needed | + related directories for patterns |
+
+**Default**: `moderate` for most issues
+
 ### 3. Create Analysis File
 
 Get current datetime: `date -u +"%Y-%m-%dT%H:%M:%SZ"`
@@ -69,6 +81,7 @@ title: {issue_title}
 analyzed: {current_datetime}
 estimated_hours: {total_hours}
 parallelization_factor: {1.0-5.0}
+exploration_depth: {shallow|moderate|deep}
 ---
 
 # Parallel Work Analysis: Issue #$ARGUMENTS
@@ -84,6 +97,7 @@ parallelization_factor: {1.0-5.0}
 - {file_pattern_1}
 - {file_pattern_2}
 **Agent Type**: {backend|frontend|fullstack|database}-specialist
+**Exploration**: {shallow|moderate|deep}
 **Can Start**: immediately
 **Estimated Hours**: {hours}
 **Dependencies**: none
@@ -94,6 +108,7 @@ parallelization_factor: {1.0-5.0}
 - {file_pattern_1}
 - {file_pattern_2}
 **Agent Type**: {agent_type}
+**Exploration**: {shallow|moderate|deep}
 **Can Start**: immediately
 **Estimated Hours**: {hours}
 **Dependencies**: none
@@ -103,6 +118,7 @@ parallelization_factor: {1.0-5.0}
 **Files**:
 - {file_pattern_1}
 **Agent Type**: {agent_type}
+**Exploration**: {shallow|moderate|deep}
 **Can Start**: after Stream A completes
 **Estimated Hours**: {hours}
 **Dependencies**: Stream A

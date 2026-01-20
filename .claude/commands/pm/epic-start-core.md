@@ -115,6 +115,26 @@ Task:
     - Files: {file_patterns}
     - Work: {stream_description}
 
+    **Exploration boundaries ({exploration_depth}):**
+
+    # For shallow exploration:
+    - ONLY read specified files and their direct imports
+    - Do NOT explore other directories or unrelated files
+    - If you need context from elsewhere, ask before exploring
+    - This is for simple, well-defined changes
+
+    # For moderate exploration:
+    - Read specified files and their direct imports
+    - May explore sibling files in same directories for patterns
+    - Do NOT explore unrelated parts of codebase
+    - Stay within the general area of your assigned files
+
+    # For deep exploration:
+    - Read specified files and their imports
+    - Explore related directories for patterns/conventions
+    - Understand existing architecture before implementing
+    - Focus exploration on understanding how similar features work
+
     Read full requirements from:
     - .claude/epics/$ARGUMENTS/{task_file}
     - .claude/epics/$ARGUMENTS/{issue}-analysis.md
