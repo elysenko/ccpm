@@ -67,26 +67,58 @@ fi
 
 ### Step 5: Build and Push Skeleton Images (if scaffolds exist)
 
-Check if scaffold directories exist with Dockerfiles:
+Check if scaffold directories exist with Dockerfiles. If they do, create a temporary
+scope configuration and use the official build skill:
 
 ```bash
 SCAFFOLD_DIR="$TEMPLATE_DIR/scaffold"
-REGISTRY="${REGISTRY:-ubuntu.desmana-truck.ts.net:30500}"
 
-if [ -f "$SCAFFOLD_DIR/backend/Dockerfile" ]; then
-  echo "Building backend skeleton image..."
-  cd "$SCAFFOLD_DIR/backend"
-  docker build -t "$REGISTRY/$SESSION-backend:skeleton" .
-  docker push "$REGISTRY/$SESSION-backend:skeleton"
-  cd -
-fi
+# Check if any Dockerfiles exist
+if [ -f "$SCAFFOLD_DIR/backend/Dockerfile" ] || [ -f "$SCAFFOLD_DIR/frontend/Dockerfile" ]; then
+  echo "Building skeleton images via /pm:build-deployment..."
 
-if [ -f "$SCAFFOLD_DIR/frontend/Dockerfile" ]; then
-  echo "Building frontend skeleton image..."
-  cd "$SCAFFOLD_DIR/frontend"
-  docker build -t "$REGISTRY/$SESSION-frontend:skeleton" .
-  docker push "$REGISTRY/$SESSION-frontend:skeleton"
-  cd -
+  # Create temporary scope for skeleton build
+  cat > ".claude/scopes/${SESSION}-skeleton.md" << EOF
+---
+name: ${SESSION}-skeleton
+status: temporary
+work_dir: ${SCAFFOLD_DIR}
+
+deploy:
+  enabled: true
+  registry: ${REGISTRY:-ubuntu.desmana-truck.ts.net:30500}
+  images:
+EOF
+
+  # Add backend if exists
+  if [ -f "$SCAFFOLD_DIR/backend/Dockerfile" ]; then
+    cat >> ".claude/scopes/${SESSION}-skeleton.md" << EOF
+    - name: ${SESSION}-backend
+      dockerfile: backend/Dockerfile
+      context: ./backend
+      tag: skeleton
+EOF
+  fi
+
+  # Add frontend if exists
+  if [ -f "$SCAFFOLD_DIR/frontend/Dockerfile" ]; then
+    cat >> ".claude/scopes/${SESSION}-skeleton.md" << EOF
+    - name: ${SESSION}-frontend
+      dockerfile: frontend/Dockerfile
+      context: ./frontend
+      tag: skeleton
+EOF
+  fi
+
+  cat >> ".claude/scopes/${SESSION}-skeleton.md" << EOF
+---
+EOF
+
+  # Use official build skill
+  /pm:build-deployment ${SESSION}-skeleton
+
+  # Clean up temporary scope
+  rm ".claude/scopes/${SESSION}-skeleton.md"
 fi
 ```
 
