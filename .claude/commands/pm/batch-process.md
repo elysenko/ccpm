@@ -54,9 +54,15 @@ You are a batch processor that runs `/pm:prd-complete` for each PRD in sequence.
 
 For EACH PRD in the PROCESS list:
 
-**Invoke:** Use the Skill tool to call `pm:prd-complete` with argument `{prd-name}`
+**Invoke:** Use the Task tool to spawn a sub-agent that runs `/pm:prd-complete {prd-name}`:
+```
+Task tool parameters:
+  subagent_type: "general-purpose"
+  description: "Process PRD {prd-name}"
+  prompt: "Run /pm:prd-complete {prd-name} to completion. Do not stop for confirmation. Execute all phases until the PRD status is complete."
+```
 
-**After skill completes:**
+**After task completes:**
 1. Update TodoWrite to mark PRD complete
 2. Record result (success/failure)
 3. IMMEDIATELY continue to next PRD
@@ -121,8 +127,8 @@ Summary:
 - ❌ Skipping prd-complete because "it looks implemented"
 
 **REQUIRED:**
-- ✅ Use Skill tool to invoke pm:prd-complete for each PRD
-- ✅ IMMEDIATELY continue to next PRD after each Skill completes
+- ✅ Use Task tool to spawn sub-agent for pm:prd-complete for each PRD
+- ✅ IMMEDIATELY continue to next PRD after each Task completes
 - ✅ Only stop after ALL PRDs are processed
 - ✅ Only check PRD frontmatter status field for skip
 
@@ -148,9 +154,9 @@ Processing order:
 
 ## Important Notes
 
-1. **One Skill invocation per PRD** - Call pm:prd-complete for each
+1. **One Task sub-agent per PRD** - Spawn Task to run pm:prd-complete for each
 2. **No intermediate stops** - Process all PRDs in one continuous flow
-3. **Ignore sub-skill suggestions** - prd-complete doesn't know it's being orchestrated
+3. **Ignore sub-task suggestions** - prd-complete doesn't know it's being orchestrated
 4. **Auto-approve everything** - Never stop for confirmation
 5. **Sequential PRDs** - Each PRD completes before the next starts
 6. **Continue on error** - Single failures don't stop the batch

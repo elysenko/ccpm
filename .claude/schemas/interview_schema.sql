@@ -1,5 +1,5 @@
 -- =============================================================================
--- INTERVIEW SCHEMA - Hybrid 10-Table Design
+-- INTERVIEW SCHEMA - Feature-Based Interrogation Design
 -- =============================================================================
 --
 -- This schema stores interview/discovery data with:
@@ -7,6 +7,8 @@
 --   - Comprehensive journey_steps_detailed for full traceability
 --   - Domain model capture (database_entities, technical_components)
 --   - Integration credentials for third-party services
+--   - Session-based feature/journey tracking from deep research
+--   - User types and feature access permissions
 --
 -- Tables:
 --   1. feature                  - Product features discovered in interviews
@@ -19,10 +21,20 @@
 --   8. technical_components     - Services, resolvers, DTOs to build
 --   9. step_component_mapping   - M:M steps↔components
 --  10. integration_credentials  - Third-party service credentials
+--  11. user_type                - User types/roles for the system
+--  12. user_type_feature        - M:M user types ↔ features with access levels
+--  13. integration              - Session-based integration tracking
+--  14. feature_journey          - M:M feature ↔ journey mapping
+--  15. cross_cutting_concern    - Auth, deployment, scaling concerns
 --
 -- =============================================================================
 
 -- Drop existing tables (both old and new schemas)
+DROP TABLE IF EXISTS cross_cutting_concern CASCADE;
+DROP TABLE IF EXISTS feature_journey CASCADE;
+DROP TABLE IF EXISTS integration CASCADE;
+DROP TABLE IF EXISTS user_type_feature CASCADE;
+DROP TABLE IF EXISTS user_type CASCADE;
 DROP TABLE IF EXISTS integration_credentials CASCADE;
 DROP TABLE IF EXISTS entity_operations CASCADE;
 DROP TABLE IF EXISTS trace_layers CASCADE;
@@ -50,11 +62,13 @@ DROP TABLE IF EXISTS feature CASCADE;
 
 -- =============================================================================
 -- TABLE 1: FEATURE
--- Product features discovered in interviews
+-- Product features discovered in interviews or deep research
 -- =============================================================================
 CREATE TABLE feature (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL UNIQUE,
+    session_name VARCHAR(255),                -- Links to interrogation session
+    feature_id VARCHAR(50),                   -- External ID like F-001, F-002
+    name VARCHAR(255) NOT NULL,
     description TEXT,
     functionality TEXT,
     priority VARCHAR(20) DEFAULT 'medium' CHECK (priority IN (
@@ -64,11 +78,22 @@ CREATE TABLE feature (
     acceptance_criteria JSONB DEFAULT '[]',   -- Array of criteria
     complexity VARCHAR(20) CHECK (complexity IN ('simple', 'moderate', 'complex')),
     effort_estimate VARCHAR(50),              -- "2 days", "1 sprint"
+    source VARCHAR(50) DEFAULT 'research' CHECK (source IN (
+        'research', 'user', 'inferred'        -- Where this feature came from
+    )),
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN (
+        'pending', 'confirmed', 'removed', 'modified'
+    )),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (session_name, name)
 );
 
-COMMENT ON TABLE feature IS 'Product features discovered in interviews';
+COMMENT ON TABLE feature IS 'Product features discovered in interviews or deep research';
+COMMENT ON COLUMN feature.session_name IS 'Links to interrogation session for scoping';
+COMMENT ON COLUMN feature.feature_id IS 'External ID like F-001 for documentation';
+COMMENT ON COLUMN feature.status IS 'Confirmation status: pending (from research), confirmed (by user), removed, modified';
+COMMENT ON COLUMN feature.source IS 'Origin: research (from /dr), user (explicitly stated), inferred';
 COMMENT ON COLUMN feature.priority IS 'MoSCoW priority or high/medium/low';
 COMMENT ON COLUMN feature.acceptance_criteria IS 'JSONB array of acceptance criteria strings';
 
@@ -98,6 +123,8 @@ COMMENT ON COLUMN page.route IS 'URL route pattern, e.g., /invoices/:id';
 -- =============================================================================
 CREATE TABLE journey (
     id SERIAL PRIMARY KEY,
+    session_name VARCHAR(255),                -- Links to interrogation session
+    journey_id VARCHAR(50),                   -- External ID like J-001, J-002
     feature_id INTEGER REFERENCES feature(id) ON DELETE SET NULL,
     name VARCHAR(255) NOT NULL,
     actor VARCHAR(100),                       -- "AP Clerk", "Manager"
@@ -114,14 +141,23 @@ CREATE TABLE journey (
     complexity VARCHAR(20) CHECK (complexity IN ('simple', 'moderate', 'complex')),
     estimated_duration VARCHAR(50),           -- "2 minutes", "30 seconds"
     priority VARCHAR(20) DEFAULT 'medium' CHECK (priority IN ('high', 'medium', 'low')),
-    status VARCHAR(20) DEFAULT 'draft' CHECK (status IN ('draft', 'validated', 'approved')),
+    source VARCHAR(50) DEFAULT 'research' CHECK (source IN (
+        'research', 'user', 'inferred'
+    )),
+    confirmation_status VARCHAR(20) DEFAULT 'pending' CHECK (confirmation_status IN (
+        'pending', 'confirmed', 'removed', 'modified'
+    )),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (session_name, name)
 );
 
 COMMENT ON TABLE journey IS 'User journey headers defining actor, goal, and context';
+COMMENT ON COLUMN journey.session_name IS 'Links to interrogation session for scoping';
+COMMENT ON COLUMN journey.journey_id IS 'External ID like J-001 for documentation';
 COMMENT ON COLUMN journey.actor IS 'User role performing this journey, e.g., AP Clerk';
 COMMENT ON COLUMN journey.trigger_event IS 'Event that starts this journey';
+COMMENT ON COLUMN journey.confirmation_status IS 'User confirmation: pending, confirmed, removed, modified';
 
 -- =============================================================================
 -- TABLE 4: JOURNEY_STEPS_DETAILED
@@ -657,6 +693,316 @@ $$ LANGUAGE plpgsql;
 COMMENT ON FUNCTION link_conversation_feature IS 'Link a conversation to a discovered feature';
 
 -- =============================================================================
+-- TABLE 11: USER_TYPE
+-- User types/roles for the system being built
+-- =============================================================================
+CREATE TABLE user_type (
+    id SERIAL PRIMARY KEY,
+    session_name VARCHAR(255) NOT NULL,       -- Links to interrogation session
+    name VARCHAR(100) NOT NULL,               -- "Admin", "Customer", "API Consumer"
+    description TEXT,
+    is_primary BOOLEAN DEFAULT FALSE,         -- Is this the main user type?
+    expected_count VARCHAR(50),               -- "100s", "1000s", "10000s+"
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (session_name, name)
+);
+
+COMMENT ON TABLE user_type IS 'User types/roles for the system being built';
+COMMENT ON COLUMN user_type.session_name IS 'Links to interrogation session';
+COMMENT ON COLUMN user_type.expected_count IS 'Expected user count: 100s, 1000s, 10000s+';
+
+-- =============================================================================
+-- TABLE 12: USER_TYPE_FEATURE
+-- M:M mapping between user types and features with access levels
+-- =============================================================================
+CREATE TABLE user_type_feature (
+    id SERIAL PRIMARY KEY,
+    user_type_id INTEGER NOT NULL REFERENCES user_type(id) ON DELETE CASCADE,
+    feature_id INTEGER NOT NULL REFERENCES feature(id) ON DELETE CASCADE,
+    access_level VARCHAR(20) DEFAULT 'full' CHECK (access_level IN (
+        'full', 'read_only', 'limited', 'none'
+    )),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (user_type_id, feature_id)
+);
+
+COMMENT ON TABLE user_type_feature IS 'M:M: which user types can access which features';
+COMMENT ON COLUMN user_type_feature.access_level IS 'Access level: full, read_only, limited, none';
+
+-- =============================================================================
+-- TABLE 13: INTEGRATION
+-- Session-based integration tracking (lighter than integration_credentials)
+-- =============================================================================
+CREATE TABLE integration (
+    id SERIAL PRIMARY KEY,
+    session_name VARCHAR(255) NOT NULL,       -- Links to interrogation session
+    platform VARCHAR(100) NOT NULL,           -- "Shopify", "Stripe", "Gorgias", etc.
+    direction VARCHAR(20) CHECK (direction IN (
+        'inbound', 'outbound', 'bidirectional'
+    )),
+    purpose TEXT,                             -- What this integration does
+    priority VARCHAR(20) DEFAULT 'medium' CHECK (priority IN ('high', 'medium', 'low')),
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN (
+        'pending', 'confirmed', 'removed'
+    )),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (session_name, platform)
+);
+
+COMMENT ON TABLE integration IS 'Session-based integration tracking from interrogation';
+COMMENT ON COLUMN integration.platform IS 'Third-party platform: Shopify, Stripe, Gorgias, Facebook, Salesforce, etc.';
+COMMENT ON COLUMN integration.direction IS 'Data flow: inbound, outbound, or bidirectional';
+
+-- =============================================================================
+-- TABLE 14: FEATURE_JOURNEY
+-- M:M mapping between features and journeys
+-- =============================================================================
+CREATE TABLE feature_journey (
+    id SERIAL PRIMARY KEY,
+    feature_id INTEGER NOT NULL REFERENCES feature(id) ON DELETE CASCADE,
+    journey_id INTEGER NOT NULL REFERENCES journey(id) ON DELETE CASCADE,
+    role VARCHAR(50) CHECK (role IN (
+        'primary', 'supporting', 'prerequisite'
+    )),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (feature_id, journey_id)
+);
+
+COMMENT ON TABLE feature_journey IS 'M:M: which features are used in which journeys';
+COMMENT ON COLUMN feature_journey.role IS 'Role of feature in journey: primary, supporting, prerequisite';
+
+-- =============================================================================
+-- TABLE 15: CROSS_CUTTING_CONCERN
+-- Authentication, deployment, scaling and other cross-cutting concerns
+-- =============================================================================
+CREATE TABLE cross_cutting_concern (
+    id SERIAL PRIMARY KEY,
+    session_name VARCHAR(255) NOT NULL,       -- Links to interrogation session
+    concern_type VARCHAR(50) NOT NULL CHECK (concern_type IN (
+        'authentication', 'deployment', 'scaling', 'monitoring', 'logging', 'security', 'compliance'
+    )),
+    config JSONB DEFAULT '{}',                -- Type-specific configuration
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (session_name, concern_type)
+);
+
+COMMENT ON TABLE cross_cutting_concern IS 'Cross-cutting concerns: auth, deployment, scaling, etc.';
+COMMENT ON COLUMN cross_cutting_concern.concern_type IS 'Type: authentication, deployment, scaling, monitoring, logging, security, compliance';
+COMMENT ON COLUMN cross_cutting_concern.config IS 'Type-specific config as JSONB, e.g., {"method": "oauth", "provider": "auth0"}';
+
+-- =============================================================================
+-- INDEXES for new tables
+-- =============================================================================
+
+-- User type indexes
+CREATE INDEX idx_user_type_session ON user_type(session_name);
+CREATE INDEX idx_user_type_name ON user_type(name);
+
+-- User type feature indexes
+CREATE INDEX idx_utf_user_type ON user_type_feature(user_type_id);
+CREATE INDEX idx_utf_feature ON user_type_feature(feature_id);
+
+-- Integration indexes
+CREATE INDEX idx_integration_session ON integration(session_name);
+CREATE INDEX idx_integration_platform ON integration(platform);
+CREATE INDEX idx_integration_status ON integration(status);
+
+-- Feature journey indexes
+CREATE INDEX idx_fj_feature ON feature_journey(feature_id);
+CREATE INDEX idx_fj_journey ON feature_journey(journey_id);
+
+-- Cross cutting concern indexes
+CREATE INDEX idx_ccc_session ON cross_cutting_concern(session_name);
+CREATE INDEX idx_ccc_type ON cross_cutting_concern(concern_type);
+
+-- Session-based feature and journey indexes
+CREATE INDEX idx_feature_session ON feature(session_name);
+CREATE INDEX idx_feature_status ON feature(status);
+CREATE INDEX idx_journey_session ON journey(session_name);
+CREATE INDEX idx_journey_confirmation ON journey(confirmation_status);
+
+-- =============================================================================
+-- VIEWS for new tables
+-- =============================================================================
+
+-- View: Features with user type access
+CREATE OR REPLACE VIEW feature_access_view AS
+SELECT
+    f.id AS feature_id,
+    f.session_name,
+    f.feature_id AS external_id,
+    f.name AS feature_name,
+    f.status AS feature_status,
+    ut.id AS user_type_id,
+    ut.name AS user_type_name,
+    utf.access_level
+FROM feature f
+LEFT JOIN user_type_feature utf ON f.id = utf.feature_id
+LEFT JOIN user_type ut ON utf.user_type_id = ut.id
+ORDER BY f.session_name, f.id, ut.name;
+
+COMMENT ON VIEW feature_access_view IS 'Features with their user type access levels';
+
+-- View: Session summary with counts
+CREATE OR REPLACE VIEW session_summary_view AS
+SELECT
+    session_name,
+    COUNT(DISTINCT f.id) FILTER (WHERE f.status = 'confirmed') AS confirmed_features,
+    COUNT(DISTINCT f.id) FILTER (WHERE f.status = 'pending') AS pending_features,
+    COUNT(DISTINCT j.id) FILTER (WHERE j.confirmation_status = 'confirmed') AS confirmed_journeys,
+    COUNT(DISTINCT j.id) FILTER (WHERE j.confirmation_status = 'pending') AS pending_journeys,
+    COUNT(DISTINCT ut.id) AS user_types,
+    COUNT(DISTINCT i.id) FILTER (WHERE i.status = 'confirmed') AS integrations
+FROM feature f
+FULL OUTER JOIN journey j ON f.session_name = j.session_name
+FULL OUTER JOIN user_type ut ON f.session_name = ut.session_name
+FULL OUTER JOIN integration i ON f.session_name = i.session_name
+GROUP BY session_name;
+
+COMMENT ON VIEW session_summary_view IS 'Summary counts per interrogation session';
+
+-- =============================================================================
+-- HELPER FUNCTIONS for new tables
+-- =============================================================================
+
+-- Function: Insert or update feature from research
+CREATE OR REPLACE FUNCTION upsert_feature(
+    p_session_name VARCHAR(255),
+    p_name VARCHAR(255),
+    p_description TEXT DEFAULT NULL,
+    p_source VARCHAR(50) DEFAULT 'research'
+) RETURNS INTEGER AS $$
+DECLARE
+    v_id INTEGER;
+    v_feature_id VARCHAR(50);
+    v_count INTEGER;
+BEGIN
+    -- Generate feature_id
+    SELECT COUNT(*) + 1 INTO v_count FROM feature WHERE session_name = p_session_name;
+    v_feature_id := 'F-' || LPAD(v_count::TEXT, 3, '0');
+
+    INSERT INTO feature (session_name, feature_id, name, description, source, status)
+    VALUES (p_session_name, v_feature_id, p_name, p_description, p_source, 'pending')
+    ON CONFLICT (session_name, name) DO UPDATE
+    SET description = COALESCE(EXCLUDED.description, feature.description),
+        updated_at = NOW()
+    RETURNING id INTO v_id;
+
+    RETURN v_id;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION upsert_feature IS 'Insert or update a feature, auto-generating feature_id';
+
+-- Function: Insert or update journey from research
+CREATE OR REPLACE FUNCTION upsert_journey(
+    p_session_name VARCHAR(255),
+    p_name VARCHAR(255),
+    p_actor VARCHAR(100) DEFAULT NULL,
+    p_trigger_event TEXT DEFAULT NULL,
+    p_goal TEXT DEFAULT NULL,
+    p_source VARCHAR(50) DEFAULT 'research'
+) RETURNS INTEGER AS $$
+DECLARE
+    v_id INTEGER;
+    v_journey_id VARCHAR(50);
+    v_count INTEGER;
+BEGIN
+    -- Generate journey_id
+    SELECT COUNT(*) + 1 INTO v_count FROM journey WHERE session_name = p_session_name;
+    v_journey_id := 'J-' || LPAD(v_count::TEXT, 3, '0');
+
+    INSERT INTO journey (session_name, journey_id, name, actor, trigger_event, goal, source, confirmation_status)
+    VALUES (p_session_name, v_journey_id, p_name, p_actor, p_trigger_event, p_goal, p_source, 'pending')
+    ON CONFLICT (session_name, name) DO UPDATE
+    SET actor = COALESCE(EXCLUDED.actor, journey.actor),
+        trigger_event = COALESCE(EXCLUDED.trigger_event, journey.trigger_event),
+        goal = COALESCE(EXCLUDED.goal, journey.goal),
+        updated_at = NOW()
+    RETURNING id INTO v_id;
+
+    RETURN v_id;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION upsert_journey IS 'Insert or update a journey, auto-generating journey_id';
+
+-- Function: Confirm a feature (mark as confirmed by user)
+CREATE OR REPLACE FUNCTION confirm_feature(
+    p_session_name VARCHAR(255),
+    p_feature_name VARCHAR(255)
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE feature
+    SET status = 'confirmed', updated_at = NOW()
+    WHERE session_name = p_session_name AND name = p_feature_name;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION confirm_feature IS 'Mark a feature as confirmed by user';
+
+-- Function: Remove a feature (mark as removed by user)
+CREATE OR REPLACE FUNCTION remove_feature(
+    p_session_name VARCHAR(255),
+    p_feature_name VARCHAR(255)
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE feature
+    SET status = 'removed', updated_at = NOW()
+    WHERE session_name = p_session_name AND name = p_feature_name;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION remove_feature IS 'Mark a feature as removed by user';
+
+-- Function: Get all confirmed features for a session
+CREATE OR REPLACE FUNCTION get_confirmed_features(
+    p_session_name VARCHAR(255)
+) RETURNS TABLE (
+    id INTEGER,
+    feature_id VARCHAR(50),
+    name VARCHAR(255),
+    description TEXT,
+    priority VARCHAR(20)
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT f.id, f.feature_id, f.name, f.description, f.priority
+    FROM feature f
+    WHERE f.session_name = p_session_name AND f.status = 'confirmed'
+    ORDER BY f.feature_id;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION get_confirmed_features IS 'Get all confirmed features for a session';
+
+-- Function: Get all confirmed journeys for a session
+CREATE OR REPLACE FUNCTION get_confirmed_journeys(
+    p_session_name VARCHAR(255)
+) RETURNS TABLE (
+    id INTEGER,
+    journey_id VARCHAR(50),
+    name VARCHAR(255),
+    actor VARCHAR(100),
+    goal TEXT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT j.id, j.journey_id, j.name, j.actor, j.goal
+    FROM journey j
+    WHERE j.session_name = p_session_name AND j.confirmation_status = 'confirmed'
+    ORDER BY j.journey_id;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION get_confirmed_journeys IS 'Get all confirmed journeys for a session';
+
+-- =============================================================================
 -- SCHEMA VERSION
 -- =============================================================================
-COMMENT ON SCHEMA public IS 'Interview Schema v3.1.0 - Hybrid 10-table design with comprehensive step tracing and integration credentials';
+COMMENT ON SCHEMA public IS 'Interview Schema v4.0.0 - Feature-based interrogation with deep research, user types, and cross-cutting concerns';

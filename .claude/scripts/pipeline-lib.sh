@@ -49,6 +49,81 @@ PIPELINE_STATE_DIR=""
 PIPELINE_STATE_FILE=""
 
 # ============================================================
+# Database Helper Functions
+# ============================================================
+
+# Get database connection string from .env
+get_db_connection() {
+  if [ -f ".env" ]; then
+    local db_url
+    db_url=$(grep "^DATABASE_URL=" .env | cut -d= -f2-)
+    if [ -n "$db_url" ]; then
+      echo "$db_url"
+      return 0
+    fi
+    # Fallback to individual vars
+    local host port user pass db
+    host=$(grep "^POSTGRES_HOST=" .env | cut -d= -f2-)
+    port=$(grep "^POSTGRES_PORT=" .env | cut -d= -f2-)
+    user=$(grep "^POSTGRES_USER=" .env | cut -d= -f2-)
+    pass=$(grep "^POSTGRES_PASSWORD=" .env | cut -d= -f2-)
+    db=$(grep "^POSTGRES_DB=" .env | cut -d= -f2-)
+    if [ -n "$host" ] && [ -n "$user" ] && [ -n "$db" ]; then
+      echo "postgresql://$user:$pass@$host:${port:-5432}/$db"
+      return 0
+    fi
+  fi
+  echo ""
+  return 1
+}
+
+# Execute a database query and return results
+db_query() {
+  local query="$1"
+  local conn
+  conn=$(get_db_connection)
+  if [ -z "$conn" ]; then
+    echo "0"
+    return 1
+  fi
+  psql "$conn" -t -A -c "$query" 2>/dev/null || echo "0"
+}
+
+# Execute a database query and return scalar result
+db_query_scalar() {
+  local query="$1"
+  local result
+  result=$(db_query "$query")
+  echo "${result:-0}"
+}
+
+# Check if database is available
+db_available() {
+  local conn
+  conn=$(get_db_connection)
+  if [ -z "$conn" ]; then
+    return 1
+  fi
+  psql "$conn" -c "SELECT 1" &>/dev/null
+  return $?
+}
+
+# Get session summary from database
+get_session_summary() {
+  local session="$1"
+  if db_available; then
+    local features journeys user_types integrations
+    features=$(db_query_scalar "SELECT COUNT(*) FROM feature WHERE session_name = '$session' AND status = 'confirmed'")
+    journeys=$(db_query_scalar "SELECT COUNT(*) FROM journey WHERE session_name = '$session' AND confirmation_status = 'confirmed'")
+    user_types=$(db_query_scalar "SELECT COUNT(*) FROM user_type WHERE session_name = '$session'")
+    integrations=$(db_query_scalar "SELECT COUNT(*) FROM integration WHERE session_name = '$session' AND status = 'confirmed'")
+    echo "Features: $features, Journeys: $journeys, User Types: $user_types, Integrations: $integrations"
+  else
+    echo "Database not available"
+  fi
+}
+
+# ============================================================
 # State Management Functions
 # ============================================================
 
@@ -151,6 +226,10 @@ update_step_status() {
     if [ "$step_num" -eq "$TOTAL_STEPS" ]; then
       sed -i "s/^status: .*/status: complete/" "$PIPELINE_STATE_FILE"
     fi
+  elif [ "$status" = "paused" ]; then
+    # Step is paused for user interaction
+    sed -i "s/^current_step: .*/current_step: $step_num/" "$PIPELINE_STATE_FILE"
+    sed -i "s/^status: .*/status: paused/" "$PIPELINE_STATE_FILE"
   elif [ "$status" = "failed" ]; then
     sed -i "s/^status: .*/status: failed/" "$PIPELINE_STATE_FILE"
   fi
@@ -286,14 +365,21 @@ precheck_step_4() {
 }
 
 precheck_step_5() {
-  # extract - conversation file must exist
+  # extract - check database for confirmed features
+  # First check conversation file exists and is complete
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
   if [ -f "$conv" ]; then
-    # Check if interrogation is complete
     local status
     status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
     if [ "$status" = "complete" ]; then
-      return 0
+      # Also verify database has confirmed features
+      local feature_count
+      feature_count=$(db_query_scalar "SELECT COUNT(*) FROM feature WHERE session_name = '$PIPELINE_SESSION' AND status = 'confirmed'")
+      if [ "$feature_count" -gt 0 ]; then
+        return 0
+      fi
+      echo "No confirmed features in database for session: $PIPELINE_SESSION"
+      return 1
     fi
     echo "Interrogation not complete"
     return 1
@@ -411,13 +497,21 @@ postcheck_step_3() {
 }
 
 postcheck_step_4() {
-  # interrogate - conversation file exists and is complete
+  # interrogate - conversation file exists, is complete, and DB has confirmed features
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
   if [ -f "$conv" ]; then
     local status
     status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
     if [ "$status" = "complete" ]; then
-      return 0
+      # Verify database has confirmed features
+      local feature_count
+      feature_count=$(db_query_scalar "SELECT COUNT(*) FROM feature WHERE session_name = '$PIPELINE_SESSION' AND status = 'confirmed'")
+      if [ "$feature_count" -gt 0 ]; then
+        echo "Session summary: $(get_session_summary "$PIPELINE_SESSION")"
+        return 0
+      fi
+      echo "No confirmed features in database"
+      return 1
     fi
     echo "Interrogation not complete (status: $status)"
     return 1
@@ -427,12 +521,24 @@ postcheck_step_4() {
 }
 
 postcheck_step_5() {
-  # extract - scope document exists and has content
+  # extract - scope document and new files exist
   local scope=".claude/scopes/$PIPELINE_SESSION/00_scope_document.md"
+  local tech_ops=".claude/scopes/$PIPELINE_SESSION/03_technical_ops.md"
+  local test_plan=".claude/scopes/$PIPELINE_SESSION/08_test_plan.md"
+
   if [ -f "$scope" ]; then
     local lines
     lines=$(wc -l < "$scope")
     if [ "$lines" -gt 50 ]; then
+      # Check for new required files
+      if [ ! -f "$tech_ops" ]; then
+        echo "Technical ops file not created: $tech_ops"
+        return 1
+      fi
+      if [ ! -f "$test_plan" ]; then
+        echo "Test plan file not created: $test_plan"
+        return 1
+      fi
       return 0
     fi
     echo "Scope document too short ($lines lines, expected >50)"
@@ -555,19 +661,32 @@ run_step_2() {
 }
 
 run_step_3() {
-  # repo - Ensure GitHub Repository
-  ./.claude/scripts/ensure-github-repo.sh
+  # repo - Ensure GitHub Repository (non-interactive: private, auto-push)
+  ./.claude/scripts/ensure-github-repo.sh --private --push
 }
 
 run_step_4() {
-  # interrogate - Run Structured Q&A
+  # interrogate - Run Structured Q&A via /dr-full
+  # Uses the deep research refine+launch command for structured discovery
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
 
   mkdir -p ".claude/interrogations/$PIPELINE_SESSION"
 
-  echo "Starting/resuming interrogation..."
+  # Check if interrogation is already complete
+  if [ -f "$conv" ]; then
+    local status
+    status=$(grep "^Status:" "$conv" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
+    if [ "$status" = "complete" ]; then
+      echo "Interrogation already complete."
+      return 0
+    fi
+  fi
+
+  # Run /dr-full to refine the research question and auto-launch deep research
+  echo "Running structured discovery via /dr-full..."
+  echo "Session: $PIPELINE_SESSION"
   echo "---"
-  claude --dangerously-skip-permissions "/pm:interrogate $PIPELINE_SESSION"
+  claude --dangerously-skip-permissions "/dr-full $PIPELINE_SESSION"
   echo "---"
 }
 
@@ -920,8 +1039,14 @@ execute_step() {
   # Run the step implementation
   local run_func="run_step_$step_num"
   local run_error
+  local run_exit_code
   LAST_ERROR_OUTPUT=""
-  if ! run_error=$($run_func 2>&1); then
+
+  # Run in subshell to capture output while preserving exit code
+  run_error=$($run_func 2>&1)
+  run_exit_code=$?
+
+  if [ "$run_exit_code" -ne 0 ]; then
     if [ "$is_skippable" = true ]; then
       echo "⚠️ Step failed but is optional - marking skipped"
       update_step_status "$step_num" "skipped"
@@ -942,7 +1067,8 @@ execute_step() {
       fi
     fi
   else
-    echo "$run_error"
+    # Echo captured output (only for steps that capture output, not step 4)
+    [ -n "$run_error" ] && echo "$run_error"
   fi
 
   echo ""
@@ -992,7 +1118,11 @@ run_pipeline_from() {
   echo ""
 
   for ((i=start_step; i<=TOTAL_STEPS; i++)); do
-    if ! execute_step "$i"; then
+    execute_step "$i"
+    local step_result=$?
+
+    # Handle failure
+    if [ "$step_result" -ne 0 ]; then
       echo ""
       echo "❌ Pipeline stopped at step $i"
       echo ""
@@ -1038,6 +1168,7 @@ show_pipeline_status() {
     case "$status" in
       complete) indicator="✓" ;;
       running) indicator="►" ;;
+      paused) indicator="⏸" ;;
       failed) indicator="✗" ;;
       skipped) indicator="⊘" ;;
     esac

@@ -4,18 +4,18 @@ Collect required credentials for integrations detected in scope document.
 
 ## Usage
 ```
-/pm:gather-credentials <session-name>
+/pm:gather-credentials [session-name]
 ```
 
 ## Arguments
-- `session-name` (required): Name of the scoped session to gather credentials for
+- `session-name` (optional): Name of the scoped session. If not provided, auto-detects from `.claude/scopes/`
 
 ## Output
 
 **Files Created:**
 - `.env` - Actual credential values (gitignored)
 - `.env.template` - Template with placeholders (tracked in git)
-- `.claude/scopes/{session}/credentials.yaml` - Collection metadata
+- `.claude/credentials.yaml` - Collection metadata
 
 ---
 
@@ -23,8 +23,28 @@ Collect required credentials for integrations detected in scope document.
 
 ### Step 1: Initialize and Validate
 
+**Auto-detect scope if not provided:**
+
 ```bash
 SESSION_NAME="$ARGUMENTS"
+
+# If no session name provided, auto-detect
+if [ -z "$SESSION_NAME" ]; then
+  # Count scopes
+  scope_count=$(ls -1d .claude/scopes/*/ 2>/dev/null | wc -l)
+
+  if [ "$scope_count" -eq 0 ]; then
+    # No scopes found
+    echo "❌ No scopes found"
+  elif [ "$scope_count" -eq 1 ]; then
+    # Use the only scope
+    SESSION_NAME=$(ls -1d .claude/scopes/*/ | head -1 | xargs basename)
+  else
+    # Use most recently modified scope
+    SESSION_NAME=$(ls -1td .claude/scopes/*/ | head -1 | xargs basename)
+  fi
+fi
+
 SCOPE_DIR=".claude/scopes/$SESSION_NAME"
 ARCH_DOC="$SCOPE_DIR/04_technical_architecture.md"
 MAPPING_FILE=".claude/templates/credential-mapping.json"
@@ -32,10 +52,10 @@ MAPPING_FILE=".claude/templates/credential-mapping.json"
 
 **Check prerequisites:**
 
-If scope directory doesn't exist:
+If no scopes exist:
 ```
-❌ Scope not found: {session-name}
-Run: /pm:extract-findings {session-name}
+❌ No scopes found in .claude/scopes/
+Run: ./interrogate.sh --extract <session-name>
 ```
 
 If `04_technical_architecture.md` doesn't exist:
@@ -340,7 +360,7 @@ else:
 
 ### Step 8: Save State
 
-**Create credentials.yaml in scope directory:**
+**Create credentials.yaml at project level:**
 
 ```yaml
 gathered: {datetime}
@@ -363,7 +383,7 @@ database_stored: true
 encryption_enabled: true
 ```
 
-Write to: `$SCOPE_DIR/credentials.yaml`
+Write to: `.claude/credentials.yaml`
 
 ---
 
@@ -387,7 +407,7 @@ Summary:
 Files Created:
 - .env (actual values)
 - .env.template (for sharing/onboarding)
-- .claude/scopes/{session}/credentials.yaml (metadata)
+- .claude/credentials.yaml (metadata)
 
 Database Storage:
 - ✓ Credentials encrypted with AES-256-GCM

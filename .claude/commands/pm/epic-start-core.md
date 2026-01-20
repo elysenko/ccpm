@@ -126,6 +126,9 @@ Task:
 
     Update progress in:
     .claude/epics/$ARGUMENTS/updates/{issue}/stream-{X}.md
+
+    If building images use the pm:build-deployment skill
+    If deploying use the pm:deploy skill
 ```
 
 ### 5. Track Active Agents

@@ -78,7 +78,9 @@ echo "Analyzing differences..."
 
 new_files=()
 modified_files=()
+deleted_files=()
 
+# Find new and modified files (local -> source)
 for dir in "${SYNC_DIRS[@]}"; do
     local_dir="$LOCAL_BASE/$dir"
     [ ! -d "$local_dir" ] && continue
@@ -95,6 +97,21 @@ for dir in "${SYNC_DIRS[@]}"; do
     done < <(find "$local_dir" -type f -print0 2>/dev/null)
 done
 
+# Find deleted files (exist in source but not locally)
+for dir in "${SYNC_DIRS[@]}"; do
+    source_dir="$SOURCE_BASE/$dir"
+    [ ! -d "$source_dir" ] && continue
+
+    while IFS= read -r -d '' source_file; do
+        rel_path="${source_file#$SOURCE_BASE/}"
+        local_file="$LOCAL_BASE/$rel_path"
+
+        if [ ! -f "$local_file" ]; then
+            deleted_files+=("$rel_path")
+        fi
+    done < <(find "$source_dir" -type f -print0 2>/dev/null)
+done
+
 for file in "${SYNC_FILES[@]}"; do
     if [ -f "$LOCAL_BASE/$file" ]; then
         if [ ! -f "$SOURCE_BASE/$file" ]; then
@@ -102,14 +119,18 @@ for file in "${SYNC_FILES[@]}"; do
         elif ! diff -q "$LOCAL_BASE/$file" "$SOURCE_BASE/$file" > /dev/null 2>&1; then
             modified_files+=("$file")
         fi
+    elif [ -f "$SOURCE_BASE/$file" ]; then
+        # File exists in source but not locally - deleted
+        deleted_files+=("$file")
     fi
 done
 
 echo ""
 echo "New files:      ${#new_files[@]}"
 echo "Modified files: ${#modified_files[@]}"
+echo "Deleted files:  ${#deleted_files[@]}"
 
-if [ ${#new_files[@]} -eq 0 ] && [ ${#modified_files[@]} -eq 0 ]; then
+if [ ${#new_files[@]} -eq 0 ] && [ ${#modified_files[@]} -eq 0 ] && [ ${#deleted_files[@]} -eq 0 ]; then
     echo ""
     echo "No differences found. Nothing to push."
     exit 0
@@ -118,6 +139,7 @@ fi
 echo ""
 [ ${#new_files[@]} -gt 0 ] && printf '  + %s\n' "${new_files[@]}"
 [ ${#modified_files[@]} -gt 0 ] && printf '  ~ %s\n' "${modified_files[@]}"
+[ ${#deleted_files[@]} -gt 0 ] && printf '  - %s\n' "${deleted_files[@]}"
 
 # Save current directory
 ORIGINAL_DIR=$(pwd)
@@ -164,6 +186,14 @@ for rel_path in "${modified_files[@]}"; do
     echo "  ~ $rel_path"
 done
 
+for rel_path in "${deleted_files[@]}"; do
+    dst="$SOURCE_BASE/$rel_path"
+    if [ -f "$dst" ]; then
+        rm "$dst"
+        echo "  - $rel_path"
+    fi
+done
+
 # Make scripts executable
 find "$SOURCE_BASE/scripts" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
 
@@ -179,7 +209,7 @@ COMMIT_MSG="feat: contributions from $PROJECT_NAME"
 if git diff --cached --quiet; then
     echo "No changes to commit"
 else
-    git commit -m "$COMMIT_MSG" -m "New: ${#new_files[@]}, Modified: ${#modified_files[@]}"
+    git commit -m "$COMMIT_MSG" -m "New: ${#new_files[@]}, Modified: ${#modified_files[@]}, Deleted: ${#deleted_files[@]}"
 fi
 
 # Push
@@ -197,10 +227,11 @@ PR_TITLE="[contrib] $PROJECT_NAME${PR_TITLE_SUFFIX:+: $PR_TITLE_SUFFIX}"
 FILE_LIST=""
 for f in "${new_files[@]}"; do FILE_LIST="${FILE_LIST}- \`${f}\` (new)"$'\n'; done
 for f in "${modified_files[@]}"; do FILE_LIST="${FILE_LIST}- \`${f}\` (modified)"$'\n'; done
+for f in "${deleted_files[@]}"; do FILE_LIST="${FILE_LIST}- \`${f}\` (deleted)"$'\n'; done
 
 PR_BODY="## Contributions from $PROJECT_NAME
 
-**New:** ${#new_files[@]} | **Modified:** ${#modified_files[@]}
+**New:** ${#new_files[@]} | **Modified:** ${#modified_files[@]} | **Deleted:** ${#deleted_files[@]}
 
 ### Files
 ${FILE_LIST}
