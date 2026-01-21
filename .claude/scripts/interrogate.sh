@@ -380,7 +380,7 @@ gather_credentials() {
 
 # Ensure GitHub repository exists
 ensure_repo() {
-  local repo_name="${1:-$(basename "$(pwd)")}"
+  local repo_name="${1:-$(basename "$(pwd)" | tr '_' '-')}"
 
   echo "=== Ensure GitHub Repository ==="
   echo ""
@@ -391,7 +391,7 @@ ensure_repo() {
 
 # Create database schema (Step 2)
 create_schema() {
-  local name="${1:-$(basename "$(pwd)")}"
+  local name="${1:-$(basename "$(pwd)" | tr '_' '-')}"
 
   echo "=== Create Database Schema ==="
   echo ""
@@ -611,7 +611,7 @@ deploy_app() {
   fi
 
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   echo "=== Deploy to Kubernetes: $name ==="
   echo "Namespace: $project_name"
@@ -734,7 +734,7 @@ generate_remediation() {
 
 # Setup infrastructure services (PostgreSQL, MinIO)
 setup_services() {
-  local project_name="${1:-$(basename "$(pwd)")}"
+  local project_name="${1:-$(basename "$(pwd)" | tr '_' '-')}"
 
   echo "=== Setup Infrastructure Services ==="
   echo ""

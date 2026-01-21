@@ -491,7 +491,7 @@ precheck_step_14() {
 postcheck_step_1() {
   # services - check pods are running
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   # Check if namespace exists and has pods
   if kubectl get namespace "$project_name" &>/dev/null; then
@@ -643,7 +643,7 @@ postcheck_step_11() {
 postcheck_step_12() {
   # deploy - all pods running in namespace
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   # Check if all pods are Running or Completed
   local not_ready
@@ -683,7 +683,7 @@ postcheck_step_14() {
 run_step_1() {
   # services - Setup Infrastructure Services
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   echo "Setting up PostgreSQL, MinIO, CloudBeaver in namespace: $project_name"
 
@@ -793,7 +793,7 @@ run_step_11() {
 run_step_12() {
   # deploy - Deploy Full Application via sub-agent
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   echo "=== Deploying to Kubernetes via sub-agent ==="
   echo "Namespace: $project_name"
@@ -1000,7 +1000,7 @@ try_fix_step() {
   step_desc=$(echo "$step_info" | cut -d: -f2)
 
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   for attempt in 1 2 3; do
     echo ""
