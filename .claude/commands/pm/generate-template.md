@@ -443,7 +443,51 @@ volumes:
   pgdata:
 ```
 
-### Step 10: Output Summary
+### Step 10: Create Deploy Scope File
+
+Create `.claude/scopes/{session}.md` with deploy configuration for `/pm:deploy`:
+
+```markdown
+---
+name: {session}
+status: active
+work_dir: {current_working_directory}
+
+deploy:
+  enabled: true
+  namespace: {session}
+  registry: ${REGISTRY:-ubuntu.desmana-truck.ts.net:30500}
+  manifests: .claude/templates/{session}/k8s/
+  secrets_from: .env
+  images:
+    - name: {session}-backend
+      dockerfile: .claude/templates/{session}/scaffold/backend/Dockerfile
+      context: .claude/templates/{session}/scaffold/backend
+    - name: {session}-frontend
+      dockerfile: .claude/templates/{session}/scaffold/frontend/Dockerfile
+      context: .claude/templates/{session}/scaffold/frontend
+---
+
+# {session}
+
+Generated scope document for deployment.
+
+## Tech Stack
+- Backend: {backend-framework}
+- Frontend: {frontend-framework}
+- Database: PostgreSQL
+
+## Deployment
+- Namespace: {session}
+- Registry: {registry}
+```
+
+**Note:** This scope file is used by `/pm:deploy` and `/pm:deploy-skeleton` to:
+- Build and push Docker images to the registry
+- Apply K8s manifests from the templates directory
+- Create secrets from the .env file
+
+### Step 11: Output Summary
 
 ```
 Template generation complete: {session}
@@ -466,9 +510,12 @@ Generated Files:
     - .claude/templates/{session}/scaffold/frontend/
     - .claude/templates/{session}/scaffold/docker-compose.yaml
 
+  Deploy Configuration:
+    - .claude/scopes/{session}.md
+
 Next steps:
   1. Review generated templates
-  2. Run /pm:deploy-skeleton {session} to deploy
+  2. Run /pm:deploy-skeleton {session} to deploy skeleton app
   3. Customize scaffolds as needed
 ```
 

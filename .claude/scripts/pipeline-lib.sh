@@ -27,15 +27,17 @@ PIPELINE_STEPS=(
   "extract:Extract Scope Document"
   "credentials:Gather Credentials"
   "roadmap:Generate MVP Roadmap"
+  "generate-template:Generate Skeleton Templates"
+  "deploy-skeleton:Deploy Skeleton Application"
   "decompose:Decompose into PRDs"
   "batch:Batch Process PRDs"
-  "deploy:Deploy to Kubernetes"
+  "deploy:Deploy Full Application"
   "synthetic:Synthetic Persona Testing"
   "remediation:Generate Remediation PRDs"
 )
 
 # Total steps
-TOTAL_STEPS=12
+TOTAL_STEPS=14
 
 # Steps that can be skipped on failure
 SKIPPABLE_STEPS="2 6"
@@ -164,11 +166,13 @@ steps:
   5: {name: extract, status: pending}
   6: {name: credentials, status: pending}
   7: {name: roadmap, status: pending}
-  8: {name: decompose, status: pending}
-  9: {name: batch, status: pending}
-  10: {name: deploy, status: pending}
-  11: {name: synthetic, status: pending}
-  12: {name: remediation, status: pending}
+  8: {name: generate-template, status: pending}
+  9: {name: deploy-skeleton, status: pending}
+  10: {name: decompose, status: pending}
+  11: {name: batch, status: pending}
+  12: {name: deploy, status: pending}
+  13: {name: synthetic, status: pending}
+  14: {name: remediation, status: pending}
 errors: []
 warnings: []
 fix_attempts: []
@@ -409,6 +413,26 @@ precheck_step_7() {
 }
 
 precheck_step_8() {
+  # generate-template - technical architecture must exist
+  local tech_arch=".claude/scopes/$PIPELINE_SESSION/04_technical_architecture.md"
+  if [ -f "$tech_arch" ]; then
+    return 0
+  fi
+  echo "Technical architecture not found: $tech_arch"
+  return 1
+}
+
+precheck_step_9() {
+  # deploy-skeleton - K8s templates must exist
+  local k8s_dir=".claude/templates/$PIPELINE_SESSION/k8s"
+  if [ -d "$k8s_dir" ]; then
+    return 0
+  fi
+  echo "K8s templates not found: $k8s_dir"
+  return 1
+}
+
+precheck_step_10() {
   # decompose - roadmap must exist
   local roadmap=".claude/scopes/$PIPELINE_SESSION/07_roadmap.md"
   if [ -f "$roadmap" ]; then
@@ -418,7 +442,7 @@ precheck_step_8() {
   return 1
 }
 
-precheck_step_9() {
+precheck_step_11() {
   # batch - PRD files must exist
   local prd_count
   prd_count=$(ls -1 .claude/prds/*.md 2>/dev/null | wc -l)
@@ -429,7 +453,7 @@ precheck_step_9() {
   return 1
 }
 
-precheck_step_10() {
+precheck_step_12() {
   # deploy - All PRDs must be complete
   local complete_count
   complete_count=$(grep -l "^status: complete" .claude/prds/*.md 2>/dev/null | wc -l)
@@ -440,7 +464,7 @@ precheck_step_10() {
   return 1
 }
 
-precheck_step_11() {
+precheck_step_13() {
   # synthetic - user journeys must exist
   local journeys=".claude/scopes/$PIPELINE_SESSION/02_user_journeys.md"
   if [ -f "$journeys" ]; then
@@ -450,7 +474,7 @@ precheck_step_11() {
   return 1
 }
 
-precheck_step_12() {
+precheck_step_14() {
   # remediation - feedback file must exist
   local feedback=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
   if [ -f "$feedback" ]; then
@@ -574,6 +598,27 @@ postcheck_step_7() {
 }
 
 postcheck_step_8() {
+  # generate-template - K8s manifests must exist
+  local k8s_dir=".claude/templates/$PIPELINE_SESSION/k8s"
+  if [ -d "$k8s_dir" ] && [ -f "$k8s_dir/namespace.yaml" ]; then
+    return 0
+  fi
+  echo "K8s templates not created in $k8s_dir"
+  return 1
+}
+
+postcheck_step_9() {
+  # deploy-skeleton - at least one pod running
+  local running
+  running=$(kubectl get pods -n "$PIPELINE_SESSION" --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+  if [ "$running" -gt 0 ]; then
+    return 0
+  fi
+  echo "No running pods in namespace $PIPELINE_SESSION"
+  return 1
+}
+
+postcheck_step_10() {
   # decompose - at least 1 PRD file exists
   local prd_count
   prd_count=$(ls -1 .claude/prds/*.md 2>/dev/null | wc -l)
@@ -584,7 +629,7 @@ postcheck_step_8() {
   return 1
 }
 
-postcheck_step_9() {
+postcheck_step_11() {
   # batch - at least 1 PRD marked complete
   local complete_count
   complete_count=$(grep -l "^status: complete" .claude/prds/*.md 2>/dev/null | wc -l)
@@ -595,7 +640,7 @@ postcheck_step_9() {
   return 1
 }
 
-postcheck_step_10() {
+postcheck_step_12() {
   # deploy - all pods running in namespace
   local project_name
   project_name=$(basename "$(pwd)")
@@ -611,7 +656,7 @@ postcheck_step_10() {
   return 1
 }
 
-postcheck_step_11() {
+postcheck_step_13() {
   # synthetic - personas.json exists
   local personas=".claude/testing/personas/$PIPELINE_SESSION-personas.json"
   if [ -f "$personas" ]; then
@@ -621,7 +666,7 @@ postcheck_step_11() {
   return 1
 }
 
-postcheck_step_12() {
+postcheck_step_14() {
   # remediation - analysis.md exists
   local analysis=".claude/testing/feedback/$PIPELINE_SESSION-analysis.md"
   if [ -f "$analysis" ]; then
@@ -666,7 +711,7 @@ run_step_3() {
 }
 
 run_step_4() {
-  # interrogate - Run Structured Q&A via /dr-full
+  # interrogate - Run Structured Q&A via sub-agent
   # Uses the deep research refine+launch command for structured discovery
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
 
@@ -682,70 +727,86 @@ run_step_4() {
     fi
   fi
 
-  # Run /dr-full to refine the research question and auto-launch deep research
-  echo "Running structured discovery via /dr-full..."
+  # Run structured discovery via sub-agent
+  echo "Running structured discovery via sub-agent..."
   echo "Session: $PIPELINE_SESSION"
   echo "---"
-  claude --dangerously-skip-permissions "/dr-full $PIPELINE_SESSION"
+  run_skill_as_subagent "pm:interrogate" "$PIPELINE_SESSION" "complete" 1800
   echo "---"
 }
 
 run_step_5() {
-  # extract - Extract Scope Document
-  echo "Extracting findings to scope document..."
+  # extract - Extract Scope Document via sub-agent
+  echo "Extracting findings to scope document via sub-agent..."
   echo "---"
-  claude --dangerously-skip-permissions --print "/pm:extract-findings $PIPELINE_SESSION"
+  run_skill_as_subagent "pm:extract-findings" "$PIPELINE_SESSION" "scope" 600
   echo "---"
 }
 
 run_step_6() {
-  # credentials - Gather Credentials
-  echo "Gathering credentials for integrations..."
+  # credentials - Gather Credentials via sub-agent
+  echo "Gathering credentials via sub-agent..."
   echo "---"
-  claude --dangerously-skip-permissions "/pm:gather-credentials $PIPELINE_SESSION"
+  run_skill_as_subagent "pm:gather-credentials" "$PIPELINE_SESSION" "credentials" 600
   echo "---"
 }
 
 run_step_7() {
-  # roadmap - Generate MVP Roadmap
-  echo "Generating MVP roadmap..."
+  # roadmap - Generate MVP Roadmap via sub-agent
+  echo "Generating MVP roadmap via sub-agent..."
   echo "---"
-  claude --dangerously-skip-permissions --print "/pm:roadmap-generate $PIPELINE_SESSION"
+  run_skill_as_subagent "pm:roadmap-generate" "$PIPELINE_SESSION" "roadmap" 600
   echo "---"
 }
 
 run_step_8() {
-  # decompose - Decompose into PRDs
-  echo "Decomposing scope into PRDs..."
+  # generate-template - Generate K8s manifests and code scaffolds via sub-agent
+  echo "Generating skeleton templates via sub-agent..."
   echo "---"
-  claude --dangerously-skip-permissions --print "/pm:scope-decompose $PIPELINE_SESSION --generate"
+  run_skill_as_subagent "pm:generate-template" "$PIPELINE_SESSION" "templates" 300
   echo "---"
 }
 
 run_step_9() {
-  # batch - Batch Process PRDs
-  echo "=== Starting Batch Processing ==="
-  echo ""
-  verify_claude_command "/pm:batch-process" "complete" 1800
+  # deploy-skeleton - Deploy skeleton application via sub-agent
+  echo "Deploying skeleton application via sub-agent..."
+  echo "---"
+  run_skill_as_subagent "pm:deploy-skeleton" "$PIPELINE_SESSION" "deployed" 300
+  echo "---"
 }
 
 run_step_10() {
-  # deploy - Deploy to Kubernetes
+  # decompose - Decompose into PRDs via sub-agent
+  echo "Decomposing scope into PRDs via sub-agent..."
+  echo "---"
+  run_skill_as_subagent "pm:scope-decompose" "$PIPELINE_SESSION --generate" "PRD" 600
+  echo "---"
+}
+
+run_step_11() {
+  # batch - Batch Process PRDs via sub-agent
+  echo "=== Starting Batch Processing via sub-agent ==="
+  echo ""
+  run_skill_as_subagent "pm:batch-process" "" "complete" 1800
+}
+
+run_step_12() {
+  # deploy - Deploy Full Application via sub-agent
   local project_name
   project_name=$(basename "$(pwd)")
 
-  echo "=== Deploying to Kubernetes ==="
+  echo "=== Deploying to Kubernetes via sub-agent ==="
   echo "Namespace: $project_name"
   echo ""
 
   # Call /pm:deploy with the session name
-  verify_claude_command "/pm:deploy $PIPELINE_SESSION" "Deployed" 600
+  run_skill_as_subagent "pm:deploy" "$PIPELINE_SESSION" "Deployed" 600
 }
 
-run_step_11() {
-  # synthetic - Synthetic Persona Testing
-  echo "Generating synthetic personas..."
-  verify_claude_command "/pm:generate-personas $PIPELINE_SESSION --count 10" "personas" 300
+run_step_13() {
+  # synthetic - Synthetic Persona Testing via sub-agents
+  echo "Generating synthetic personas via sub-agent..."
+  run_skill_as_subagent "pm:generate-personas" "$PIPELINE_SESSION --count 10" "personas" 300
 
   local personas_file=".claude/testing/personas/$PIPELINE_SESSION-personas.json"
   if [ ! -f "$personas_file" ]; then
@@ -755,8 +816,8 @@ run_step_11() {
   echo "Personas generated ✓"
   echo ""
 
-  echo "Generating Playwright tests..."
-  verify_claude_command "/pm:generate-tests $PIPELINE_SESSION" "tests" 300
+  echo "Generating Playwright tests via sub-agent..."
+  run_skill_as_subagent "pm:generate-tests" "$PIPELINE_SESSION" "tests" 300
 
   local playwright_dir=".claude/testing/playwright"
   if [ ! -d "$playwright_dir" ]; then
@@ -778,8 +839,8 @@ run_step_11() {
   fi
   echo ""
 
-  echo "Generating synthetic feedback..."
-  verify_claude_command "/pm:generate-feedback $PIPELINE_SESSION" "feedback" 300
+  echo "Generating synthetic feedback via sub-agent..."
+  run_skill_as_subagent "pm:generate-feedback" "$PIPELINE_SESSION" "feedback" 300
 
   local feedback_file=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
   if [ -f "$feedback_file" ]; then
@@ -792,8 +853,8 @@ run_step_11() {
   fi
   echo ""
 
-  echo "Analyzing feedback patterns..."
-  verify_claude_command "/pm:analyze-feedback $PIPELINE_SESSION" "analysis" 300
+  echo "Analyzing feedback via sub-agent..."
+  run_skill_as_subagent "pm:analyze-feedback" "$PIPELINE_SESSION" "analysis" 300
 
   local analysis_file=".claude/testing/feedback/$PIPELINE_SESSION-analysis.md"
   if [ -f "$analysis_file" ]; then
@@ -807,8 +868,8 @@ run_step_11() {
   fi
 }
 
-run_step_12() {
-  # remediation - Generate Remediation PRDs
+run_step_14() {
+  # remediation - Generate Remediation PRDs via sub-agent
   local issues_file=".claude/testing/feedback/$PIPELINE_SESSION-issues.json"
   local feedback_file=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
 
@@ -818,10 +879,10 @@ run_step_12() {
     return 0
   fi
 
-  echo "Creating PRDs to address feedback issues..."
+  echo "Creating PRDs to address feedback issues via sub-agent..."
   echo ""
 
-  verify_claude_command "/pm:generate-remediation $PIPELINE_SESSION --max 10" "remediation" 600
+  run_skill_as_subagent "pm:generate-remediation" "$PIPELINE_SESSION --max 10" "remediation" 600
 
   # Count remediation PRDs
   local prds_dir=".claude/prds"
@@ -831,8 +892,8 @@ run_step_12() {
   if [ "$remediation_count" -gt 0 ]; then
     echo "Remediation PRDs generated: $remediation_count"
     echo ""
-    echo "Processing remediation PRDs..."
-    verify_claude_command "/pm:batch-process" "complete" 1800
+    echo "Processing remediation PRDs via sub-agent..."
+    run_skill_as_subagent "pm:batch-process" "" "complete" 1800
   else
     echo "No remediation PRDs needed"
   fi
@@ -877,6 +938,49 @@ verify_claude_command() {
     local exit_code=$?
     echo "---"
     echo "Command failed or timed out (exit code: $exit_code)"
+    cat "$output_file"
+    LAST_ERROR_OUTPUT=$(cat "$output_file")
+    rm -f "$output_file"
+    return 1
+  fi
+}
+
+# Run a skill as a sub-agent via Task tool
+# Usage: run_skill_as_subagent "pm:skill-name" "args" "expected_pattern" timeout_seconds
+run_skill_as_subagent() {
+  local skill="$1"
+  local args="$2"
+  local expected_pattern="$3"
+  local timeout_seconds="${4:-600}"
+
+  echo "Running skill /$skill $args as sub-agent..."
+
+  local output_file
+  output_file=$(mktemp)
+
+  # Claude CLI prompt that uses Task tool internally
+  local prompt="Execute the /$skill $args skill using a Task sub-agent.
+Use the Task tool with subagent_type='general-purpose' to spawn an agent that runs:
+  Skill: $skill
+  Args: $args
+
+Wait for the sub-agent to complete and report the results.
+Do not stop until the skill completes or fails."
+
+  if timeout "$timeout_seconds" claude --dangerously-skip-permissions -p "$prompt" > "$output_file" 2>&1; then
+    echo "Sub-agent completed"
+    if [ -n "$expected_pattern" ]; then
+      if grep -qi "$expected_pattern" "$output_file" 2>/dev/null; then
+        rm -f "$output_file"
+        return 0
+      fi
+    fi
+    cat "$output_file"
+    rm -f "$output_file"
+    return 0
+  else
+    local exit_code=$?
+    echo "Sub-agent failed or timed out (exit code: $exit_code)"
     cat "$output_file"
     LAST_ERROR_OUTPUT=$(cat "$output_file")
     rm -f "$output_file"
