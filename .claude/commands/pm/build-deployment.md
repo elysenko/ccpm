@@ -67,10 +67,34 @@ fi
 echo "✅ Built: {registry}/{name}:latest"
 ```
 
-### 3. Push Each Image
+### 3. Configure Containerd for HTTP Registry
+
+Before pushing, ensure containerd is configured for the insecure (HTTP) registry:
+
+```bash
+# Extract registry host from full registry URL
+REGISTRY_HOST="{registry}"
+
+# Create containerd host configuration directory
+sudo mkdir -p /etc/containerd/certs.d/${REGISTRY_HOST}
+
+# Create hosts.toml for plain HTTP access
+sudo tee /etc/containerd/certs.d/${REGISTRY_HOST}/hosts.toml > /dev/null << 'EOF'
+[host."http://${REGISTRY_HOST}"]
+  skip_verify = true
+  plain_http = true
+EOF
+
+echo "✅ Configured containerd for HTTP registry: ${REGISTRY_HOST}"
+```
+
+**Note:** This step is idempotent - safe to run multiple times.
+
+### 4. Push Each Image
 
 ```bash
 # Push with insecure-registry flag (HTTP registry)
+# The hosts.toml config ensures plain HTTP is used
 sudo nerdctl push --insecure-registry {registry}/{name}:latest
 
 if [ $? -ne 0 ]; then
@@ -81,7 +105,7 @@ fi
 echo "✅ Pushed: {registry}/{name}:latest"
 ```
 
-### 4. Verify Images in Registry
+### 5. Verify Images in Registry
 
 ```bash
 # Check registry catalog
@@ -140,6 +164,32 @@ export BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 - Uses nerdctl (not docker) for builds
 - Uses buildkit via systemd service
 - Always uses `--insecure-registry` for push (HTTP registry)
+- **Configures containerd hosts.toml** for plain HTTP - this is essential for HTTP registries
 - Images are tagged `:latest` (configurable via TAG env var)
 - This command only builds/pushes - use `/pm:deploy` for K8s deployment
 - Can be called standalone or by `/pm:deploy`
+
+## Troubleshooting
+
+### Push hangs or shows "waiting"
+
+If push hangs with all layers showing "waiting", the containerd hosts.toml configuration is likely missing:
+
+```bash
+# Verify the config exists
+cat /etc/containerd/certs.d/{registry}/hosts.toml
+
+# Should show:
+# [host."http://{registry}"]
+#   skip_verify = true
+#   plain_http = true
+```
+
+### Registry connection refused
+
+Ensure the registry is reachable:
+
+```bash
+curl -s http://{registry}/v2/
+# Should return: {}
+```
