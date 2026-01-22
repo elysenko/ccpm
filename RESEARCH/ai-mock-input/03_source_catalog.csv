@@ -1,0 +1,31 @@
+source_id,url,title,type,quality_grade,subquestions,date_accessed
+S01,https://github.com/SWE-agent/SWE-agent,SWE-agent GitHub,GitHub Repo,A,SQ1,2026-01-21
+S02,https://github.com/Aider-AI/aider,Aider GitHub,GitHub Repo,A,SQ1,2026-01-21
+S03,https://github.com/OpenHands/OpenHands,OpenHands GitHub,GitHub Repo,A,SQ1,2026-01-21
+S04,https://en.wikipedia.org/wiki/Auto-GPT,AutoGPT Wikipedia,Encyclopedia,B,SQ1,2026-01-21
+S05,https://devin.ai/,Devin AI Official,Official Docs,B,SQ1,2026-01-21
+S06,https://github.com/anthropics/claude-code,Claude Code GitHub,GitHub Repo,A,SQ1,2026-01-21
+S07,https://aider.chat/docs/scripting.html,Aider Scripting Docs,Official Docs,A,SQ1 SQ2,2026-01-21
+S08,https://www.claudecode101.com/en/tutorial/advanced/headless-mode,Claude Code Headless Mode,Tutorial,B,SQ1 SQ2,2026-01-21
+S09,https://www.yellowduck.be/posts/avoid-tzdata-prompts-in-github-actions,GitHub Actions Non-Interactive,Blog,C,SQ2,2026-01-21
+S10,https://clig.dev/,CLI Guidelines,Guidelines,B,SQ2 SQ6,2026-01-21
+S11,https://linuxconfig.org/how-to-automate-interactive-cli-commands-with-expect,Expect Command Tutorial,Tutorial,B,SQ2,2026-01-21
+S12,https://rubyonrails.org/doctrine,Rails Doctrine,Official Docs,A,SQ3,2026-01-21
+S13,https://en.wikipedia.org/wiki/Convention_over_configuration,Convention Over Configuration Wikipedia,Encyclopedia,B,SQ3,2026-01-21
+S14,https://nextjs.org/docs/app/getting-started/project-structure,Next.js Project Structure,Official Docs,A,SQ3,2026-01-21
+S15,https://google.github.io/adk-docs/safety/,Google ADK Safety Docs,Official Docs,A,SQ4,2026-01-21
+S16,https://genai.owasp.org/llmrisk/llm01-prompt-injection/,OWASP Prompt Injection,Guidelines,A,SQ4,2026-01-21
+S17,https://dev.to/rajeshroyal/hooks-how-to-put-guardrails-on-your-ai-coding-assistant-4gak,Claude Code Hooks Guardrails,Blog,C,SQ4,2026-01-21
+S18,https://www.obsidiansecurity.com/blog/prompt-injection,Prompt Injection 2025,Blog,C,SQ4,2026-01-21
+S19,https://github.com/joke2k/faker,Faker Python GitHub,GitHub Repo,A,SQ5,2026-01-21
+S20,https://fakerphp.org/,FakerPHP Docs,Official Docs,A,SQ5,2026-01-21
+S21,https://yrkan.com/blog/property-based-testing/,Property-Based Testing Guide,Blog,B,SQ5,2026-01-21
+S22,https://www.rubrik.com/insights/ai-issues-take-control-with-rubrik-agent-rewind,Rubrik Agent Rewind,Vendor Docs,C,SQ6,2026-01-21
+S23,https://prefactor.tech/blog/audit-trails-in-ci-cd-best-practices-for-ai-agents,Audit Trails CI/CD AI Agents,Blog,B,SQ6,2026-01-21
+S24,https://www.adopt.ai/glossary/audit-trails-for-agents,Audit Trails for Agents,Industry Guide,B,SQ6,2026-01-21
+S25,https://arxiv.org/abs/2306.13063,LLM Confidence Elicitation Paper,Academic Paper,A,SQ7,2026-01-21
+S26,https://medium.com/capgemini-invent-lab/quantifying-llms-uncertainty-with-confidence-scores-6bb8a6712aa0,LLM Uncertainty Confidence Scores,Blog,C,SQ7,2026-01-21
+S27,https://ragents.readthedocs.io/en/latest/agents/decision-tree/,RAGents Decision Tree Docs,Framework Docs,B,SQ7,2026-01-21
+S28,https://huggingface.co/nvidia/prompt-task-and-complexity-classifier,NVIDIA Prompt Classifier,Tool Docs,B,SQ3 SQ7,2026-01-21
+S29,https://homepages.inf.ed.ac.uk/csutton/publications/naturalize.pdf,Naturalize Paper,Academic Paper,A,SQ3,2026-01-21
+S30,https://arxiv.org/html/2512.18925v1,Developer Context for AI Assistants,Academic Paper,A,SQ3,2026-01-21

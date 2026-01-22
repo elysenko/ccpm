@@ -711,8 +711,8 @@ run_step_3() {
 }
 
 run_step_4() {
-  # interrogate - Run Structured Q&A via sub-agent
-  # Uses the deep research refine+launch command for structured discovery
+  # interrogate - Run Structured Q&A interactively
+  # Launches Claude for user interaction, script waits for completion
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
 
   mkdir -p ".claude/interrogations/$PIPELINE_SESSION"
@@ -727,86 +727,96 @@ run_step_4() {
     fi
   fi
 
-  # Run structured discovery via sub-agent
-  echo "Running structured discovery via sub-agent..."
+  echo "Starting interactive session..."
   echo "Session: $PIPELINE_SESSION"
+  echo ""
+  echo "When Claude starts, type this command:"
+  echo ""
+  echo "  /pm:interrogate $PIPELINE_SESSION"
+  echo ""
+  echo "Complete the Q&A session, then exit Claude (Ctrl+C or /exit)."
+  echo "The pipeline will continue automatically."
+  echo ""
+  echo "Press Enter to launch Claude..."
+  read
+
+  # Launch interactive Claude (no command = stays open for user input)
+  claude --dangerously-skip-permissions
+
   echo "---"
-  run_skill_as_subagent "pm:interrogate" "$PIPELINE_SESSION" "complete" 1800
-  echo "---"
+  echo "Interrogation session ended."
 }
 
 run_step_5() {
-  # extract - Extract Scope Document via sub-agent
-  echo "Extracting findings to scope document via sub-agent..."
+  # extract - Extract Scope Document (non-interactive)
+  echo "Extracting findings to scope document..."
   echo "---"
-  run_skill_as_subagent "pm:extract-findings" "$PIPELINE_SESSION" "scope" 600
+  claude --dangerously-skip-permissions --print "/pm:extract-findings $PIPELINE_SESSION"
   echo "---"
 }
 
 run_step_6() {
-  # credentials - Gather Credentials via sub-agent
-  echo "Gathering credentials via sub-agent..."
+  # credentials - Gather Credentials (non-interactive)
+  echo "Gathering credentials..."
   echo "---"
-  run_skill_as_subagent "pm:gather-credentials" "$PIPELINE_SESSION" "credentials" 600
+  claude --dangerously-skip-permissions --print "/pm:gather-credentials $PIPELINE_SESSION"
   echo "---"
 }
 
 run_step_7() {
-  # roadmap - Generate MVP Roadmap via sub-agent
-  echo "Generating MVP roadmap via sub-agent..."
+  # roadmap - Generate MVP Roadmap (non-interactive)
+  echo "Generating MVP roadmap..."
   echo "---"
-  run_skill_as_subagent "pm:roadmap-generate" "$PIPELINE_SESSION" "roadmap" 600
+  claude --dangerously-skip-permissions --print "/pm:roadmap-generate $PIPELINE_SESSION"
   echo "---"
 }
 
 run_step_8() {
-  # generate-template - Generate K8s manifests and code scaffolds via sub-agent
-  echo "Generating skeleton templates via sub-agent..."
+  # generate-template - Generate K8s manifests and code scaffolds (non-interactive)
+  echo "Generating skeleton templates..."
   echo "---"
-  run_skill_as_subagent "pm:generate-template" "$PIPELINE_SESSION" "templates" 300
+  claude --dangerously-skip-permissions --print "/pm:generate-template $PIPELINE_SESSION"
   echo "---"
 }
 
 run_step_9() {
-  # deploy-skeleton - Deploy skeleton application via sub-agent
-  echo "Deploying skeleton application via sub-agent..."
+  # deploy-skeleton - Deploy skeleton application (non-interactive)
+  echo "Deploying skeleton application..."
   echo "---"
-  run_skill_as_subagent "pm:deploy-skeleton" "$PIPELINE_SESSION" "deployed" 300
+  claude --dangerously-skip-permissions --print "/pm:deploy-skeleton $PIPELINE_SESSION"
   echo "---"
 }
 
 run_step_10() {
-  # decompose - Decompose into PRDs via sub-agent
-  echo "Decomposing scope into PRDs via sub-agent..."
+  # decompose - Decompose into PRDs (non-interactive)
+  echo "Decomposing scope into PRDs..."
   echo "---"
-  run_skill_as_subagent "pm:scope-decompose" "$PIPELINE_SESSION --generate" "PRD" 600
+  claude --dangerously-skip-permissions --print "/pm:scope-decompose $PIPELINE_SESSION --generate"
   echo "---"
 }
 
 run_step_11() {
-  # batch - Batch Process PRDs via sub-agent
-  echo "=== Starting Batch Processing via sub-agent ==="
+  # batch - Batch Process PRDs (non-interactive)
+  echo "=== Starting Batch Processing ==="
   echo ""
-  run_skill_as_subagent "pm:batch-process" "" "complete" 1800
+  claude --dangerously-skip-permissions --print "/pm:batch-process"
 }
 
 run_step_12() {
-  # deploy - Deploy Full Application via sub-agent
+  # deploy - Deploy Full Application (non-interactive)
   local project_name
   project_name=$(basename "$(pwd)" | tr '_' '-')
 
-  echo "=== Deploying to Kubernetes via sub-agent ==="
+  echo "=== Deploying to Kubernetes ==="
   echo "Namespace: $project_name"
   echo ""
-
-  # Call /pm:deploy with the session name
-  run_skill_as_subagent "pm:deploy" "$PIPELINE_SESSION" "Deployed" 600
+  claude --dangerously-skip-permissions --print "/pm:deploy $PIPELINE_SESSION"
 }
 
 run_step_13() {
-  # synthetic - Synthetic Persona Testing via sub-agents
-  echo "Generating synthetic personas via sub-agent..."
-  run_skill_as_subagent "pm:generate-personas" "$PIPELINE_SESSION --count 10" "personas" 300
+  # synthetic - Synthetic Persona Testing (non-interactive)
+  echo "Generating synthetic personas..."
+  claude --dangerously-skip-permissions --print "/pm:generate-personas $PIPELINE_SESSION --count 10"
 
   local personas_file=".claude/testing/personas/$PIPELINE_SESSION-personas.json"
   if [ ! -f "$personas_file" ]; then
@@ -816,8 +826,8 @@ run_step_13() {
   echo "Personas generated ✓"
   echo ""
 
-  echo "Generating Playwright tests via sub-agent..."
-  run_skill_as_subagent "pm:generate-tests" "$PIPELINE_SESSION" "tests" 300
+  echo "Generating Playwright tests..."
+  claude --dangerously-skip-permissions --print "/pm:generate-tests $PIPELINE_SESSION"
 
   local playwright_dir=".claude/testing/playwright"
   if [ ! -d "$playwright_dir" ]; then
@@ -839,22 +849,21 @@ run_step_13() {
   fi
   echo ""
 
-  echo "Generating synthetic feedback via sub-agent..."
-  run_skill_as_subagent "pm:generate-feedback" "$PIPELINE_SESSION" "feedback" 300
+  echo "Generating synthetic feedback..."
+  claude --dangerously-skip-permissions --print "/pm:generate-feedback $PIPELINE_SESSION"
 
   local feedback_file=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
   if [ -f "$feedback_file" ]; then
     echo "Feedback generated ✓"
   else
     echo "⚠️ Feedback generation incomplete"
-    # Create placeholder
     mkdir -p ".claude/testing/feedback"
     echo '[]' > "$feedback_file"
   fi
   echo ""
 
-  echo "Analyzing feedback via sub-agent..."
-  run_skill_as_subagent "pm:analyze-feedback" "$PIPELINE_SESSION" "analysis" 300
+  echo "Analyzing feedback..."
+  claude --dangerously-skip-permissions --print "/pm:analyze-feedback $PIPELINE_SESSION"
 
   local analysis_file=".claude/testing/feedback/$PIPELINE_SESSION-analysis.md"
   if [ -f "$analysis_file" ]; then
@@ -869,7 +878,7 @@ run_step_13() {
 }
 
 run_step_14() {
-  # remediation - Generate Remediation PRDs via sub-agent
+  # remediation - Generate Remediation PRDs (non-interactive)
   local issues_file=".claude/testing/feedback/$PIPELINE_SESSION-issues.json"
   local feedback_file=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
 
@@ -879,10 +888,9 @@ run_step_14() {
     return 0
   fi
 
-  echo "Creating PRDs to address feedback issues via sub-agent..."
+  echo "Creating PRDs to address feedback issues..."
   echo ""
-
-  run_skill_as_subagent "pm:generate-remediation" "$PIPELINE_SESSION --max 10" "remediation" 600
+  claude --dangerously-skip-permissions --print "/pm:generate-remediation $PIPELINE_SESSION --max 10"
 
   # Count remediation PRDs
   local prds_dir=".claude/prds"
@@ -892,8 +900,8 @@ run_step_14() {
   if [ "$remediation_count" -gt 0 ]; then
     echo "Remediation PRDs generated: $remediation_count"
     echo ""
-    echo "Processing remediation PRDs via sub-agent..."
-    run_skill_as_subagent "pm:batch-process" "" "complete" 1800
+    echo "Processing remediation PRDs..."
+    claude --dangerously-skip-permissions --print "/pm:batch-process"
   else
     echo "No remediation PRDs needed"
   fi

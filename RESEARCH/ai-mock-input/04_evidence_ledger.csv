@@ -1,0 +1,21 @@
+claim_id,claim,claim_type,sources,independence_check,verification_status,confidence
+C01,"Autonomous AI coding agents (SWE-Agent, Devin, OpenHands, Aider) already implement patterns for making decisions without human input during task execution",C1,"S01,S02,S03,S05,S06",Independent - Different vendors/projects,Verified,High
+C02,"Claude Code provides headless mode with -p flag for non-interactive execution in CI/CD and batch processing",C1,"S06,S08",Independent - Official repo + tutorial,Verified,High
+C03,"Aider provides --yes-always flag and --message flag for fully non-interactive scripted operation",C1,"S02,S07",Same project - different docs,Verified,High
+C04,"OpenHands can run non-interactively with configurable step limits (default 100) until task completion",C1,"S03,OpenHands search results",Independent - repo + docs,Verified,High
+C05,"CI/CD systems use DEBIAN_FRONTEND=noninteractive and -y flags to handle interactive prompts automatically",C1,"S09,S10,Multiple CI docs",Independent - multiple platforms,Verified,High
+C06,"The expect utility can automate interactive prompts by pattern matching and sending predefined responses",C1,"S11,Multiple expect tutorials",Independent,Verified,High
+C07,"Convention-over-configuration reduces decision points by providing sensible defaults that can be overridden",C1,"S12,S13",Independent - Rails doctrine + Wikipedia,Verified,High
+C08,"Google ADK Safety recommends multi-layered security: identity/auth, guardrails, sandboxing for agent actions",C1,"S15",Single authoritative source (Google),Verified,High
+C09,"OWASP identifies prompt injection as the top LLM threat requiring input validation and output filtering",C1,"S16,S18",Independent - OWASP + security blog,Verified,High
+C10,"Dangerous actions that should never be automated include: rm -rf, file access outside workspace, system commands, financial transactions",C1,"S15,S17,Safety search results",Multiple independent sources,Verified,High
+C11,"Faker libraries generate contextual synthetic data using providers/formatters with locale support and seeding for reproducibility",C1,"S19,S20",Independent - Python + PHP implementations,Verified,High
+C12,"Property-based testing generators can produce valid inputs matching constraints but struggle with complex preconditions",C1,"S21,Property testing search",Independent - multiple frameworks,Verified,Medium
+C13,"Audit trails for AI agents should capture reasoning chain, alternatives considered, and human oversight trail",C1,"S23,S24",Independent - multiple industry sources,Verified,High
+C14,"Rubrik Agent Rewind provides selective rollback for autonomous agent mistakes with immutable audit trails",C2,"S22",Single vendor source,Verified,Medium
+C15,"LLMs tend to be overconfident when verbalizing confidence; calibration improves with model capability",C1,"S25,S26",Independent - academic + industry,Verified,High
+C16,"Conformal prediction can gate robot actions: if multiple candidates remain, request human input",C2,"S25",Academic paper,Verified,Medium
+C17,"Devin AI uses Green/Yellow/Red task flagging based on success likelihood for human oversight prioritization",C2,"S05,Devin search",Multiple sources same project,Verified,Medium
+C18,"Naturalize tool only makes convention recommendations when codebase shows sufficient consensus",C1,"S29",Academic paper (Microsoft),Verified,High
+C19,"Developers provide less context to AI with statically typed languages suggesting LLMs can infer more from code",C2,"S30",Academic paper,Verified,Medium
+C20,"Decision tree agents use default fallback branches to handle unexpected scenarios gracefully",C1,"S27,S27-related",Framework documentation,Verified,High

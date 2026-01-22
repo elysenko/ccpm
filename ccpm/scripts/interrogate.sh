@@ -11,11 +11,13 @@
 #   ./interrogate.sh --extract <name>         # Step 5: Extract scope document
 #   ./interrogate.sh --credentials [name]     # Step 6: Gather credentials (auto-detects scope)
 #   ./interrogate.sh --roadmap <name>         # Step 7: Generate MVP roadmap
-#   ./interrogate.sh --decompose <name>       # Step 8: Decompose into PRDs
-#   ./interrogate.sh --batch <name>           # Step 9: Batch process PRDs
-#   ./interrogate.sh --deploy <name>          # Step 10: Deploy to Kubernetes
-#   ./interrogate.sh --synthetic <name>       # Step 11: Synthetic testing
-#   ./interrogate.sh --remediation <name>     # Step 12: Generate remediation PRDs
+#   ./interrogate.sh --generate-template <name> # Step 8: Generate K8s + code scaffolds
+#   ./interrogate.sh --deploy-skeleton <name>  # Step 9: Deploy skeleton application
+#   ./interrogate.sh --decompose <name>       # Step 10: Decompose into PRDs
+#   ./interrogate.sh --batch <name>           # Step 11: Batch process PRDs
+#   ./interrogate.sh --deploy <name>          # Step 12: Deploy full application
+#   ./interrogate.sh --synthetic <name>       # Step 13: Synthetic testing
+#   ./interrogate.sh --remediation <name>     # Step 14: Generate remediation PRDs
 #
 # Pipeline Commands:
 #   ./interrogate.sh [session-name]           # Run full pipeline
@@ -58,16 +60,18 @@ Individual Steps (run independently):
    5. ./interrogate.sh --extract <name>        Extract scope document
    6. ./interrogate.sh --credentials [name]    Gather integration credentials (auto-detects)
    7. ./interrogate.sh --roadmap <name>        Generate MVP roadmap
-   8. ./interrogate.sh --decompose <name>      Decompose into PRDs (alias: --prds)
-   9. ./interrogate.sh --batch <name>          Batch process PRDs
-  10. ./interrogate.sh --deploy <name>         Deploy to Kubernetes
-  11. ./interrogate.sh --synthetic <name>      Synthetic persona testing (alias: --test)
-  12. ./interrogate.sh --remediation <name>    Generate remediation PRDs (alias: --fix)
+   8. ./interrogate.sh --generate-template <name> Generate K8s + code scaffolds
+   9. ./interrogate.sh --deploy-skeleton <name>  Deploy skeleton application
+  10. ./interrogate.sh --decompose <name>      Decompose into PRDs (alias: --prds)
+  11. ./interrogate.sh --batch <name>          Batch process PRDs
+  12. ./interrogate.sh --deploy <name>         Deploy full application
+  13. ./interrogate.sh --synthetic <name>      Synthetic persona testing (alias: --test)
+  14. ./interrogate.sh --remediation <name>    Generate remediation PRDs (alias: --fix)
 
 Pipeline Commands:
   ./interrogate.sh --build <name>             Run full pipeline from step 1
   ./interrogate.sh --resume <name>            Resume from last completed step
-  ./interrogate.sh --resume-from <N> <name>   Resume from specific step (1-12)
+  ./interrogate.sh --resume-from <N> <name>   Resume from specific step (1-14)
   ./interrogate.sh --pipeline-status <name>   Show pipeline progress
 
 Session Management:
@@ -80,9 +84,11 @@ Example - Run steps independently:
   ./interrogate.sh --interrogate-only myapp   # Step 4: Run Q&A
   ./interrogate.sh --extract myapp            # Step 5: Generate scope
   ./interrogate.sh --roadmap myapp            # Step 7: Create roadmap
-  ./interrogate.sh --decompose myapp          # Step 8: Create PRDs
-  ./interrogate.sh --batch myapp              # Step 9: Process PRDs
-  ./interrogate.sh --deploy myapp             # Step 10: Deploy app
+  ./interrogate.sh --generate-template myapp  # Step 8: Generate K8s templates
+  ./interrogate.sh --deploy-skeleton myapp    # Step 9: Deploy skeleton app
+  ./interrogate.sh --decompose myapp          # Step 10: Create PRDs
+  ./interrogate.sh --batch myapp              # Step 11: Process PRDs
+  ./interrogate.sh --deploy myapp             # Step 12: Deploy full app
 
 Self-Healing:
   When a step fails in pipeline mode, it automatically invokes /pm:fix_problem
@@ -153,7 +159,7 @@ list_sessions() {
           if [ "$pipe_status" = "complete" ]; then
             pipeline_info="[pipeline ✓]"
           elif [ -n "$last_step" ] && [ "$last_step" != "0" ]; then
-            pipeline_info="[step $last_step/11]"
+            pipeline_info="[step $last_step/14]"
           fi
         fi
 
@@ -223,7 +229,7 @@ show_status() {
     local last_step
     last_step=$(grep "^last_completed_step:" "$pipeline_state" 2>/dev/null | cut -d: -f2 | tr -d ' ')
     echo "  Status: $pipe_status"
-    echo "  Progress: Step $last_step/11"
+    echo "  Progress: Step $last_step/14"
   fi
 
   echo ""
@@ -374,7 +380,7 @@ gather_credentials() {
 
 # Ensure GitHub repository exists
 ensure_repo() {
-  local repo_name="${1:-$(basename "$(pwd)")}"
+  local repo_name="${1:-$(basename "$(pwd)" | tr '_' '-')}"
 
   echo "=== Ensure GitHub Repository ==="
   echo ""
@@ -385,7 +391,7 @@ ensure_repo() {
 
 # Create database schema (Step 2)
 create_schema() {
-  local name="${1:-$(basename "$(pwd)")}"
+  local name="${1:-$(basename "$(pwd)" | tr '_' '-')}"
 
   echo "=== Create Database Schema ==="
   echo ""
@@ -430,13 +436,89 @@ generate_roadmap() {
   if [ -f "$roadmap" ]; then
     echo "✅ Roadmap generated: $roadmap"
     echo ""
-    echo "Next: ./interrogate.sh --decompose $name"
+    echo "Next: ./interrogate.sh --generate-template $name"
   else
     echo "❌ Roadmap generation failed"
   fi
 }
 
-# Decompose into PRDs (Step 8)
+# Generate K8s templates and code scaffolds (Step 8)
+generate_template() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --generate-template <session-name>"
+    exit 1
+  fi
+
+  local tech_arch=".claude/scopes/$name/04_technical_architecture.md"
+  if [ ! -f "$tech_arch" ]; then
+    echo "❌ Technical architecture not found: $tech_arch"
+    echo ""
+    echo "First run: ./interrogate.sh --extract $name"
+    exit 1
+  fi
+
+  echo "=== Generate Templates: $name ==="
+  echo ""
+
+  claude --dangerously-skip-permissions --print "/pm:generate-template $name"
+
+  echo ""
+  echo "---"
+
+  local k8s_dir=".claude/templates/$name/k8s"
+  if [ -d "$k8s_dir" ]; then
+    echo "✅ Templates generated: $k8s_dir"
+    echo ""
+    echo "Next: ./interrogate.sh --deploy-skeleton $name"
+  else
+    echo "❌ Template generation failed"
+  fi
+}
+
+# Deploy skeleton application (Step 9)
+deploy_skeleton() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --deploy-skeleton <session-name>"
+    exit 1
+  fi
+
+  local k8s_dir=".claude/templates/$name/k8s"
+  if [ ! -d "$k8s_dir" ]; then
+    echo "❌ K8s templates not found: $k8s_dir"
+    echo ""
+    echo "First run: ./interrogate.sh --generate-template $name"
+    exit 1
+  fi
+
+  echo "=== Deploy Skeleton: $name ==="
+  echo ""
+
+  claude --dangerously-skip-permissions --print "/pm:deploy-skeleton $name"
+
+  echo ""
+  echo "---"
+
+  local running
+  running=$(kubectl get pods -n "$name" --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+  if [ "$running" -gt 0 ]; then
+    echo "✅ Skeleton deployed: $running pod(s) running"
+    echo ""
+    echo "Check status: kubectl get pods -n $name"
+    echo ""
+    echo "Next: ./interrogate.sh --decompose $name"
+  else
+    echo "⚠️ Deployment may still be starting"
+    echo "Check with: kubectl get pods -n $name"
+  fi
+}
+
+# Decompose into PRDs (Step 10)
 decompose_prds() {
   local name="$1"
 
@@ -473,7 +555,7 @@ decompose_prds() {
   fi
 }
 
-# Batch process PRDs (Step 9)
+# Batch process PRDs (Step 11)
 batch_process() {
   local name="$1"
 
@@ -509,7 +591,7 @@ batch_process() {
   echo "Next: ./interrogate.sh --deploy $name"
 }
 
-# Deploy to Kubernetes (Step 10)
+# Deploy to Kubernetes (Step 12)
 deploy_app() {
   local name="$1"
 
@@ -529,7 +611,7 @@ deploy_app() {
   fi
 
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   echo "=== Deploy to Kubernetes: $name ==="
   echo "Namespace: $project_name"
@@ -547,7 +629,7 @@ deploy_app() {
   echo "Next: ./interrogate.sh --synthetic $name"
 }
 
-# Synthetic persona testing (Step 11)
+# Synthetic persona testing (Step 13)
 synthetic_testing() {
   local name="$1"
 
@@ -613,7 +695,7 @@ synthetic_testing() {
   echo "Next: ./interrogate.sh --remediation $name"
 }
 
-# Generate remediation PRDs (Step 12)
+# Generate remediation PRDs (Step 14)
 generate_remediation() {
   local name="$1"
 
@@ -652,7 +734,7 @@ generate_remediation() {
 
 # Setup infrastructure services (PostgreSQL, MinIO)
 setup_services() {
-  local project_name="${1:-$(basename "$(pwd)")}"
+  local project_name="${1:-$(basename "$(pwd)" | tr '_' '-')}"
 
   echo "=== Setup Infrastructure Services ==="
   echo ""
@@ -750,7 +832,7 @@ resume_pipeline() {
   if [ -z "$last_step" ] || [ "$last_step" = "0" ]; then
     echo "No steps completed yet. Starting from step 1."
     build_full "$name" 1
-  elif [ "$last_step" = "11" ]; then
+  elif [ "$last_step" = "14" ]; then
     echo "Pipeline already complete for: $name"
     echo ""
     echo "To restart: ./interrogate.sh --resume-from 1 $name"
@@ -774,8 +856,8 @@ resume_from_step() {
     exit 1
   fi
 
-  if [ "$step" -lt 1 ] || [ "$step" -gt 12 ]; then
-    echo "❌ Invalid step number: $step (must be 1-12)"
+  if [ "$step" -lt 1 ] || [ "$step" -gt 14 ]; then
+    echo "❌ Invalid step number: $step (must be 1-14)"
     exit 1
   fi
 
@@ -846,6 +928,14 @@ case "$1" in
     ;;
   --roadmap)
     generate_roadmap "$2"
+    exit 0
+    ;;
+  --generate-template)
+    generate_template "$2"
+    exit 0
+    ;;
+  --deploy-skeleton)
+    deploy_skeleton "$2"
     exit 0
     ;;
   --decompose|--prds)

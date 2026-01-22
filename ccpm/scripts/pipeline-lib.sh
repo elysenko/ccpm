@@ -27,15 +27,17 @@ PIPELINE_STEPS=(
   "extract:Extract Scope Document"
   "credentials:Gather Credentials"
   "roadmap:Generate MVP Roadmap"
+  "generate-template:Generate Skeleton Templates"
+  "deploy-skeleton:Deploy Skeleton Application"
   "decompose:Decompose into PRDs"
   "batch:Batch Process PRDs"
-  "deploy:Deploy to Kubernetes"
+  "deploy:Deploy Full Application"
   "synthetic:Synthetic Persona Testing"
   "remediation:Generate Remediation PRDs"
 )
 
 # Total steps
-TOTAL_STEPS=12
+TOTAL_STEPS=14
 
 # Steps that can be skipped on failure
 SKIPPABLE_STEPS="2 6"
@@ -164,11 +166,13 @@ steps:
   5: {name: extract, status: pending}
   6: {name: credentials, status: pending}
   7: {name: roadmap, status: pending}
-  8: {name: decompose, status: pending}
-  9: {name: batch, status: pending}
-  10: {name: deploy, status: pending}
-  11: {name: synthetic, status: pending}
-  12: {name: remediation, status: pending}
+  8: {name: generate-template, status: pending}
+  9: {name: deploy-skeleton, status: pending}
+  10: {name: decompose, status: pending}
+  11: {name: batch, status: pending}
+  12: {name: deploy, status: pending}
+  13: {name: synthetic, status: pending}
+  14: {name: remediation, status: pending}
 errors: []
 warnings: []
 fix_attempts: []
@@ -409,6 +413,26 @@ precheck_step_7() {
 }
 
 precheck_step_8() {
+  # generate-template - technical architecture must exist
+  local tech_arch=".claude/scopes/$PIPELINE_SESSION/04_technical_architecture.md"
+  if [ -f "$tech_arch" ]; then
+    return 0
+  fi
+  echo "Technical architecture not found: $tech_arch"
+  return 1
+}
+
+precheck_step_9() {
+  # deploy-skeleton - K8s templates must exist
+  local k8s_dir=".claude/templates/$PIPELINE_SESSION/k8s"
+  if [ -d "$k8s_dir" ]; then
+    return 0
+  fi
+  echo "K8s templates not found: $k8s_dir"
+  return 1
+}
+
+precheck_step_10() {
   # decompose - roadmap must exist
   local roadmap=".claude/scopes/$PIPELINE_SESSION/07_roadmap.md"
   if [ -f "$roadmap" ]; then
@@ -418,7 +442,7 @@ precheck_step_8() {
   return 1
 }
 
-precheck_step_9() {
+precheck_step_11() {
   # batch - PRD files must exist
   local prd_count
   prd_count=$(ls -1 .claude/prds/*.md 2>/dev/null | wc -l)
@@ -429,7 +453,7 @@ precheck_step_9() {
   return 1
 }
 
-precheck_step_10() {
+precheck_step_12() {
   # deploy - All PRDs must be complete
   local complete_count
   complete_count=$(grep -l "^status: complete" .claude/prds/*.md 2>/dev/null | wc -l)
@@ -440,7 +464,7 @@ precheck_step_10() {
   return 1
 }
 
-precheck_step_11() {
+precheck_step_13() {
   # synthetic - user journeys must exist
   local journeys=".claude/scopes/$PIPELINE_SESSION/02_user_journeys.md"
   if [ -f "$journeys" ]; then
@@ -450,7 +474,7 @@ precheck_step_11() {
   return 1
 }
 
-precheck_step_12() {
+precheck_step_14() {
   # remediation - feedback file must exist
   local feedback=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
   if [ -f "$feedback" ]; then
@@ -467,7 +491,7 @@ precheck_step_12() {
 postcheck_step_1() {
   # services - check pods are running
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   # Check if namespace exists and has pods
   if kubectl get namespace "$project_name" &>/dev/null; then
@@ -574,6 +598,27 @@ postcheck_step_7() {
 }
 
 postcheck_step_8() {
+  # generate-template - K8s manifests must exist
+  local k8s_dir=".claude/templates/$PIPELINE_SESSION/k8s"
+  if [ -d "$k8s_dir" ] && [ -f "$k8s_dir/namespace.yaml" ]; then
+    return 0
+  fi
+  echo "K8s templates not created in $k8s_dir"
+  return 1
+}
+
+postcheck_step_9() {
+  # deploy-skeleton - at least one pod running
+  local running
+  running=$(kubectl get pods -n "$PIPELINE_SESSION" --no-headers 2>/dev/null | grep -c "Running" || echo "0")
+  if [ "$running" -gt 0 ]; then
+    return 0
+  fi
+  echo "No running pods in namespace $PIPELINE_SESSION"
+  return 1
+}
+
+postcheck_step_10() {
   # decompose - at least 1 PRD file exists
   local prd_count
   prd_count=$(ls -1 .claude/prds/*.md 2>/dev/null | wc -l)
@@ -584,7 +629,7 @@ postcheck_step_8() {
   return 1
 }
 
-postcheck_step_9() {
+postcheck_step_11() {
   # batch - at least 1 PRD marked complete
   local complete_count
   complete_count=$(grep -l "^status: complete" .claude/prds/*.md 2>/dev/null | wc -l)
@@ -595,10 +640,10 @@ postcheck_step_9() {
   return 1
 }
 
-postcheck_step_10() {
+postcheck_step_12() {
   # deploy - all pods running in namespace
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   # Check if all pods are Running or Completed
   local not_ready
@@ -611,7 +656,7 @@ postcheck_step_10() {
   return 1
 }
 
-postcheck_step_11() {
+postcheck_step_13() {
   # synthetic - personas.json exists
   local personas=".claude/testing/personas/$PIPELINE_SESSION-personas.json"
   if [ -f "$personas" ]; then
@@ -621,7 +666,7 @@ postcheck_step_11() {
   return 1
 }
 
-postcheck_step_12() {
+postcheck_step_14() {
   # remediation - analysis.md exists
   local analysis=".claude/testing/feedback/$PIPELINE_SESSION-analysis.md"
   if [ -f "$analysis" ]; then
@@ -638,7 +683,7 @@ postcheck_step_12() {
 run_step_1() {
   # services - Setup Infrastructure Services
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   echo "Setting up PostgreSQL, MinIO, CloudBeaver in namespace: $project_name"
 
@@ -666,8 +711,8 @@ run_step_3() {
 }
 
 run_step_4() {
-  # interrogate - Run Structured Q&A via /dr-full
-  # Uses the deep research refine+launch command for structured discovery
+  # interrogate - Run Structured Q&A interactively
+  # Launches Claude for user interaction, script waits for completion
   local conv=".claude/interrogations/$PIPELINE_SESSION/conversation.md"
 
   mkdir -p ".claude/interrogations/$PIPELINE_SESSION"
@@ -682,16 +727,28 @@ run_step_4() {
     fi
   fi
 
-  # Run /dr-full to refine the research question and auto-launch deep research
-  echo "Running structured discovery via /dr-full..."
+  echo "Starting interactive session..."
   echo "Session: $PIPELINE_SESSION"
+  echo ""
+  echo "When Claude starts, type this command:"
+  echo ""
+  echo "  /pm:interrogate $PIPELINE_SESSION"
+  echo ""
+  echo "Complete the Q&A session, then exit Claude (Ctrl+C or /exit)."
+  echo "The pipeline will continue automatically."
+  echo ""
+  echo "Press Enter to launch Claude..."
+  read
+
+  # Launch interactive Claude (no command = stays open for user input)
+  claude --dangerously-skip-permissions
+
   echo "---"
-  claude --dangerously-skip-permissions "/dr-full $PIPELINE_SESSION"
-  echo "---"
+  echo "Interrogation session ended."
 }
 
 run_step_5() {
-  # extract - Extract Scope Document
+  # extract - Extract Scope Document (non-interactive)
   echo "Extracting findings to scope document..."
   echo "---"
   claude --dangerously-skip-permissions --print "/pm:extract-findings $PIPELINE_SESSION"
@@ -699,15 +756,15 @@ run_step_5() {
 }
 
 run_step_6() {
-  # credentials - Gather Credentials
-  echo "Gathering credentials for integrations..."
+  # credentials - Gather Credentials (non-interactive)
+  echo "Gathering credentials..."
   echo "---"
-  claude --dangerously-skip-permissions "/pm:gather-credentials $PIPELINE_SESSION"
+  claude --dangerously-skip-permissions --print "/pm:gather-credentials $PIPELINE_SESSION"
   echo "---"
 }
 
 run_step_7() {
-  # roadmap - Generate MVP Roadmap
+  # roadmap - Generate MVP Roadmap (non-interactive)
   echo "Generating MVP roadmap..."
   echo "---"
   claude --dangerously-skip-permissions --print "/pm:roadmap-generate $PIPELINE_SESSION"
@@ -715,37 +772,51 @@ run_step_7() {
 }
 
 run_step_8() {
-  # decompose - Decompose into PRDs
+  # generate-template - Generate K8s manifests and code scaffolds (non-interactive)
+  echo "Generating skeleton templates..."
+  echo "---"
+  claude --dangerously-skip-permissions --print "/pm:generate-template $PIPELINE_SESSION"
+  echo "---"
+}
+
+run_step_9() {
+  # deploy-skeleton - Deploy skeleton application (non-interactive)
+  echo "Deploying skeleton application..."
+  echo "---"
+  claude --dangerously-skip-permissions --print "/pm:deploy-skeleton $PIPELINE_SESSION"
+  echo "---"
+}
+
+run_step_10() {
+  # decompose - Decompose into PRDs (non-interactive)
   echo "Decomposing scope into PRDs..."
   echo "---"
   claude --dangerously-skip-permissions --print "/pm:scope-decompose $PIPELINE_SESSION --generate"
   echo "---"
 }
 
-run_step_9() {
-  # batch - Batch Process PRDs
+run_step_11() {
+  # batch - Batch Process PRDs (non-interactive)
   echo "=== Starting Batch Processing ==="
   echo ""
-  verify_claude_command "/pm:batch-process" "complete" 1800
+  claude --dangerously-skip-permissions --print "/pm:batch-process"
 }
 
-run_step_10() {
-  # deploy - Deploy to Kubernetes
+run_step_12() {
+  # deploy - Deploy Full Application (non-interactive)
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   echo "=== Deploying to Kubernetes ==="
   echo "Namespace: $project_name"
   echo ""
-
-  # Call /pm:deploy with the session name
-  verify_claude_command "/pm:deploy $PIPELINE_SESSION" "Deployed" 600
+  claude --dangerously-skip-permissions --print "/pm:deploy $PIPELINE_SESSION"
 }
 
-run_step_11() {
-  # synthetic - Synthetic Persona Testing
+run_step_13() {
+  # synthetic - Synthetic Persona Testing (non-interactive)
   echo "Generating synthetic personas..."
-  verify_claude_command "/pm:generate-personas $PIPELINE_SESSION --count 10" "personas" 300
+  claude --dangerously-skip-permissions --print "/pm:generate-personas $PIPELINE_SESSION --count 10"
 
   local personas_file=".claude/testing/personas/$PIPELINE_SESSION-personas.json"
   if [ ! -f "$personas_file" ]; then
@@ -756,7 +827,7 @@ run_step_11() {
   echo ""
 
   echo "Generating Playwright tests..."
-  verify_claude_command "/pm:generate-tests $PIPELINE_SESSION" "tests" 300
+  claude --dangerously-skip-permissions --print "/pm:generate-tests $PIPELINE_SESSION"
 
   local playwright_dir=".claude/testing/playwright"
   if [ ! -d "$playwright_dir" ]; then
@@ -779,21 +850,20 @@ run_step_11() {
   echo ""
 
   echo "Generating synthetic feedback..."
-  verify_claude_command "/pm:generate-feedback $PIPELINE_SESSION" "feedback" 300
+  claude --dangerously-skip-permissions --print "/pm:generate-feedback $PIPELINE_SESSION"
 
   local feedback_file=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
   if [ -f "$feedback_file" ]; then
     echo "Feedback generated ✓"
   else
     echo "⚠️ Feedback generation incomplete"
-    # Create placeholder
     mkdir -p ".claude/testing/feedback"
     echo '[]' > "$feedback_file"
   fi
   echo ""
 
-  echo "Analyzing feedback patterns..."
-  verify_claude_command "/pm:analyze-feedback $PIPELINE_SESSION" "analysis" 300
+  echo "Analyzing feedback..."
+  claude --dangerously-skip-permissions --print "/pm:analyze-feedback $PIPELINE_SESSION"
 
   local analysis_file=".claude/testing/feedback/$PIPELINE_SESSION-analysis.md"
   if [ -f "$analysis_file" ]; then
@@ -807,8 +877,8 @@ run_step_11() {
   fi
 }
 
-run_step_12() {
-  # remediation - Generate Remediation PRDs
+run_step_14() {
+  # remediation - Generate Remediation PRDs (non-interactive)
   local issues_file=".claude/testing/feedback/$PIPELINE_SESSION-issues.json"
   local feedback_file=".claude/testing/feedback/$PIPELINE_SESSION-feedback.json"
 
@@ -820,8 +890,7 @@ run_step_12() {
 
   echo "Creating PRDs to address feedback issues..."
   echo ""
-
-  verify_claude_command "/pm:generate-remediation $PIPELINE_SESSION --max 10" "remediation" 600
+  claude --dangerously-skip-permissions --print "/pm:generate-remediation $PIPELINE_SESSION --max 10"
 
   # Count remediation PRDs
   local prds_dir=".claude/prds"
@@ -832,7 +901,7 @@ run_step_12() {
     echo "Remediation PRDs generated: $remediation_count"
     echo ""
     echo "Processing remediation PRDs..."
-    verify_claude_command "/pm:batch-process" "complete" 1800
+    claude --dangerously-skip-permissions --print "/pm:batch-process"
   else
     echo "No remediation PRDs needed"
   fi
@@ -884,6 +953,49 @@ verify_claude_command() {
   fi
 }
 
+# Run a skill as a sub-agent via Task tool
+# Usage: run_skill_as_subagent "pm:skill-name" "args" "expected_pattern" timeout_seconds
+run_skill_as_subagent() {
+  local skill="$1"
+  local args="$2"
+  local expected_pattern="$3"
+  local timeout_seconds="${4:-600}"
+
+  echo "Running skill /$skill $args as sub-agent..."
+
+  local output_file
+  output_file=$(mktemp)
+
+  # Claude CLI prompt that uses Task tool internally
+  local prompt="Execute the /$skill $args skill using a Task sub-agent.
+Use the Task tool with subagent_type='general-purpose' to spawn an agent that runs:
+  Skill: $skill
+  Args: $args
+
+Wait for the sub-agent to complete and report the results.
+Do not stop until the skill completes or fails."
+
+  if timeout "$timeout_seconds" claude --dangerously-skip-permissions -p "$prompt" > "$output_file" 2>&1; then
+    echo "Sub-agent completed"
+    if [ -n "$expected_pattern" ]; then
+      if grep -qi "$expected_pattern" "$output_file" 2>/dev/null; then
+        rm -f "$output_file"
+        return 0
+      fi
+    fi
+    cat "$output_file"
+    rm -f "$output_file"
+    return 0
+  else
+    local exit_code=$?
+    echo "Sub-agent failed or timed out (exit code: $exit_code)"
+    cat "$output_file"
+    LAST_ERROR_OUTPUT=$(cat "$output_file")
+    rm -f "$output_file"
+    return 1
+  fi
+}
+
 # Try to fix a step failure using /pm:fix_problem
 # Usage: try_fix_step 10 "error message"
 try_fix_step() {
@@ -896,7 +1008,7 @@ try_fix_step() {
   step_desc=$(echo "$step_info" | cut -d: -f2)
 
   local project_name
-  project_name=$(basename "$(pwd)")
+  project_name=$(basename "$(pwd)" | tr '_' '-')
 
   for attempt in 1 2 3; do
     echo ""

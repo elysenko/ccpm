@@ -1,0 +1,22 @@
+query_id,subquestion,query,status,results_count,useful_sources
+Q01,SQ1,"SWE-Agent autonomous coding agent benchmark",complete,10,3
+Q02,SQ1,"AutoGPT autonomous mode decision making without human input",complete,10,2
+Q03,SQ1,"Aider AI coding assistant auto mode non-interactive batch",complete,10,3
+Q04,SQ1,"OpenHands autonomous software development agent non-interactive mode",complete,10,3
+Q05,SQ2,"GitHub Actions handle interactive prompts apt-get -y npm ci non-interactive CI pipeline",complete,10,2
+Q06,SQ2,"expect script automate interactive prompts command line automation",complete,10,2
+Q07,SQ3,"Rails convention over configuration default decisions opinionated framework",complete,10,2
+Q08,SQ4,"AI coding agent safety guardrails dangerous actions never automate security boundaries",complete,10,3
+Q09,SQ5,"Faker library contextual data generation test data factory patterns",complete,10,2
+Q10,SQ7,"LLM confidence score uncertainty quantification decision making",complete,10,3
+Q11,SQ1,"Devin AI software engineer autonomous mode decision making architecture",complete,10,2
+Q12,SQ6,"CLI tool --yes --assume-yes non-interactive flag patterns best practices",complete,10,2
+Q13,SQ6,"autonomous agent decision audit trail logging rollback undo",complete,10,3
+Q14,SQ1,"Claude Code agentic AI coding assistant headless autonomous mode",complete,10,3
+Q15,SQ1,"aider --yes auto-accept CLI non-interactive scripting documentation",complete,10,2
+Q16,SQ5,"property based testing value generation valid input constraints",complete,10,2
+Q17,SQ3,"codebase context inference naming conventions existing patterns analysis",complete,10,2
+Q18,SQ4,"AI agent prompt injection detection input validation security",complete,10,3
+Q19,SQ3,"Next.js opinionated defaults directory structure configuration conventions",complete,10,2
+Q20,SQ7,"default values fallback decision tree configuration AI agent autonomous",complete,10,2
+Q21,SQ3,"input classification taxonomy prompt types form validation categories",complete,10,2

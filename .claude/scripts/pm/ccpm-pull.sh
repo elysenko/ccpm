@@ -21,12 +21,12 @@ if [ ! -d "$CCPM_SOURCE_REPO" ]; then
     exit 1
 fi
 
-if [ ! -d "$CCPM_SOURCE_REPO/ccpm" ]; then
-    echo "ERROR: Invalid ccpm repo structure (missing ccpm/ folder)"
+if [ ! -d "$CCPM_SOURCE_REPO/.claude" ]; then
+    echo "ERROR: Invalid ccpm repo structure (missing .claude/ folder)"
     exit 1
 fi
 
-SOURCE_BASE="$CCPM_SOURCE_REPO/ccpm"
+SOURCE_BASE="$CCPM_SOURCE_REPO/.claude"
 LOCAL_BASE=".claude"
 
 echo "Source: $SOURCE_BASE"
