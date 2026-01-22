@@ -727,21 +727,36 @@ run_step_4() {
     fi
   fi
 
-  echo "Starting interactive session..."
+  echo "Starting interrogation session..."
   echo "Session: $PIPELINE_SESSION"
   echo ""
-  echo "When Claude starts, type this command:"
-  echo ""
-  echo "  /pm:interrogate $PIPELINE_SESSION"
-  echo ""
-  echo "Complete the Q&A session, then exit Claude (Ctrl+C or /exit)."
-  echo "The pipeline will continue automatically."
-  echo ""
-  echo "Press Enter to launch Claude..."
-  read
 
-  # Launch interactive Claude (no command = stays open for user input)
-  claude --dangerously-skip-permissions
+  # Check if we're running interactively (has a TTY)
+  if [ -t 0 ]; then
+    # Interactive mode - prompt user and launch Claude for them to type
+    echo "When Claude starts, type this command:"
+    echo ""
+    echo "  /pm:interrogate $PIPELINE_SESSION"
+    echo ""
+    echo "Complete the Q&A session, then exit Claude (Ctrl+C or /exit)."
+    echo "The pipeline will continue automatically."
+    echo ""
+    echo "Press Enter to launch Claude..."
+    read
+
+    # Launch interactive Claude (no command = stays open for user input)
+    claude --dangerously-skip-permissions
+  else
+    # Non-interactive mode - run interrogate command directly
+    echo "Running in non-interactive mode."
+    echo "Executing: /pm:interrogate $PIPELINE_SESSION"
+    echo ""
+    echo "---"
+
+    # Run the interrogate skill directly
+    # This will pause at each user input point
+    claude --dangerously-skip-permissions "/pm:interrogate $PIPELINE_SESSION"
+  fi
 
   echo "---"
   echo "Interrogation session ended."
@@ -1154,9 +1169,18 @@ execute_step() {
   local run_exit_code
   LAST_ERROR_OUTPUT=""
 
-  # Run in subshell to capture output while preserving exit code
-  run_error=$($run_func 2>&1)
-  run_exit_code=$?
+  # Step 4 (interrogate) is interactive and requires TTY access
+  # Run it directly without capturing output to preserve TTY
+  if [ "$step_num" -eq 4 ]; then
+    # Run interactive step directly (not in subshell)
+    $run_func
+    run_exit_code=$?
+    run_error=""
+  else
+    # Run non-interactive steps in subshell to capture output
+    run_error=$($run_func 2>&1)
+    run_exit_code=$?
+  fi
 
   if [ "$run_exit_code" -ne 0 ]; then
     if [ "$is_skippable" = true ]; then
@@ -1166,7 +1190,7 @@ execute_step() {
       return 0
     else
       echo "❌ Step execution failed"
-      echo "$run_error"
+      [ -n "$run_error" ] && echo "$run_error"
 
       # Try auto-fix for non-skippable steps
       if try_fix_step "$step_num" "${LAST_ERROR_OUTPUT:-$run_error}"; then
@@ -1179,7 +1203,7 @@ execute_step() {
       fi
     fi
   else
-    # Echo captured output (only for steps that capture output, not step 4)
+    # Echo captured output (for non-interactive steps only)
     [ -n "$run_error" ] && echo "$run_error"
   fi
 
