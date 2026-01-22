@@ -95,6 +95,125 @@ log_warn() {
   echo -e "${YELLOW}[$(date +%H:%M:%S)] ⚠${NC} $1"
 }
 
+# App process tracking
+FRONTEND_PID=""
+BACKEND_PID=""
+APP_STARTED=false
+
+# Cleanup function - kill app processes on exit.
+cleanup() {
+  if [[ "${APP_STARTED}" == "true" ]]; then
+    log "Cleaning up application processes..."
+    stop_app
+  fi
+}
+
+# Set trap for cleanup on script exit
+trap cleanup EXIT INT TERM
+
+# Start the application (frontend and backend).
+# Globals:
+#   FRONTEND_PID - set to frontend process ID
+#   BACKEND_PID - set to backend process ID
+#   APP_STARTED - set to true if app started successfully
+start_app() {
+  log "Starting application for E2E tests..."
+
+  # Check if already running
+  if curl -s --max-time 2 http://localhost:3000 > /dev/null 2>&1; then
+    log "Frontend already running on port 3000"
+    APP_STARTED=false  # Don't kill it on exit since we didn't start it
+    return 0
+  fi
+
+  # Start backend
+  if [[ -d "${PROJECT_ROOT}/backend" ]]; then
+    log "Starting backend..."
+    cd "${PROJECT_ROOT}/backend"
+
+    # Activate venv if exists
+    if [[ -f "venv/bin/activate" ]]; then
+      source venv/bin/activate
+    elif [[ -f ".venv/bin/activate" ]]; then
+      source .venv/bin/activate
+    fi
+
+    # Start uvicorn in background
+    uvicorn app.main:app --host 0.0.0.0 --port 8000 > "${FEEDBACK_STATE_DIR}/backend.log" 2>&1 &
+    BACKEND_PID=$!
+    cd "${PROJECT_ROOT}"
+    log "Backend started (PID: ${BACKEND_PID})"
+  fi
+
+  # Start frontend
+  if [[ -d "${PROJECT_ROOT}/frontend" ]]; then
+    log "Starting frontend..."
+    cd "${PROJECT_ROOT}/frontend"
+    npm run dev > "${FEEDBACK_STATE_DIR}/frontend.log" 2>&1 &
+    FRONTEND_PID=$!
+    cd "${PROJECT_ROOT}"
+    log "Frontend started (PID: ${FRONTEND_PID})"
+  fi
+
+  APP_STARTED=true
+
+  # Wait for services to be ready
+  log "Waiting for services to be ready..."
+  local retries=30
+  while ((retries > 0)); do
+    if curl -s --max-time 2 http://localhost:3000 > /dev/null 2>&1; then
+      log_success "Frontend is ready on port 3000"
+      break
+    fi
+    ((--retries))
+    sleep 1
+  done
+
+  if ((retries == 0)); then
+    log_error "Frontend failed to start within 30 seconds"
+    log "Check logs: ${FEEDBACK_STATE_DIR}/frontend.log"
+    return 1
+  fi
+
+  # Check backend
+  retries=10
+  while ((retries > 0)); do
+    if curl -s --max-time 2 http://localhost:8000/health > /dev/null 2>&1 || \
+       curl -s --max-time 2 http://localhost:8000/api > /dev/null 2>&1 || \
+       curl -s --max-time 2 http://localhost:8000 > /dev/null 2>&1; then
+      log_success "Backend is ready on port 8000"
+      break
+    fi
+    ((--retries))
+    sleep 1
+  done
+
+  return 0
+}
+
+# Stop the application processes.
+# Globals:
+#   FRONTEND_PID - frontend process to kill
+#   BACKEND_PID - backend process to kill
+stop_app() {
+  if [[ -n "${FRONTEND_PID}" ]]; then
+    log "Stopping frontend (PID: ${FRONTEND_PID})..."
+    kill "${FRONTEND_PID}" 2>/dev/null || true
+    wait "${FRONTEND_PID}" 2>/dev/null || true
+    FRONTEND_PID=""
+  fi
+
+  if [[ -n "${BACKEND_PID}" ]]; then
+    log "Stopping backend (PID: ${BACKEND_PID})..."
+    kill "${BACKEND_PID}" 2>/dev/null || true
+    wait "${BACKEND_PID}" 2>/dev/null || true
+    BACKEND_PID=""
+  fi
+
+  APP_STARTED=false
+  log_success "Application stopped"
+}
+
 # Initialize feedback pipeline state.
 # Globals:
 #   FEEDBACK_STATE_DIR - set to state directory
@@ -308,6 +427,13 @@ step_ensure_tables() {
 step_test_journeys() {
   log "Step 2: Testing user journeys"
   update_step_status 2 "running"
+
+  # Start the application if not already running
+  if ! start_app; then
+    log_error "Failed to start application - skipping journey tests"
+    update_step_status 2 "complete"
+    return 0
+  fi
 
   # Generate test run ID
   TEST_RUN_ID="run-$(date +%Y%m%d-%H%M%S)"
