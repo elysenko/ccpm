@@ -4,11 +4,12 @@ Analyze synthetic feedback from all personas to identify patterns, prioritize is
 
 ## Usage
 ```
-/pm:analyze-feedback <session-name>
+/pm:analyze-feedback <session-name> [--run <test-run-id>]
 ```
 
 ## Arguments
 - `session-name` (required): Name of the scoped session
+- `--run` (optional): Test run ID from `/pm:test-journey` (defaults to latest run)
 
 ## Input
 **Required:**
@@ -43,6 +44,31 @@ Run /pm:generate-feedback {session-name} first
 ```
 
 Read feedback file and parse JSON.
+
+---
+
+### Step 1.5: Parse Test Run ID
+
+```bash
+TEST_RUN_ID=""
+if [[ "$ARGUMENTS" == *"--run"* ]]; then
+    TEST_RUN_ID=$(echo "$ARGUMENTS" | sed -n 's/.*--run[= ]*\([^ ]*\).*/\1/p')
+fi
+
+# If no run ID provided, get the latest from feedback table
+if [[ -z "$TEST_RUN_ID" ]]; then
+    TEST_RUN_ID=$(psql -t -c "SELECT test_run_id FROM feedback WHERE session_name='$SESSION_NAME' ORDER BY created_at DESC LIMIT 1" | tr -d ' ')
+fi
+
+if [[ -z "$TEST_RUN_ID" ]]; then
+    echo "❌ No feedback found for session '$SESSION_NAME'"
+    echo ""
+    echo "Run: /pm:generate-feedback $SESSION_NAME first"
+    exit 1
+fi
+
+echo "Analyzing test run: $TEST_RUN_ID"
+```
 
 ---
 
@@ -445,10 +471,45 @@ Write `.claude/testing/feedback/{session-name}-issues.json` for PRD generation:
 
 ---
 
+### Step 7.5: Persist Issues to Database
+
+For each prioritized issue, insert into the database:
+
+```sql
+INSERT INTO issues (
+    session_name, test_run_id, issue_id, title, description,
+    category, severity, mentions, rice_score,
+    journey_refs, persona_refs, status, created_at
+) VALUES (
+    '{SESSION_NAME}',
+    '{TEST_RUN_ID}',
+    '{issue.id}',
+    '{issue.title}',
+    '{issue.description}',
+    '{issue.category}',  -- 'bug', 'ux', 'performance', 'feature_request'
+    '{issue.severity}',  -- 'critical', 'high', 'medium', 'low'
+    {issue.mentions},
+    {issue.riceScore},
+    '{journeys_json}',   -- ["J-001", "J-003"]
+    '{personas_json}',   -- ["persona-01", "persona-02"]
+    'open',
+    NOW()
+);
+```
+
+**Category mapping:**
+- Bugs with severity critical/high → category='bug'
+- UX frustrations → category='ux'
+- Performance issues → category='performance'
+- Feature requests → category='feature_request'
+
+---
+
 ### Step 8: Present Summary
 
 ```
 ✅ Feedback analysis complete: {session-name}
+✅ Persisted {count} issues to database (test_run: {TEST_RUN_ID})
 
 Key Metrics:
 | Metric | Value | Status |

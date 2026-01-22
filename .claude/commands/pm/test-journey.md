@@ -74,6 +74,24 @@ Example: /pm:test-journey invoice-system J-001 --persona persona-01
 
 ---
 
+### Step 1.5: Generate Test Run ID
+
+Generate a unique test run ID to group all results from this test execution:
+
+```bash
+TEST_RUN_ID="run-$(date +%Y%m%d-%H%M%S)"
+SCREENSHOTS_DIR=".claude/testing/screenshots/$TEST_RUN_ID"
+mkdir -p "$SCREENSHOTS_DIR"
+echo "Test Run ID: $TEST_RUN_ID"
+```
+
+This ID will be used to:
+- Group test results from this execution
+- Link downstream feedback and issues
+- Organize screenshots in `.claude/testing/screenshots/{test_run_id}/`
+
+---
+
 ### Step 2: Load Persona
 
 ```bash
@@ -397,6 +415,57 @@ Goal achieved: {journey.goal}
 
 ---
 
+### Step 7: Persist Results to Database
+
+After parsing the sub-agent results, insert test results into the database:
+
+```sql
+INSERT INTO test_results (
+    session_name, test_run_id, journey_id, persona_id, base_url,
+    overall_status, steps_passed, steps_failed,
+    step_results, issues_found, screenshots_count, executed_at
+) VALUES (
+    '{SESSION}',
+    '{TEST_RUN_ID}',
+    (SELECT id FROM journey WHERE session_name='{SESSION}' AND journey_id='{JOURNEY_ID}'),
+    '{PERSONA_ID}',
+    '{BASE_URL}',
+    '{overall_status}',  -- 'pass', 'fail', or 'partial'
+    {steps_passed},
+    {steps_failed},
+    '{step_results_json}',  -- JSONB array of step results
+    '{issues_found_json}',  -- JSONB array of issues
+    {screenshots_count},
+    NOW()
+);
+```
+
+**step_results_json format:**
+```json
+[
+  {"step_number": 1, "status": "pass", "observation": "Login form appeared..."},
+  {"step_number": 2, "status": "pass", "observation": "Dashboard loaded..."},
+  {"step_number": 3, "status": "fail", "observation": "Vendor dropdown empty..."}
+]
+```
+
+**issues_found_json format:**
+```json
+[
+  {"step_number": 3, "description": "Vendor dropdown did not populate after 15s timeout"}
+]
+```
+
+Output the test_run_id so downstream commands can use it:
+```
+✅ Results persisted to database
+
+Test Run ID: {TEST_RUN_ID}
+Use with: /pm:generate-feedback {SESSION} --run {TEST_RUN_ID}
+```
+
+---
+
 ## Error Handling
 
 ### Persona File Not Found
@@ -521,6 +590,7 @@ Possible causes:
 | `journey` | Journey header (name, actor, goal, preconditions) |
 | `journey_steps_detailed` | Step details (actions, components, expected outcomes) |
 | `feature` | Optional feature linkage |
+| `test_results` | **Written** - Test execution results persisted here |
 
 ---
 

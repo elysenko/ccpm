@@ -4,27 +4,36 @@ Transform database-stored interrogation data into **development-ready scope docu
 
 ## Usage
 ```
-/pm:extract-findings <session-name>
+/pm:extract-findings <session-name> [--tables table1,table2,...] [--run <test-run-id>]
 ```
 
 ## Arguments
 - `session-name` (required): Name of the interrogation session to extract
+- `--tables` (optional): Comma-separated list of tables to extract (default: all)
+- `--run` (optional): Test run ID for filtering test feedback tables (default: latest)
+
+### Available Tables
+**Interrogation tables:** `feature`, `journey`, `cross_cutting_concern`, `integration`, `user_type`
+**Test feedback tables:** `test_results`, `feedback`, `issues`
 
 ## Output
 
 **Directory:** `.claude/scopes/{session-name}/`
 
-| File | Contents | Source |
-|------|----------|--------|
+| File | Contents | Source Table(s) |
+|------|----------|-----------------|
 | `00_scope_document.md` | Unified comprehensive scope document | All tables |
-| `01_features.md` | Confirmed features catalog | `feature` table |
+| `01_features.md` | Confirmed features catalog | `feature` |
 | `02_user_journeys.md` | Mapped user journeys | `journey` + `journey_steps_detailed` |
 | `03_technical_ops.md` | Technical operations per journey step | `journey_steps_detailed` |
-| `04_nfr_requirements.md` | Derived non-functional requirements | `cross_cutting_concern` + inference |
+| `04_nfr_requirements.md` | Derived non-functional requirements | `cross_cutting_concern` |
 | `05_technical_architecture.md` | Tech stack, integrations, ADRs | `integration` + `cross_cutting_concern` |
-| `06_risk_assessment.md` | Risk analysis and mitigations | Derived from data |
-| `07_gap_analysis.md` | Missing info and clarification questions | Validation checks |
+| `06_risk_assessment.md` | Risk analysis and mitigations | Derived |
+| `07_gap_analysis.md` | Missing info and clarification questions | Validation |
 | `08_test_plan.md` | Test cases organized by feature | `feature` + `journey` |
+| `09_test_results.md` | Test execution results | `test_results` |
+| `10_feedback.md` | Aggregated persona feedback | `feedback` |
+| `11_issues.md` | Prioritized issues | `issues` |
 
 ---
 
@@ -118,7 +127,61 @@ Run interrogation first: /pm:interrogate {session-name}
 
 ---
 
+### Step 1.5: Parse Optional Arguments
+
+```bash
+# Parse --tables argument
+TABLES=""
+if [[ "$ARGUMENTS" == *"--tables"* ]]; then
+    TABLES=$(echo "$ARGUMENTS" | sed -n 's/.*--tables[= ]*\([^ ]*\).*/\1/p')
+fi
+
+# Parse --run argument for test feedback tables
+TEST_RUN_ID=""
+if [[ "$ARGUMENTS" == *"--run"* ]]; then
+    TEST_RUN_ID=$(echo "$ARGUMENTS" | sed -n 's/.*--run[= ]*\([^ ]*\).*/\1/p')
+fi
+
+# If extracting test feedback tables but no run ID, get latest
+if [[ -z "$TEST_RUN_ID" ]] && [[ "$TABLES" == *"test_results"* || "$TABLES" == *"feedback"* || "$TABLES" == *"issues"* || -z "$TABLES" ]]; then
+    TEST_RUN_ID=$(psql -t -c "SELECT test_run_id FROM test_results WHERE session_name='$SESSION_NAME' ORDER BY executed_at DESC LIMIT 1" 2>/dev/null | tr -d ' ')
+fi
+```
+
+**Table-to-file mapping:**
+```
+TABLE_FILE_MAP = {
+    # Interrogation tables
+    "feature": ["01_features.md"],
+    "journey": ["02_user_journeys.md", "03_technical_ops.md"],
+    "cross_cutting_concern": ["04_nfr_requirements.md"],
+    "integration": ["05_technical_architecture.md"],
+    "user_type": ["05_technical_architecture.md"],
+
+    # Test feedback tables
+    "test_results": ["09_test_results.md"],
+    "feedback": ["10_feedback.md"],
+    "issues": ["11_issues.md"]
+}
+```
+
+**Conditional extraction logic:**
+```bash
+should_extract() {
+    local table="$1"
+    # If no tables specified, extract all
+    [[ -z "$TABLES" ]] && return 0
+    # Otherwise check if table is in the list
+    [[ ",$TABLES," == *",$table,"* ]] && return 0
+    return 1
+}
+```
+
+---
+
 ### Step 2: Extract Features → `01_features.md`
+
+**Skip if:** `--tables` specified and doesn't include `feature`
 
 **Query:**
 ```sql
@@ -737,10 +800,234 @@ See: `08_test_plan.md`
 
 ---
 
-### Step 11: Present Summary
+### Step 11: Extract Test Results → `09_test_results.md`
+
+**Skip if:** `--tables` specified and doesn't include `test_results`
+**Skip if:** No test runs exist for this session
+
+**Query:**
+```sql
+SELECT
+    tr.test_run_id,
+    j.journey_id,
+    j.name as journey_name,
+    tr.persona_id,
+    tr.overall_status,
+    tr.steps_passed,
+    tr.steps_failed,
+    tr.screenshots_count,
+    tr.executed_at
+FROM test_results tr
+LEFT JOIN journey j ON tr.journey_id = j.id
+WHERE tr.session_name = '{SESSION_NAME}'
+  AND tr.test_run_id = '{TEST_RUN_ID}'
+ORDER BY tr.executed_at;
+```
+
+**Write `09_test_results.md`:**
+
+```markdown
+# Test Results: {session-name}
+
+**Generated:** {datetime}
+**Test Run:** {TEST_RUN_ID}
+
+---
+
+## Summary
+
+| Metric | Value |
+|--------|-------|
+| Total Tests | {count} |
+| Passed | {passed_count} |
+| Failed | {failed_count} |
+| Success Rate | {rate}% |
+
+---
+
+## Results by Journey
+
+### J-001: {journey_name}
+
+| Persona | Status | Passed | Failed | Screenshots |
+|---------|--------|--------|--------|-------------|
+| persona-01 | PASS | 5 | 0 | 2 |
+| persona-02 | FAIL | 3 | 2 | 4 |
+
+**Issues Found:**
+- Step 3: {description from issues_found JSONB}
+
+---
+```
+
+---
+
+### Step 12: Extract Feedback → `10_feedback.md`
+
+**Skip if:** `--tables` specified and doesn't include `feedback`
+**Skip if:** No feedback exists for this session/run
+
+**Query:**
+```sql
+SELECT
+    persona_id,
+    overall_rating,
+    nps_score,
+    recommendation,
+    positives,
+    frustrations,
+    bugs,
+    feature_requests,
+    test_context
+FROM feedback
+WHERE session_name = '{SESSION_NAME}'
+  AND test_run_id = '{TEST_RUN_ID}'
+ORDER BY persona_id;
+```
+
+**Aggregate metrics:**
+```sql
+SELECT
+    AVG(overall_rating) as avg_rating,
+    AVG(nps_score) as avg_nps,
+    COUNT(CASE WHEN recommendation = 'yes' THEN 1 END)::float / COUNT(*) * 100 as recommend_rate
+FROM feedback
+WHERE session_name = '{SESSION_NAME}'
+  AND test_run_id = '{TEST_RUN_ID}';
+```
+
+**Write `10_feedback.md`:**
+
+```markdown
+# Feedback Analysis: {session-name}
+
+**Generated:** {datetime}
+**Test Run:** {TEST_RUN_ID}
+**Personas Surveyed:** {count}
+
+---
+
+## Metrics
+
+| Metric | Value | Target | Status |
+|--------|-------|--------|--------|
+| Average Rating | {avg}/5 | 4.0 | {✅/⚠️} |
+| NPS Score | {nps} | 50 | {✅/⚠️} |
+| Recommendation Rate | {rate}% | 80% | {✅/⚠️} |
+
+---
+
+## Top Frustrations
+
+| Theme | Severity | Mentions | Personas |
+|-------|----------|----------|----------|
+{aggregated from frustrations JSONB}
+
+---
+
+## Bugs Reported
+
+| Title | Severity | Reported By | Journey |
+|-------|----------|-------------|---------|
+{aggregated from bugs JSONB}
+
+---
+
+## Feature Requests
+
+| Title | Priority | Votes |
+|-------|----------|-------|
+{aggregated from feature_requests JSONB}
+
+---
+```
+
+---
+
+### Step 13: Extract Issues → `11_issues.md`
+
+**Skip if:** `--tables` specified and doesn't include `issues`
+**Skip if:** No issues exist for this session/run
+
+**Query:**
+```sql
+SELECT
+    issue_id,
+    title,
+    description,
+    category,
+    severity,
+    mentions,
+    rice_score,
+    journey_refs,
+    persona_refs,
+    status
+FROM issues
+WHERE session_name = '{SESSION_NAME}'
+  AND test_run_id = '{TEST_RUN_ID}'
+ORDER BY rice_score DESC;
+```
+
+**Write `11_issues.md`:**
+
+```markdown
+# Prioritized Issues: {session-name}
+
+**Generated:** {datetime}
+**Test Run:** {TEST_RUN_ID}
+**Total Issues:** {count}
+
+---
+
+## Issues by Priority (RICE Score)
+
+| ID | Title | Category | Severity | RICE | Status |
+|----|-------|----------|----------|------|--------|
+| I-001 | {title} | bug | critical | 120 | open |
+| I-002 | {title} | ux | high | 95 | open |
+| I-003 | {title} | performance | medium | 80 | open |
+
+---
+
+## Critical Issues (Immediate Action)
+
+### I-001: {title}
+- **Category:** {category}
+- **Severity:** {severity}
+- **RICE Score:** {rice_score}
+- **Reported By:** {persona_refs count} personas
+- **Journeys Affected:** {journey_refs}
+- **Description:** {description}
+
+---
+
+## Issue Breakdown
+
+| Category | Count |
+|----------|-------|
+| Bug | {count} |
+| UX | {count} |
+| Performance | {count} |
+| Feature Request | {count} |
+
+---
+
+## Next Steps
+
+1. Address critical issues before launch
+2. Create remediation PRDs: `/pm:generate-remediation {session-name}`
+3. Re-run tests after fixes: `/pm:test-journey {session-name} ...`
+
+---
+```
+
+---
+
+### Step 14: Present Summary
 
 ```
 ✅ Scope extracted: {session-name}
+{if TEST_RUN_ID} Test Run: {TEST_RUN_ID} {endif}
 
 Summary:
 - Features: {count}
@@ -748,6 +1035,11 @@ Summary:
 - User Types: {count}
 - Integrations: {count}
 - Test Cases: {count}
+{if test feedback data exists}
+- Test Results: {count}
+- Feedback Entries: {count}
+- Issues: {count}
+{endif}
 
 Output Directory: .claude/scopes/{session-name}/
 
@@ -755,12 +1047,17 @@ Files Created:
 - 00_scope_document.md (comprehensive scope)
 - 01_features.md
 - 02_user_journeys.md
-- 03_technical_ops.md (NEW)
+- 03_technical_ops.md
 - 04_nfr_requirements.md
 - 05_technical_architecture.md
 - 06_risk_assessment.md
 - 07_gap_analysis.md
-- 08_test_plan.md (NEW)
+- 08_test_plan.md
+{if test feedback data exists}
+- 09_test_results.md (test run: {TEST_RUN_ID})
+- 10_feedback.md
+- 11_issues.md
+{endif}
 
 Gaps Found: {count} (see 07_gap_analysis.md)
 
@@ -816,4 +1113,24 @@ WHERE session_name = ?;
 -- Session summary
 SELECT * FROM session_summary_view
 WHERE session_name = ?;
+
+-- Test results for a specific run
+SELECT tr.*, j.journey_id, j.name as journey_name
+FROM test_results tr
+LEFT JOIN journey j ON tr.journey_id = j.id
+WHERE tr.session_name = ? AND tr.test_run_id = ?;
+
+-- Feedback for a specific run
+SELECT * FROM feedback
+WHERE session_name = ? AND test_run_id = ?;
+
+-- Issues for a specific run (ordered by priority)
+SELECT * FROM issues
+WHERE session_name = ? AND test_run_id = ?
+ORDER BY rice_score DESC;
+
+-- Get latest test run ID for a session
+SELECT test_run_id FROM test_results
+WHERE session_name = ?
+ORDER BY executed_at DESC LIMIT 1;
 ```

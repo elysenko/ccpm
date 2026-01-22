@@ -4,11 +4,12 @@ Generate realistic user feedback from each synthetic persona based on their test
 
 ## Usage
 ```
-/pm:generate-feedback <session-name>
+/pm:generate-feedback <session-name> [--run <test-run-id>]
 ```
 
 ## Arguments
 - `session-name` (required): Name of the scoped session
+- `--run` (optional): Test run ID from `/pm:test-journey` (defaults to latest run)
 
 ## Input
 **Required:**
@@ -50,6 +51,31 @@ Run Playwright tests first: npx playwright test --reporter=json > test-results.j
 Create output directory:
 ```bash
 mkdir -p "$OUTPUT_DIR"
+```
+
+---
+
+### Step 1.5: Parse Test Run ID
+
+```bash
+TEST_RUN_ID=""
+if [[ "$ARGUMENTS" == *"--run"* ]]; then
+    TEST_RUN_ID=$(echo "$ARGUMENTS" | sed -n 's/.*--run[= ]*\([^ ]*\).*/\1/p')
+fi
+
+# If no run ID provided, get the latest from test_results table
+if [[ -z "$TEST_RUN_ID" ]]; then
+    TEST_RUN_ID=$(psql -t -c "SELECT test_run_id FROM test_results WHERE session_name='$SESSION_NAME' ORDER BY executed_at DESC LIMIT 1" | tr -d ' ')
+fi
+
+if [[ -z "$TEST_RUN_ID" ]]; then
+    echo "❌ No test runs found for session '$SESSION_NAME'"
+    echo ""
+    echo "Run tests first: /pm:test-journey $SESSION_NAME <journey-id> --persona <persona-id>"
+    exit 1
+fi
+
+echo "Using test run: $TEST_RUN_ID"
 ```
 
 ---
@@ -313,10 +339,57 @@ Write to `.claude/testing/feedback/{session-name}-feedback.json`:
 
 ---
 
+### Step 6.5: Persist Feedback to Database
+
+For each persona's feedback, insert into the database:
+
+```sql
+INSERT INTO feedback (
+    session_name, test_run_id, persona_id, overall_rating, nps_score,
+    recommendation, positives, frustrations, bugs,
+    feature_requests, test_context, created_at
+) VALUES (
+    '{SESSION_NAME}',
+    '{TEST_RUN_ID}',
+    '{persona.id}',
+    {overall_rating},
+    {nps_score},
+    '{recommendation}',
+    '{positives_json}',
+    '{frustrations_json}',
+    '{bugs_json}',
+    '{feature_requests_json}',
+    '{test_context_json}',
+    NOW()
+);
+```
+
+**JSONB field formats:**
+
+```json
+// positives
+[{"item": "Clean UI", "journeyRef": "J-001"}]
+
+// frustrations
+[{"item": "Slow load", "severity": "moderate", "journeyRef": "J-002"}]
+
+// bugs
+[{"title": "Form fails", "description": "...", "severity": "high", "stepsToReproduce": ["..."]}]
+
+// feature_requests
+[{"title": "Bulk upload", "description": "...", "priority": "important"}]
+
+// test_context
+{"totalTests": 10, "passed": 8, "failed": 2, "successRate": 80}
+```
+
+---
+
 ### Step 7: Present Summary
 
 ```
 ✅ Synthetic feedback generated: {session-name}
+✅ Persisted to database (test_run: {TEST_RUN_ID})
 
 Test Results:
 - Total Tests: 50 (42 passed, 8 failed)
@@ -344,7 +417,7 @@ Output: .claude/testing/feedback/{session-name}-feedback.json
 
 Next Steps:
 1. Review feedback: cat {output-file} | jq '.summary'
-2. Analyze patterns: /pm:analyze-feedback {session-name}
+2. Analyze patterns: /pm:analyze-feedback {session-name} --run {TEST_RUN_ID}
 ```
 
 ---
