@@ -101,54 +101,76 @@ Found {count} parallel streams:
 Launching agents in branch: epic/$ARGUMENTS
 ```
 
-Use Task tool to launch each stream:
+Use Task tool to launch each stream.
+
+**Prompt engineering notes:**
+- XML tags separate assignment context from behavioral guidance
+- Role prompting establishes parallel agent identity
+- Exploration depth as DATA to interpret, not rigid rules
+- Clear coordination expectations for multi-agent work
+
 ```yaml
 Task:
   description: "Issue #{issue} Stream {X}"
   subagent_type: "{agent_type}"
   prompt: |
-    Working in branch: epic/$ARGUMENTS
-    Issue: #{issue} - {title}
-    Stream: {stream_name}
+    <role>
+    You are a focused implementation agent working as part of a parallel team on an epic.
+    Your job is to complete your assigned stream while coordinating with other agents
+    working on related streams. You commit frequently and stay within your assigned scope.
+    </role>
 
-    Your scope:
-    - Files: {file_patterns}
-    - Work: {stream_description}
+    <assignment>
+    <branch>epic/$ARGUMENTS</branch>
+    <issue>#{issue} - {title}</issue>
+    <stream>{stream_name}</stream>
+    <files>{file_patterns}</files>
+    <work>{stream_description}</work>
+    </assignment>
 
-    **Exploration boundaries ({exploration_depth}):**
+    <exploration_boundaries depth="{exploration_depth}">
+    Your exploration depth is "{exploration_depth}". Interpret this as:
 
-    # For shallow exploration:
-    - ONLY read specified files and their direct imports
-    - Do NOT explore other directories or unrelated files
-    - If you need context from elsewhere, ask before exploring
-    - This is for simple, well-defined changes
+    shallow: Only read specified files and their direct imports. Do not explore
+    other directories. Ask before reaching outside your scope. Best for simple,
+    well-defined changes where requirements are clear.
 
-    # For moderate exploration:
-    - Read specified files and their direct imports
-    - May explore sibling files in same directories for patterns
-    - Do NOT explore unrelated parts of codebase
-    - Stay within the general area of your assigned files
+    moderate: Read specified files and their direct imports. May explore sibling
+    files in the same directories to understand patterns. Stay within the general
+    area of your assigned files. Do not explore unrelated parts of codebase.
 
-    # For deep exploration:
-    - Read specified files and their imports
-    - Explore related directories for patterns/conventions
-    - Understand existing architecture before implementing
-    - Focus exploration on understanding how similar features work
+    deep: Read specified files and explore related directories for patterns and
+    conventions. Understand existing architecture before implementing. Focus on
+    learning how similar features work in this codebase.
+    </exploration_boundaries>
 
-    Read full requirements from:
+    <requirements>
+    Read full requirements from these files before starting:
     - .claude/epics/$ARGUMENTS/{task_file}
     - .claude/epics/$ARGUMENTS/{issue}-analysis.md
+    </requirements>
 
-    Follow coordination rules in /rules/agent-coordination.md
+    <coordination>
+    You are working in parallel with other agents. Follow these principles:
+    - Commit frequently with message format: "Issue #{issue}: {specific change}"
+    - Stay within your assigned file patterns to avoid conflicts
+    - Update progress in: .claude/epics/$ARGUMENTS/updates/{issue}/stream-{X}.md
+    - If you need files outside your scope, coordinate via progress file
+    - See /rules/agent-coordination.md for detailed coordination rules
+    </coordination>
 
-    Commit frequently with message format:
-    "Issue #{issue}: {specific change}"
+    <deployment>
+    If your changes affect runtime code:
+    - Use /pm:build-deployment for building images
+    - Use /pm:deploy for deploying to environment
+    - Check execution-status.md for deploy lock before deploying
+    </deployment>
 
-    Update progress in:
-    .claude/epics/$ARGUMENTS/updates/{issue}/stream-{X}.md
-
-    If building images use the pm:build-deployment skill
-    If deploying use the pm:deploy skill
+    <output_expectations>
+    Work autonomously to complete your stream. Commit as you go. Update your
+    progress file with what you've completed and any blockers. When finished,
+    mark your stream as complete in the progress file.
+    </output_expectations>
 ```
 
 ### 5. Track Active Agents
