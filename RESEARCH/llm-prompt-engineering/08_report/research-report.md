@@ -480,7 +480,7 @@ and proceed.
 
 ### For Extended Thinking
 
-1. **Use graduated triggers** - `think` -> `think hard` -> `think harder` -> `ultrathink`
+1. **Use graduated triggers** - `think` → `think hard` → `think harder` → `ultrathink`
 
 2. **Don't over-prescribe** - High-level instructions often outperform step-by-step guidance
 
@@ -528,7 +528,7 @@ and proceed.
 2. [Use XML Tags to Structure Prompts](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/use-xml-tags)
 3. [System Prompts and Role Prompting](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/system-prompts)
 4. [Extended Thinking Tips](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/extended-thinking-tips)
-5. [Multishot Prompting](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/multishot-prompts)
+5. [Multishot Prompting](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/multishot-prompting)
 6. [Effective Context Engineering for AI Agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
 7. [Claude Code Best Practices](https://www.anthropic.com/engineering/claude-code-best-practices)
 8. [Constitutional AI: Harmlessness from AI Feedback](https://www.anthropic.com/research/constitutional-ai-harmlessness-from-ai-feedback)
@@ -536,75 +536,14 @@ and proceed.
 ### Security Guidance (Grade A)
 9. [OWASP LLM Prompt Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html)
 
-### Academic Research - Chain-of-Thought (Grade A)
-10. Wei, J. et al. (2022). **Chain-of-Thought Prompting Elicits Reasoning in Large Language Models.** [arXiv:2201.11903](https://arxiv.org/abs/2201.11903) - The foundational paper showing that generating intermediate reasoning steps significantly improves LLM performance on complex reasoning tasks.
-
-11. Wang, X. et al. (2024). **Chain-of-Thought Reasoning Without Prompting.** [arXiv:2402.10200](https://arxiv.org/abs/2402.10200) - Demonstrates that CoT reasoning paths can be elicited by altering the decoding process rather than explicit prompting.
-
-12. Zhang, Y. et al. (2024). **Pattern-Aware Chain-of-Thought Prompting in Large Language Models.** [arXiv:2404.14812](https://arxiv.org/abs/2404.14812) - Shows that underlying reasoning patterns matter more than accuracy in demonstrations.
-
-13. Meincke, L. et al. (2025). **The Decreasing Value of Chain of Thought in Prompting.** [arXiv:2506.07142](https://arxiv.org/abs/2506.07142) - Wharton research showing CoT effectiveness varies by task and model, with 20-80% latency increase for often negligible gains.
-
-14. Zhao, C. et al. (2025). **Is Chain-of-Thought Reasoning of LLMs a Mirage? A Data Distribution Lens.** [arXiv:2508.01191](https://arxiv.org/abs/2508.01191) - Proposes that CoT reasoning reflects structured inductive bias learned from in-distribution data.
-
-15. (2025). **Chain of Draft: Thinking Faster by Writing Less.** [arXiv:2502.18600](https://arxiv.org/abs/2502.18600) - Proposes limiting each reasoning step to five words to reduce verbosity while maintaining reasoning ability.
-
-### Academic Research - Few-Shot Learning (Grade A)
-16. Brown, T. et al. (2020). **Language Models are Few-Shot Learners.** [arXiv:2005.14165](https://arxiv.org/abs/2005.14165) - GPT-3 paper establishing few-shot learning capabilities of LLMs.
-
-17. Meshkin, A. et al. (2024). **Harnessing LLMs' Zero-Shot and Few-Shot Learning for Regulatory Research.** *Briefings in Bioinformatics*, 25(5). [Oxford Academic](https://academic.oup.com/bib/article/25/5/bbae354/7739674) - Found open-source LLMs achieved zero/few-shot performance comparable to models needing thousands of training samples.
-
-18. (2024). **An Empirical Evaluation of Prompting Strategies for LLMs in Zero-Shot Clinical NLP.** [PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC11036183/) - Task-specific prompt tailoring is vital; few-shot improved performance in complex scenarios.
-
-19. (2024). **Does Few-Shot Learning Help LLM Performance in Code Synthesis?** [arXiv:2412.02906](https://arxiv.org/abs/2412.02906) - Systematic study on whether few-shot examples improve coding capabilities.
-
-20. (2025). **The Few-shot Dilemma: Over-prompting Large Language Models.** [arXiv:2509.13196](https://arxiv.org/html/2509.13196v1) - Excessive examples can paradoxically degrade performance ("over-prompting").
-
-### Academic Research - Prompt Injection & Security (Grade A)
-21. Liu, Y. et al. (2023/2025). **Prompt Injection attack against LLM-integrated Applications.** [arXiv:2306.05499](https://arxiv.org/abs/2306.05499) - Introduces HouYi, a black-box prompt injection attack technique inspired by traditional web injection attacks.
-
-22. (2023). **Formalizing and Benchmarking Prompt Injection Attacks and Defenses.** [arXiv:2310.12815](https://arxiv.org/abs/2310.12815) - Framework formalizing prompt injection where existing attacks are special cases; evaluated 5 attacks and 10 defenses with 10 LLMs.
-
-23. (2025). **PromptArmor: Simple yet Effective Prompt Injection Defenses.** [arXiv:2507.15219](https://arxiv.org/html/2507.15219v1) - Training-based defenses that fine-tune LLM parameters to enhance robustness against prompt injection.
-
-24. (2025). **Prompt Injection 2.0: Hybrid AI Threats.** [arXiv:2507.13169](https://arxiv.org/html/2507.13169v1) - Examines hybrid attack mechanisms including CVE-2024-5565, DeepSeek XSS exploits, AI worms, and multi-agent infections.
-
-25. (2025). **A Multi-Agent LLM Defense Pipeline Against Prompt Injection Attacks.** [arXiv:2509.14285](https://arxiv.org/html/2509.14285v1) - Multi-agent approach to detecting and preventing prompt injection.
-
-### Academic Research - Constitutional AI (Grade A)
-26. Bai, Y. et al. (2022). **Constitutional AI: Harmlessness from AI Feedback.** [arXiv:2212.08073](https://arxiv.org/abs/2212.08073) - Foundational paper introducing RLAIF and constitutional training for harmless AI assistants without human labels for harmful outputs.
-
-27. Anthropic (2023). **Collective Constitutional AI: Aligning a Language Model with Public Input.** [Anthropic Research](https://www.anthropic.com/research/collective-constitutional-ai-aligning-a-language-model-with-public-input) - Extension of CAI incorporating public input into constitutional principles.
-
-### Academic Research - Meta-Prompting & Automatic Optimization (Grade A)
-28. (2025). **A Systematic Survey of Automatic Prompt Optimization Techniques.** [arXiv:2502.16923](https://arxiv.org/html/2502.16923v2) - Comprehensive survey of PE2, OPRO, and other automatic prompt optimization methods.
-
-29. (2025). **Meta-Prompt Optimization for LLM-Based Sequential Decision Making (EXPO).** [arXiv:2502.00728](https://arxiv.org/html/2502.00728v1) - EXPonential-weight algorithm for automatic meta-prompt optimization in LLM-based agents.
-
-30. (2025). **Promptomatix: An Automatic Prompt Optimization Framework.** [arXiv:2507.14241](https://arxiv.org/html/2507.14241v1) - Transforms natural language task descriptions into high-quality prompts without manual tuning.
-
-31. (2025). **metaTextGrad: Automatically Optimizing Language Model Optimizers.** [arXiv:2505.18524](https://arxiv.org/html/2505.18524v1) - Meta prompt optimizer achieving up to 6% absolute performance improvement.
-
-32. (2025). **System Prompt Optimization with Meta-Learning.** [arXiv:2505.09666](https://arxiv.org/abs/2505.09666) - Bilevel system prompt optimization for robustness across diverse user prompts.
-
-33. (2024). **Efficient Prompting Methods for Large Language Models: A Survey.** [arXiv:2404.01077](https://arxiv.org/abs/2404.01077) - Comprehensive survey of prompt engineering techniques including automatic prompt engineering.
-
-### Academic Research - Persona & Role Prompting (Grade B)
-34. (2024). **When "A Helpful Assistant" Is Not Really Helpful: Personas in System Prompts Do Not Improve Performances of Large Language Models.** [arXiv:2311.10054](https://arxiv.org/html/2311.10054v2), [EMNLP 2024](https://aclanthology.org/2024.findings-emnlp.888.pdf) - Large-scale study finding personas don't improve model performance on factual questions.
-
-35. (2024). **Persona is a Double-edged Sword: Enhancing Zero-shot Reasoning by Ensembling Role-playing and Neutral Prompts.** [arXiv:2408.08631](https://arxiv.org/html/2408.08631v1) - Jekyll & Hyde framework outperforms single role-playing by 9.98% accuracy using GPT-4.
-
-36. (2025). **The Prompt Makes the Person(a): A Systematic Evaluation of Sociodemographic Persona Prompting.** [arXiv:2507.16076](https://arxiv.org/abs/2507.16076) - Examines how persona prompt strategies influence LLM simulations across demographic groups.
-
-37. (2025). **Using AI for User Representation: An Analysis of 83 Persona Prompts.** [arXiv:2508.13047](https://arxiv.org/html/2508.13047v1) - Analysis of persona prompt variations and their effects.
-
-### Academic Research - Context & Performance (Grade A)
-38. (2025). **Context Length Alone Hurts LLM Performance.** [arXiv:2510.05381](https://arxiv.org/html/2510.05381v1) - Demonstrates that long prompts degrade performance even when models can retrieve all relevant information.
+### Academic Research (Grade B)
+10. [The Decreasing Value of Chain of Thought in Prompting - Wharton](https://gail.wharton.upenn.edu/research-and-insights/tech-report-chain-of-thought/)
+11. [Context Length Alone Hurts LLM Performance - arXiv](https://arxiv.org/html/2510.05381v1)
 
 ### Practitioner Guides (Grade B)
-39. [Meta Prompting - Prompt Engineering Guide](https://www.promptingguide.ai/techniques/meta-prompting)
-40. [Few-Shot Prompting - Prompt Engineering Guide](https://www.promptingguide.ai/techniques/fewshot)
+12. [Meta Prompting - Prompt Engineering Guide](https://www.promptingguide.ai/techniques/meta-prompting)
+13. [Few-Shot Prompting - Prompt Engineering Guide](https://www.promptingguide.ai/techniques/fewshot)
 
 ---
 
-*Research conducted using Graph of Thoughts methodology with Standard intensity tier (3-5 agents, max depth 3). All claims verified against multiple sources where possible. 40 sources total: 8 Anthropic official, 1 OWASP, 29 academic papers, 2 practitioner guides.*
+*Research conducted using Graph of Thoughts methodology with Standard intensity tier (3-5 agents, max depth 3). All claims verified against multiple sources where possible.*

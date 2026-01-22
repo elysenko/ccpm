@@ -1,0 +1,19 @@
+source_id,title,url,quality_grade,source_type,date_accessed
+S01,Google Shell Style Guide,https://google.github.io/styleguide/shellguide.html,A,Official Style Guide,2026-01-22
+S02,shfmt Man Page (Debian),https://manpages.debian.org/testing/shfmt/shfmt.1.en.html,A,Official Documentation,2026-01-22
+S03,ShellCheck Wiki,https://github.com/koalaman/shellcheck/wiki,A,Official Documentation,2026-01-22
+S04,ShellCheck SC2086,https://www.shellcheck.net/wiki/SC2086,A,Official Documentation,2026-01-22
+S05,Greg's Wiki - BashPitfalls,http://mywiki.wooledge.org/BashPitfalls,A,Community Reference,2026-01-22
+S06,Greg's Wiki - Quotes,https://mywiki.wooledge.org/Quotes,A,Community Reference,2026-01-22
+S07,Bash Strict Mode,http://redsymbol.net/articles/unofficial-bash-strict-mode/,B,Community Guide,2026-01-22
+S08,bahamas10/bash-style-guide,https://github.com/bahamas10/bash-style-guide,B,Community Guide,2026-01-22
+S09,ShellCheck GitHub Actions,https://github.com/marketplace/actions/shellcheck,B,Tool Documentation,2026-01-22
+S10,sh-checker Action,https://github.com/marketplace/actions/sh-checker,B,Tool Documentation,2026-01-22
+S11,shellcheck-precommit,https://github.com/koalaman/shellcheck-precommit,B,Tool Documentation,2026-01-22
+S12,GNU Bash Manual - Double Quotes,https://www.gnu.org/software/bash/manual/html_node/Double-Quotes.html,A,Official Documentation,2026-01-22
+S13,mvdan/sh (shfmt repo),https://github.com/mvdan/sh,A,Official Repository,2026-01-22
+S14,Greg's Wiki - HereDocument,https://mywiki.wooledge.org/HereDocument,A,Community Reference,2026-01-22
+S15,Greg's Wiki - BashGuide/Arrays,https://mywiki.wooledge.org/BashGuide/Arrays,A,Community Reference,2026-01-22
+S16,TLDP - Portability Issues,https://tldp.org/LDP/abs/html/portabilityissues.html,B,Documentation,2026-01-22
+S17,Baeldung - Double Quoting,https://www.baeldung.com/linux/bash-double-quotes,B,Tutorial,2026-01-22
+S18,ShellCheck Directive Wiki,https://github.com/koalaman/shellcheck/wiki/Directive,A,Official Documentation,2026-01-22

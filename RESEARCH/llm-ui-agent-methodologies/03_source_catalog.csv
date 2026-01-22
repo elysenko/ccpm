@@ -1,0 +1,31 @@
+id,title,url,type,quality,subquestions,date
+S1,"My LLM coding workflow going into 2026","https://addyosmani.com/blog/ai-coding-workflow/",Practitioner Guide,B,"SQ2,SQ3",2025-12
+S2,"v0 Composite Model Family","https://vercel.com/blog/v0-composite-model-family",Technical Documentation,A,"SQ1,SQ5",2025
+S3,"How we made v0 an effective coding agent","https://vercel.com/blog/how-we-made-v0-an-effective-coding-agent",Technical Documentation,A,"SQ1,SQ5,SQ7",2025
+S4,"Replit Multi-Agent Architecture","https://www.zenml.io/llmops-database/building-reliable-ai-agents-for-application-development-with-multi-agent-architecture",Technical Documentation,A,"SQ1,SQ7",2025
+S5,"Design2Code Benchmark","https://arxiv.org/abs/2403.03163",Academic Research,A,"SQ2,SQ4",2024-03
+S6,"DCGen Divide-and-Conquer","https://arxiv.org/abs/2406.16386",Academic Research,A,"SQ1,SQ4",2024-06
+S7,"ScreenCoder Multi-Agent Framework","https://arxiv.org/abs/2507.22827",Academic Research,A,"SQ1,SQ4",2025-07
+S8,"AI4UI Enterprise Framework","https://arxiv.org/html/2512.06046v1",Academic Research,A,"SQ1,SQ4",2025-12
+S9,"Teaching LLMs to Self-Debug","https://arxiv.org/abs/2304.05128",Academic Research,A,SQ5,2023-04
+S10,"Training LLMs to Better Self-Debug","https://arxiv.org/html/2405.18649v1",Academic Research,A,SQ5,2024-05
+S11,"Claude Code Best Practices","https://www.anthropic.com/engineering/claude-code-best-practices",Technical Documentation,A,"SQ1,SQ2,SQ7",2025
+S12,"LangGraph Workflows and Agents","https://docs.langchain.com/oss/python/langgraph/workflows-agents",Technical Documentation,A,SQ1,2025
+S13,"Choosing Multi-Agent Architecture","https://www.blog.langchain.com/choosing-the-right-multi-agent-architecture/",Technical Documentation,B,SQ1,2025
+S14,"Single vs Multi-Agent","https://www.philschmid.de/single-vs-multi-agents",Practitioner Guide,B,SQ1,2025
+S15,"WebContainers Introduction","https://blog.stackblitz.com/posts/introducing-webcontainers/",Technical Documentation,A,SQ6,2021
+S16,"Code Sandboxes for LLM Agents","https://amirmalik.net/2025/03/07/code-sandboxes-for-llm-ai-agents",Practitioner Guide,B,SQ6,2025-03
+S17,"E2B Platform","https://e2b.dev/",Technical Documentation,B,SQ6,2025
+S18,"Figma MCP Server Guide","https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server",Technical Documentation,A,SQ4,2025
+S19,"shadcn UI AI-First Design","https://refine.dev/blog/shadcn-blog/",Technical Documentation,B,SQ3,2025
+S20,"UICoder Fine-tuning","https://arxiv.org/html/2406.07739v1",Academic Research,A,"SQ2,SQ3",2024-06
+S21,"Prompt Engineering for Code LLMs","https://github.com/potpie-ai/potpie/wiki/How-to-write-good-prompts-for-generating-code-from-LLMs",Practitioner Guide,B,SQ2,2025
+S22,"LLM Instructions for React Code","https://www.nico.fyi/blog/llm-instructions-for-v0-and-gpt",Practitioner Guide,B,"SQ2,SQ3",2025
+S23,"Bolt vs Lovable Comparison","https://www.nocode.mba/articles/bolt-vs-lovable",Comparison,C,SQ7,2025
+S24,"AI Prototyping Stack Comparison","https://annaarteeva.medium.com/choosing-your-ai-prototyping-stack-lovable-v0-bolt-replit-cursor-magic-patterns-compared-9a5194f163e9",Comparison,C,SQ7,2025
+S25,"Cursor Working with Context","https://docs.cursor.com/guides/working-with-context",Technical Documentation,A,SQ2,2025
+S26,"Claude Artifacts Documentation","https://support.claude.com/en/articles/9487310-what-are-artifacts-and-how-do-i-use-them",Technical Documentation,A,SQ7,2025
+S27,"Reverse Engineering Claude Artifacts","https://www.reidbarber.com/blog/reverse-engineering-claude-artifacts",Practitioner Guide,B,"SQ3,SQ7",2024
+S28,"A11YN Accessibility in UI Code Gen","https://arxiv.org/html/2510.13914v1",Academic Research,B,SQ3,2025
+S29,"EfficientUICoder Token Compression","https://arxiv.org/html/2509.12159",Academic Research,B,SQ2,2025
+S30,"Multi-Agent Coding Evaluation","https://arxiv.org/html/2505.02133v1",Academic Research,A,"SQ1,SQ5",2025

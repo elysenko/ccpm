@@ -1,0 +1,20 @@
+claim_id,claim,type,sources,independence,confidence,status
+C1-1,"Multi-agent architectures outperform single-agent for complex UI generation tasks requiring parallel read operations",C1,"S7,S8,S4,S30",HIGH,85%,Verified
+C1-2,"Self-debugging improves code generation accuracy by 9-15%",C1,"S9,S10,S30",HIGH,90%,Verified
+C1-3,"v0's composite model achieves 93%+ error-free generation rate through AutoFix",C1,"S2,S3",MEDIUM,80%,Verified
+C1-4,"Divide-and-conquer approaches improve visual similarity by up to 15%",C1,"S6,S7",HIGH,85%,Verified
+C1-5,"shadcn/ui and constrained component libraries improve AI code generation quality",C1,"S19,S22,S27",HIGH,80%,Verified
+C1-6,"WebContainers enable browser-based Node.js execution with sub-200ms startup",C1,"S15,S16",MEDIUM,85%,Verified
+C1-7,"Design2Code benchmark: GPT-4V replaceable in 49% of cases for visual fidelity",C1,S5,LOW,75%,Single-Source
+C1-8,"ScreenCoder achieves 0.755 block match score outperforming GPT-4o at 0.730",C1,S7,LOW,75%,Single-Source
+C1-9,"Replit uses multi-agent with manager/editor/verifier pattern",C1,"S4,S14",MEDIUM,90%,Verified
+C1-10,"Fine-tuning on 40% quality data matches 100% dataset performance",C1,S20,LOW,70%,Single-Source
+C2-1,"Single-agent suffices for 80% of use cases",C2,"S14,S13",MEDIUM,75%,Verified
+C2-2,"TypeScript provides better LLM feedback loop than JavaScript",C2,"S22,S11",MEDIUM,80%,Verified
+C2-3,"MCP enables design-to-code workflows with Figma integration",C2,"S18,S8",HIGH,90%,Verified
+C2-4,"Extended thinking (think harder) improves complex reasoning",C2,S11,LOW,70%,Verified
+C2-5,"Chain-of-thought prompting reduces logical errors in code generation",C2,"S21,S9",MEDIUM,85%,Verified
+C2-6,"E2B uses Firecracker microVMs with sub-200ms startup",C2,"S16,S17",MEDIUM,85%,Verified
+C3-1,"Read tasks parallelize better than write tasks for agents",C3,"S14,S13",N/A,80%,Context
+C3-2,"CLAUDE.md files provide automatic context injection",C3,S11,N/A,90%,Context
+C3-3,"React + Tailwind + shadcn is the dominant stack for UI generation",C3,"S2,S26,S27",N/A,85%,Context

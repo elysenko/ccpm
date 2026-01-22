@@ -1,0 +1,11 @@
+query_id,timestamp,query,subquestion,status,results_count,notes
+Q001,2026-01-22,Anthropic prompt engineering guide documentation,SQ1-SQ7,pending,0,Foundation query
+Q002,2026-01-22,Claude prompting best practices docs.anthropic.com,SQ1-SQ7,pending,0,Foundation query
+Q003,2026-01-22,Anthropic XML tags prompt structure Claude,SQ1,pending,0,Structure focus
+Q004,2026-01-22,Claude extended thinking documentation 2024 2025,SQ2,pending,0,Reasoning focus
+Q005,2026-01-22,chain of thought prompting effectiveness research,SQ2,pending,0,Academic CoT
+Q006,2026-01-22,Claude system prompt design best practices,SQ3,pending,0,System prompts
+Q007,2026-01-22,prompt injection prevention techniques 2025 2026,SQ5,pending,0,Security
+Q008,2026-01-22,LLM prompt security Anthropic guidelines,SQ5,pending,0,Security
+Q009,2026-01-22,few-shot vs zero-shot prompting when to use,SQ4,pending,0,Examples
+Q010,2026-01-22,Constitutional AI safety prompting,SQ7,pending,0,Safety

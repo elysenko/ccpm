@@ -1,0 +1,252 @@
+{
+  "sources": [
+    {
+      "id": "S001",
+      "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-4-best-practices",
+      "title": "Claude 4 Prompting Best Practices - Anthropic Docs",
+      "type": "official_docs",
+      "quality_grade": "A",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S002",
+      "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/use-xml-tags",
+      "title": "Use XML Tags to Structure Prompts - Anthropic Docs",
+      "type": "official_docs",
+      "quality_grade": "A",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S003",
+      "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/system-prompts",
+      "title": "System Prompts and Role Prompting - Anthropic Docs",
+      "type": "official_docs",
+      "quality_grade": "A",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S004",
+      "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/extended-thinking-tips",
+      "title": "Extended Thinking Tips - Anthropic Docs",
+      "type": "official_docs",
+      "quality_grade": "A",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S005",
+      "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/multishot-prompting",
+      "title": "Multishot Prompting - Anthropic Docs",
+      "type": "official_docs",
+      "quality_grade": "A",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S006",
+      "url": "https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html",
+      "title": "OWASP LLM Prompt Injection Prevention Cheat Sheet",
+      "type": "security_guidance",
+      "quality_grade": "A",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S007",
+      "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+      "title": "Effective Context Engineering for AI Agents - Anthropic",
+      "type": "official_docs",
+      "quality_grade": "A",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S008",
+      "url": "https://www.anthropic.com/engineering/claude-code-best-practices",
+      "title": "Claude Code Best Practices - Anthropic",
+      "type": "official_docs",
+      "quality_grade": "A",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S009",
+      "url": "https://www.anthropic.com/research/constitutional-ai-harmlessness-from-ai-feedback",
+      "title": "Constitutional AI: Harmlessness from AI Feedback - Anthropic",
+      "type": "research_paper",
+      "quality_grade": "A",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S010",
+      "url": "https://gail.wharton.upenn.edu/research-and-insights/tech-report-chain-of-thought/",
+      "title": "Decreasing Value of Chain of Thought - Wharton",
+      "type": "academic_research",
+      "quality_grade": "B",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S011",
+      "url": "https://arxiv.org/html/2510.05381v1",
+      "title": "Context Length Alone Hurts LLM Performance - arXiv",
+      "type": "academic_research",
+      "quality_grade": "B",
+      "date_accessed": "2026-01-22"
+    },
+    {
+      "id": "S012",
+      "url": "https://www.promptingguide.ai/techniques/meta-prompting",
+      "title": "Meta Prompting - Prompt Engineering Guide",
+      "type": "practitioner_guide",
+      "quality_grade": "B",
+      "date_accessed": "2026-01-22"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E001",
+      "source_id": "S002",
+      "claim": "XML tags improve Claude's parsing accuracy",
+      "claim_type": "C1",
+      "quote": "When your prompts involve multiple components like context, instructions, and examples, XML tags can be a game-changer. They help Claude parse your prompts more accurately, leading to higher-quality outputs.",
+      "subquestion": "SQ1",
+      "hypothesis": "H1",
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E002",
+      "source_id": "S002",
+      "claim": "Claude was trained with XML tags in training data",
+      "claim_type": "C1",
+      "quote": "Claude was trained with XML tags in the training data. So using XML tags like <example>, <document>, etc. to structure your prompts can help guide Claude's output.",
+      "subquestion": "SQ1",
+      "hypothesis": "H1",
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E003",
+      "source_id": "S002",
+      "claim": "No canonical best XML tags exist",
+      "claim_type": "C2",
+      "quote": "There are no canonical 'best' XML tags that Claude has been trained with in particular, although we recommend that your tag names make sense with the information they surround.",
+      "subquestion": "SQ1",
+      "hypothesis": "H1",
+      "supports_or_contradicts": "NEUTRAL"
+    },
+    {
+      "id": "E004",
+      "source_id": "S004",
+      "claim": "Extended thinking improves complex reasoning",
+      "claim_type": "C1",
+      "quote": "Extended thinking mode allows Claude to spend more time breaking down problems, planning solutions, and exploring different approaches before responding... Use extended thinking for particularly complex tasks that benefit from step-by-step reasoning like math, coding, and analysis.",
+      "subquestion": "SQ2",
+      "hypothesis": "H2",
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E005",
+      "source_id": "S004",
+      "claim": "High-level instructions often better than step-by-step for extended thinking",
+      "claim_type": "C1",
+      "quote": "Claude often performs better with high level instructions to just think deeply about a task rather than step-by-step prescriptive guidance. The model's creativity in approaching problems may exceed a human's ability to prescribe the optimal thinking process.",
+      "subquestion": "SQ2",
+      "hypothesis": "H2",
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E006",
+      "source_id": "S010",
+      "claim": "CoT effectiveness decreasing with newer models",
+      "claim_type": "C1",
+      "quote": "CoT prompting generally improved average performance across non-reasoning models, with strongest improvements seen in Gemini Flash 2.0 (13.5%) and Sonnet 3.5 (11.7%), while GPT-4o-mini showed the smallest gain (4.4%, not statistically significant)... CoT requests required 20-80% (10-20 seconds) more time—a substantial cost for what are often negligible gains in accuracy.",
+      "subquestion": "SQ2",
+      "hypothesis": "H2",
+      "supports_or_contradicts": "PARTIAL"
+    },
+    {
+      "id": "E007",
+      "source_id": "S005",
+      "claim": "Few-shot examples improve accuracy and consistency",
+      "claim_type": "C1",
+      "quote": "Include 3-5 diverse, relevant examples to show Claude exactly what you want. More examples = better performance, especially for complex tasks... Examples reduce misinterpretation of instructions.",
+      "subquestion": "SQ4",
+      "hypothesis": "H3",
+      "supports_or_contradicts": "PARTIAL"
+    },
+    {
+      "id": "E008",
+      "source_id": "S011",
+      "claim": "Long prompts degrade performance",
+      "claim_type": "C1",
+      "quote": "Systematic experiments across 5 open- and closed-source LLMs on math, question answering, and coding tasks reveal that, even when models can perfectly retrieve all relevant information, their performance still degrades substantially (13.9%–85%) as input length increases but remains well within the models' claimed lengths.",
+      "subquestion": "SQ3",
+      "hypothesis": "H4",
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E009",
+      "source_id": "S007",
+      "claim": "Context must be treated as finite with diminishing returns",
+      "claim_type": "C1",
+      "quote": "context must be treated as a finite resource with diminishing marginal returns... Good engineering means finding the smallest possible set of high-signal tokens that maximize the likelihood of some desired outcome.",
+      "subquestion": "SQ3",
+      "hypothesis": "H4",
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E010",
+      "source_id": "S006",
+      "claim": "Prompt injection mitigable but not eliminable",
+      "claim_type": "C1",
+      "quote": "existing defensive approaches have significant limitations against persistent attackers due to power-law scaling behavior... Rate limiting only 'increases computational cost for attackers, doesn't prevent eventual success'... Robust defense against persistent attacks may require fundamental architectural innovations rather than incremental improvements to existing post-training safety approaches.",
+      "subquestion": "SQ5",
+      "hypothesis": "H5",
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E011",
+      "source_id": "S006",
+      "claim": "High success rates for persistent attackers even on frontier models",
+      "claim_type": "C1",
+      "quote": "The research cited shows '89% success on GPT-4o and 78% on Claude 3.5 Sonnet with sufficient attempts' using Best-of-N jailbreaking techniques.",
+      "subquestion": "SQ5",
+      "hypothesis": "H5",
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E012",
+      "source_id": "S001",
+      "claim": "Claude 4.x trained for precise instruction following",
+      "claim_type": "C1",
+      "quote": "These models have been trained for more precise instruction following than previous generations of Claude models... Claude 4.x models respond well to clear, explicit instructions. Being specific about your desired output can help enhance results.",
+      "subquestion": "SQ6",
+      "hypothesis": null,
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E013",
+      "source_id": "S001",
+      "claim": "Claude 4.5 excels at long-horizon reasoning",
+      "claim_type": "C1",
+      "quote": "Claude 4.5 models excel at long-horizon reasoning tasks with exceptional state tracking capabilities. It maintains orientation across extended sessions by focusing on incremental progress—making steady advances on a few things at a time rather than attempting everything at once.",
+      "subquestion": "SQ6",
+      "hypothesis": null,
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E014",
+      "source_id": "S003",
+      "claim": "Role prompting is most powerful use of system prompts",
+      "claim_type": "C1",
+      "quote": "When using Claude, you can dramatically improve its performance by using the system parameter to give it a role. This technique, known as role prompting, is the most powerful way to use system prompts with Claude.",
+      "subquestion": "SQ3",
+      "hypothesis": null,
+      "supports_or_contradicts": "SUPPORTS"
+    },
+    {
+      "id": "E015",
+      "source_id": "S009",
+      "claim": "Constitutional AI creates harmless but non-evasive assistants",
+      "claim_type": "C1",
+      "quote": "CAI aims to create a harmless but non-evasive assistant, reducing the tension between helpfulness and harmlessness, and avoiding evasive responses that reduce transparency and helpfulness.",
+      "subquestion": "SQ7",
+      "hypothesis": null,
+      "supports_or_contradicts": "SUPPORTS"
+    }
+  ]
+}

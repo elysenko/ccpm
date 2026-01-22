@@ -1,0 +1,22 @@
+claim_id,claim_type,claim,source,quality_grade,independence,verification_status
+C1-001,C1,Google Shell Style Guide recommends 2-space indentation,google.github.io/styleguide/shellguide.html,A,Primary,Verified
+C1-002,C1,shfmt with -i 2 -ci flags produces Google-style formatting,manpages.debian.org/testing/shfmt/shfmt.1.en.html,A,Primary,Verified
+C1-003,C1,ShellCheck has 547+ documented warning codes organized by category,github.com/koalaman/shellcheck/wiki,A,Primary,Verified
+C1-004,C1,SC2086 is the most common ShellCheck warning about quoting,shellcheck.net/wiki/SC2086,A,Primary,Verified
+C1-005,C1,Google mandates bash-only for executable scripts with #!/bin/bash shebang,google.github.io/styleguide/shellguide.html,A,Primary,Verified
+C1-006,C1,set -euo pipefail is the unofficial bash strict mode,redsymbol.net/articles/unofficial-bash-strict-mode/,B,Primary,Verified
+C1-007,C1,Double quotes prevent word splitting and glob expansion,mywiki.wooledge.org/Quotes,A,Primary,Verified
+C1-008,C1,$() command substitution is POSIX-recommended over backticks,gnu.org/software/bash/manual/html_node/Command-Substitution.html,A,Primary,Verified
+C1-009,C1,[[ is preferred over [ in bash for tests (Google + community consensus),google.github.io/styleguide/shellguide.html,A,Independent,Verified
+C1-010,C1,Function variables should use local keyword,google.github.io/styleguide/shellguide.html,A,Primary,Verified
+C2-001,C2,lowercase_with_underscores for variables; UPPERCASE for constants/env,google.github.io/styleguide/shellguide.html + alexhyett.com,A+B,Independent,Verified
+C2-002,C2,EditorConfig integrates with shfmt for project-wide settings,manpages.debian.org/testing/shfmt/shfmt.1.en.html,A,Primary,Verified
+C2-003,C2,.shellcheckrc supports disable/enable/source-path directives,github.com/koalaman/shellcheck/wiki/Directive,A,Primary,Verified
+C2-004,C2,Greg's Wiki BashPitfalls documents 30+ common anti-patterns,mywiki.wooledge.org/BashPitfalls,A,Primary,Verified
+C2-005,C2,main() function pattern recommended for larger scripts,google.github.io/styleguide/shellguide.html,A,Primary,Verified
+C2-006,C2,checkbashisms tool tests POSIX compliance,people.redhat.com/~thuth/blog/general/2021/04/27/portable-shell.html,B,Independent,Verified
+C2-007,C2,shfmt + shellcheck can be integrated via GitHub Actions,github.com/marketplace/actions/sh-checker,B,Primary,Verified
+C2-008,C2,pre-commit hooks available for both shfmt and shellcheck,github.com/koalaman/shellcheck-precommit,B,Primary,Verified
+C3-001,C3,Maximum line length of 80 characters is common standard,google.github.io/styleguide/shellguide.html,A,Primary,Verified
+C3-002,C3,Heredocs support tab-stripping with <<- operator,mywiki.wooledge.org/HereDocument,A,Primary,Verified
+C3-003,C3,Arrays should be quoted with "${array[@]}" syntax,mywiki.wooledge.org/BashGuide/Arrays,A,Primary,Verified
