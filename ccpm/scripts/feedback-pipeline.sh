@@ -521,20 +521,73 @@ step_test_journeys() {
   local journey_count=0
   local persona_count=0
 
-  # Run test-journey for each combination
+  # Run test-journey for each combination using direct Playwright (not MCP)
   local journey_id
   for journey_id in ${journeys}; do
     [[ -z "${journey_id}" ]] && continue
     ((++journey_count))
+
+    # Fetch journey data from database
+    local journey_data
+    journey_data=$(db_query "SELECT json_build_object(
+      'journey_id', journey_id,
+      'name', name,
+      'steps', COALESCE(steps, '[]'::jsonb)
+    ) FROM journey WHERE session_name='${SESSION}' AND journey_id='${journey_id}'") || true
 
     local persona_id
     for persona_id in ${personas}; do
       [[ -z "${persona_id}" ]] && continue
       ((++persona_count))
 
+      # Fetch persona data from database
+      local persona_data
+      persona_data=$(db_query "SELECT json_build_object(
+        'id', persona_id,
+        'name', name,
+        'role', role,
+        'demographics', COALESCE(demographics, '{}'::jsonb),
+        'behavioral', COALESCE(behavioral, '{}'::jsonb),
+        'journeys', COALESCE(journeys, '[]'::jsonb),
+        'testData', COALESCE(test_data, '{}'::jsonb)
+      ) FROM persona WHERE session_name='${SESSION}' AND persona_id='${persona_id}'") || true
+
       log "Testing journey ${journey_id} with persona ${persona_id}"
-      claude --dangerously-skip-permissions --print \
-        "/pm:test-journey ${SESSION} ${journey_id} --persona ${persona_id} --run ${TEST_RUN_ID}" || true
+
+      # Run direct Playwright test instead of MCP-based test
+      local test_output
+      test_output=$(node "${SCRIPT_DIR}/playwright-journey-test.js" \
+        --session "${SESSION}" \
+        --journey "${journey_id}" \
+        --persona "${persona_id}" \
+        --journey-data "${journey_data:-{}}" \
+        --persona-data "${persona_data:-{}}" \
+        --base-url "http://localhost:${FRONTEND_PORT:-5173}" \
+        --test-run-id "${TEST_RUN_ID}" 2>/dev/null) || true
+
+      # Parse and insert results to database
+      if [[ -n "${test_output}" ]]; then
+        local overall_status steps_passed steps_failed
+        overall_status=$(echo "${test_output}" | jq -r '.overall_status // "fail"')
+        steps_passed=$(echo "${test_output}" | jq -r '.steps_passed // 0')
+        steps_failed=$(echo "${test_output}" | jq -r '.steps_failed // 0')
+        local step_results issues_found screenshots_count
+        step_results=$(echo "${test_output}" | jq -c '.step_results // []')
+        issues_found=$(echo "${test_output}" | jq -c '.issues_found // []')
+        screenshots_count=$(echo "${test_output}" | jq -r '.screenshots_count // 0')
+
+        # Insert into test_results table
+        db_query "INSERT INTO test_results (session_name, test_run_id, persona_id, base_url, overall_status, steps_passed, steps_failed, step_results, issues_found, screenshots_count)
+                  VALUES ('${SESSION}', '${TEST_RUN_ID}', '${persona_id}', 'http://localhost:${FRONTEND_PORT:-5173}', '${overall_status}', ${steps_passed}, ${steps_failed}, '${step_results}'::jsonb, '${issues_found}'::jsonb, ${screenshots_count})" > /dev/null
+
+        if [[ "${overall_status}" == "pass" ]]; then
+          log_success "Journey ${journey_id} with ${persona_id}: PASSED (${steps_passed} steps)"
+        else
+          log_warn "Journey ${journey_id} with ${persona_id}: ${overall_status^^} (${steps_passed} passed, ${steps_failed} failed)"
+        fi
+      else
+        log_error "Journey ${journey_id} with ${persona_id}: No output from test"
+      fi
     done
   done
 
