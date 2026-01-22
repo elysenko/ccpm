@@ -368,6 +368,30 @@ COMMENT ON COLUMN technical_components.component_path IS 'File path, e.g., src/s
 COMMENT ON COLUMN technical_components.specifications IS 'JSONB for methods, parameters, return types';
 
 -- =============================================================================
+-- TABLE 8b: TECH_STACK
+-- Technology stack information (distinct from technical_components which tracks code artifacts)
+-- =============================================================================
+CREATE TABLE tech_stack (
+    id SERIAL PRIMARY KEY,
+    session_name VARCHAR(255) NOT NULL,       -- Links to interrogation session
+    layer VARCHAR(100) NOT NULL,              -- "Backend", "Frontend", "Database", etc.
+    technology VARCHAR(255) NOT NULL,          -- "FastAPI", "React", "PostgreSQL"
+    rationale TEXT,                            -- Why this technology was chosen
+    version VARCHAR(50),                       -- Version if specified
+    status VARCHAR(20) DEFAULT 'active' CHECK (status IN (
+        'active', 'deprecated', 'proposed', 'removed'
+    )),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (session_name, layer, technology)
+);
+
+COMMENT ON TABLE tech_stack IS 'Technology stack information per session (distinct from technical_components which tracks code artifacts)';
+COMMENT ON COLUMN tech_stack.layer IS 'Technology layer: Backend, Frontend, Database, Infrastructure, etc.';
+COMMENT ON COLUMN tech_stack.technology IS 'Technology name: FastAPI, React, PostgreSQL, etc.';
+COMMENT ON COLUMN tech_stack.rationale IS 'Why this technology was chosen for the project';
+
+-- =============================================================================
 -- TABLE 9: STEP_COMPONENT_MAPPING
 -- M:M link between journey steps and technical components
 -- =============================================================================

@@ -35,7 +35,7 @@ JOURNEYS_SYNCED=0
 USER_TYPES_SYNCED=0
 INTEGRATIONS_SYNCED=0
 CONCERNS_SYNCED=0
-TECH_COMPONENTS_SYNCED=0
+TECH_STACK_SYNCED=0
 DB_ENTITIES_SYNCED=0
 PAGES_SYNCED=0
 
@@ -360,7 +360,7 @@ insert_feature() {
     '${SESSION}',
     '${escaped_name}',
     '${escaped_desc}',
-    'sync'
+    'research'
   );"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -370,7 +370,7 @@ insert_feature() {
     log "  Feature: ${feature_id} - ${name}"
   fi
 
-  ((FEATURES_SYNCED++))
+  ((FEATURES_SYNCED++)) || true
 }
 
 # Parse journeys from 02_user_journeys.md (structured format)
@@ -531,7 +531,7 @@ insert_journey() {
     '${escaped_actor}',
     '${escaped_trigger}',
     '${escaped_goal}',
-    'sync'
+    'research'
   );"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -541,7 +541,7 @@ insert_journey() {
     log "  Journey: ${journey_id} - ${name} (${actor})"
   fi
 
-  ((JOURNEYS_SYNCED++))
+  ((JOURNEYS_SYNCED++)) || true
 }
 
 # Parse cross-cutting concerns from conversation or NFR file
@@ -607,7 +607,7 @@ SET config = EXCLUDED.config, updated_at = NOW();"
     log "  Concern: ${concern_type}"
   fi
 
-  ((CONCERNS_SYNCED++))
+  ((CONCERNS_SYNCED++)) || true
 }
 
 # Parse integrations from conversation
@@ -687,7 +687,7 @@ SET purpose = EXCLUDED.purpose, updated_at = NOW();"
     log "  Integration: ${platform} (${purpose})"
   fi
 
-  ((INTEGRATIONS_SYNCED++))
+  ((INTEGRATIONS_SYNCED++)) || true
 }
 
 # Parse user types from conversation
@@ -765,7 +765,7 @@ SET description = EXCLUDED.description, updated_at = NOW();"
     log "  User type: ${name}"
   fi
 
-  ((USER_TYPES_SYNCED++))
+  ((USER_TYPES_SYNCED++)) || true
 }
 
 # Parse user types from scope document (00_scope_document.md)
@@ -799,7 +799,7 @@ parse_user_types_from_scope() {
     fi
 
     # Detect table header: | Type | Description | or | User Type | ...
-    if [[ "${in_user_section}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*(Type|User|Role|Actor)[[:space:]]*\| ]]; then
+    if [[ "${in_user_section}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*(Type|User[[:space:]]*Type?|Role|Actor) ]]; then
       in_table=true
       table_header_seen=false
       continue
@@ -847,14 +847,17 @@ parse_user_types_from_scope() {
   done < "${file}"
 }
 
-# Parse technical components from scope/architecture documents
+# Parse tech stack from scope/architecture documents
 # Looks for Technology Stack tables:
 #   | Layer | Technology | Rationale |
 #   | Backend | FastAPI | High performance |
-parse_technical_components() {
+# NOTE: This inserts into tech_stack table, NOT technical_components
+#       technical_components is for code artifacts (services, resolvers, DTOs)
+#       tech_stack is for technology choices (FastAPI, React, PostgreSQL)
+parse_tech_stack() {
   local -r file="$1"
 
-  log "Parsing technical components from: ${file}"
+  log "Parsing tech stack from: ${file}"
 
   local in_tech_section=false
   local in_table=false
@@ -901,7 +904,7 @@ parse_technical_components() {
       field_rationale=$(echo "${field_rationale}" | xargs)
 
       if [[ -n "${field_layer}" ]] && [[ ! "${field_layer}" =~ ^-+$ ]] && [[ "${field_layer}" != "Layer" ]]; then
-        insert_technical_component "${field_layer}" "${field_tech}" "${field_rationale}"
+        insert_tech_stack "${field_layer}" "${field_tech}" "${field_rationale}"
       fi
       continue
     fi
@@ -910,34 +913,36 @@ parse_technical_components() {
     if [[ "${in_tech_section}" == "true" ]] && [[ "${line}" =~ ^[[:space:]]*[-*][[:space:]]+\*\*([^*]+)\*\*:?[[:space:]]*(.+)$ ]]; then
       local layer="${BASH_REMATCH[1]}"
       local tech="${BASH_REMATCH[2]}"
-      insert_technical_component "${layer}" "${tech}" ""
+      insert_tech_stack "${layer}" "${tech}" ""
     fi
   done < "${file}"
 }
 
-# Insert technical component
-insert_technical_component() {
-  local -r component_type="$1"
+# Insert tech stack entry (NOT technical_component - different table!)
+# tech_stack: technology choices (FastAPI, React, PostgreSQL)
+# technical_components: code artifacts (services, resolvers, DTOs)
+insert_tech_stack() {
+  local -r layer="$1"
   local -r technology="$2"
   local -r rationale="${3:-}"
 
-  local -r escaped_type=$(sql_escape "${component_type}")
+  local -r escaped_layer=$(sql_escape "${layer}")
   local -r escaped_tech=$(sql_escape "${technology}")
   local -r escaped_rationale=$(sql_escape "${rationale}")
 
-  local sql="INSERT INTO technical_components (session_name, component_type, technology, rationale)
-VALUES ('${SESSION}', '${escaped_type}', '${escaped_tech}', '${escaped_rationale}')
-ON CONFLICT (session_name, component_type) DO UPDATE
-SET technology = EXCLUDED.technology, rationale = EXCLUDED.rationale, updated_at = NOW();"
+  local sql="INSERT INTO tech_stack (session_name, layer, technology, rationale)
+VALUES ('${SESSION}', '${escaped_layer}', '${escaped_tech}', '${escaped_rationale}')
+ON CONFLICT (session_name, layer, technology) DO UPDATE
+SET rationale = EXCLUDED.rationale, updated_at = NOW();"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
-    log_dry "INSERT tech_component: ${component_type} = ${technology}"
+    log_dry "INSERT tech_stack: ${layer} = ${technology}"
   else
     db_exec "${sql}"
-    log "  Tech: ${component_type} = ${technology}"
+    log "  Tech Stack: ${layer} = ${technology}"
   fi
 
-  ((TECH_COMPONENTS_SYNCED++))
+  ((TECH_STACK_SYNCED++)) || true
 }
 
 # Parse database entities from scope document
@@ -1028,7 +1033,7 @@ SET description = EXCLUDED.description, updated_at = NOW();"
     log "  Entity: ${entity_name}"
   fi
 
-  ((DB_ENTITIES_SYNCED++))
+  ((DB_ENTITIES_SYNCED++)) || true
 }
 
 # Parse pages from scope document
@@ -1122,7 +1127,7 @@ SET route = EXCLUDED.route, description = EXCLUDED.description, updated_at = NOW
     log "  Page: ${page_name} (${route})"
   fi
 
-  ((PAGES_SYNCED++))
+  ((PAGES_SYNCED++)) || true
 }
 
 # Mark session as synced
@@ -1197,11 +1202,11 @@ run_sync() {
     parse_user_types "${CONV_FILE}"
   fi
 
-  # Parse technical components (from scope or architecture)
+  # Parse tech stack (from scope or architecture) - uses tech_stack table
   if [[ -f "${arch_file}" ]]; then
-    parse_technical_components "${arch_file}"
+    parse_tech_stack "${arch_file}"
   elif [[ -f "${scope_doc}" ]]; then
-    parse_technical_components "${scope_doc}"
+    parse_tech_stack "${scope_doc}"
   fi
 
   # Parse database entities (from scope document)
@@ -1244,7 +1249,7 @@ run_sync() {
   echo "  Features:       ${FEATURES_SYNCED}"
   echo "  Journeys:       ${JOURNEYS_SYNCED}"
   echo "  User Types:     ${USER_TYPES_SYNCED}"
-  echo "  Tech Components:${TECH_COMPONENTS_SYNCED}"
+  echo "  Tech Stack:     ${TECH_STACK_SYNCED}"
   echo "  DB Entities:    ${DB_ENTITIES_SYNCED}"
   echo "  Pages:          ${PAGES_SYNCED}"
   echo "  Integrations:   ${INTEGRATIONS_SYNCED}"
