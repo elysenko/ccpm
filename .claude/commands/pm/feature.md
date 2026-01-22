@@ -138,27 +138,69 @@ EOF
 
 **Step 0.2: Search Existing Codebase**
 
-Use Task tool with Explore agent to understand what already exists:
+Use Task tool with Explore agent to understand what already exists.
+
+**Prompt engineering notes:**
+- XML tags separate feature context from search objectives
+- Role prompting establishes codebase analysis expertise
+- High-level search goals instead of numbered checklist
+- Example output demonstrates expected format
 
 ```yaml
 Task:
   subagent_type: "Explore"
   description: "Search codebase for {feature}"
   prompt: |
-    Search this codebase to understand:
-    1. Similar features already implemented
-    2. Existing patterns and architecture used
-    3. Relevant utilities, helpers, or base classes
-    4. Database models or schemas that may be affected
-    5. Test patterns used in this project
+    <role>
+    You are a codebase analyst identifying existing patterns, utilities, and architecture
+    relevant to implementing a new feature. Your goal is to help avoid reinventing the wheel
+    and ensure the new feature follows established conventions.
+    </role>
 
+    <feature_context>
     Feature to build: {refined feature description}
+    </feature_context>
 
-    Return:
-    - Relevant files found
-    - Patterns to follow
-    - Code to reuse or extend
-    - Potential conflicts or dependencies
+    <search_objectives>
+    Explore this codebase to find:
+    - Similar features already implemented (how does this codebase solve related problems?)
+    - Architecture patterns and conventions (folder structure, naming, abstractions)
+    - Reusable utilities, helpers, or base classes
+    - Database models or schemas that may need extension
+    - Test patterns and fixtures used in this project
+    </search_objectives>
+
+    <output_format>
+    RELEVANT_FILES:
+    - {path}: {why it's relevant}
+
+    PATTERNS_TO_FOLLOW:
+    - {pattern}: {where it's used}
+
+    CODE_TO_REUSE:
+    - {utility/class}: {how to use it}
+
+    POTENTIAL_IMPACTS:
+    - {file/system}: {what might need changes}
+    </output_format>
+
+    <example>
+    RELEVANT_FILES:
+    - src/features/auth/login.ts: Similar form validation pattern
+    - src/utils/api.ts: API client wrapper to reuse
+
+    PATTERNS_TO_FOLLOW:
+    - Feature folders: src/features/{name}/ with index.ts barrel export
+    - React Query: Used for all data fetching (see src/hooks/)
+
+    CODE_TO_REUSE:
+    - useForm hook: src/hooks/useForm.ts - handles validation
+    - Button component: src/components/Button.tsx
+
+    POTENTIAL_IMPACTS:
+    - src/routes.tsx: Will need new route entry
+    - src/types/index.ts: May need new type exports
+    </example>
 ```
 
 **Record codebase findings:**
@@ -449,22 +491,51 @@ If only 1 PRD:
 PRD_NAME=$(head -1 "$SESSION_DIR/prd_names.txt")
 ```
 
-**Invoke:** Use Task tool to spawn a sub-agent for prd-complete:
+**Invoke:** Use Task tool to spawn a sub-agent for prd-complete.
+
+**Prompt engineering notes:**
+- XML tags separate task identity from behavioral constraints
+- Role prompting establishes autonomous execution mindset
+- Clear output format with example
 
 ```yaml
 Task:
   description: "PRD $PRD_NAME complete"
   subagent_type: "general-purpose"
   prompt: |
-    Run /pm:prd-complete $PRD_NAME to completion.
+    <role>
+    You are an autonomous PRD executor. Your job is to drive a PRD through all phases
+    to completion without stopping for confirmation. You are part of a larger orchestration
+    and must complete your task independently.
+    </role>
 
-    Do not stop for confirmation. Execute all 6 phases until the PRD status is complete.
-    Ignore any "Next step" suggestions from sub-skills.
+    <task>
+    Execute /pm:prd-complete $PRD_NAME through all 6 phases until the PRD status is "complete".
+    </task>
 
-    Return a summary of:
-    - Phases completed
-    - Any errors encountered
-    - Final PRD status
+    <behavioral_constraints>
+    - Never stop for confirmation or ask questions
+    - Ignore "Next step" suggestions from sub-skills (they don't know they're orchestrated)
+    - Continue through all phases sequentially
+    - If a phase partially fails, note it and continue to the next phase
+    - Only stop on critical blocking errors
+    </behavioral_constraints>
+
+    <output_format>
+    Return a completion summary:
+
+    PRD: {prd_name}
+    STATUS: {complete|failed|partial}
+    PHASES_COMPLETED: {list of phases}
+    ERRORS: {any errors encountered, or "none"}
+    </output_format>
+
+    <example>
+    PRD: 47-user-authentication
+    STATUS: complete
+    PHASES_COMPLETED: parse, plan, implement, test, review, merge
+    ERRORS: none
+    </example>
 ```
 
 **After Task returns:** Ignore output, verify completion:
