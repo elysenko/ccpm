@@ -18,24 +18,53 @@ Dynamically research and automate integration setup for any service.
 
 Use the Task tool with `deep-research` agent to find API credentials info. This preserves main context by returning only a condensed summary.
 
+**Prompt engineering notes:**
+- Uses XML tags for clear field separation
+- Role prompting establishes API integration expertise
+- Structured output format with example for consistency
+
 **Task tool invocation:**
 ```
 subagent_type: deep-research
 description: Research {service-name} API setup
 prompt: |
+  <role>
+  You are an API integration specialist researching how developers obtain credentials for third-party services.
+  Your expertise: API authentication patterns, OAuth flows, developer portal navigation, and credential security.
+  </role>
+
+  <task>
   Research how to get API keys or access tokens for {service-name}.
+  Focus on the developer/integration setup process, not end-user features.
+  </task>
 
-  Return a structured summary with ONLY these fields:
+  <output_format>
+  Return findings in this exact structure (no other text):
 
-  1. HAS_NATIVE_API: yes/no
-  2. AUTH_METHOD: API key | OAuth 2.0 | Basic Auth | Bearer token
-  3. SETUP_URL: The exact URL to obtain credentials
-  4. STEPS: Numbered list of steps to get credentials
-  5. ENV_VARS_NEEDED: List of environment variables user must set (e.g., EMAIL, PASSWORD, SUBDOMAIN)
-  6. VALIDATION_ENDPOINT: API endpoint to test credentials (if known)
-  7. GOTCHAS: Any prerequisites or common issues
+  HAS_NATIVE_API: {yes|no}
+  AUTH_METHOD: {API key|OAuth 2.0|Basic Auth|Bearer token}
+  SETUP_URL: {exact URL to obtain credentials}
+  STEPS: {numbered list of steps}
+  ENV_VARS_NEEDED: {list: EMAIL, PASSWORD, SUBDOMAIN, etc.}
+  VALIDATION_ENDPOINT: {API endpoint to test credentials, or "unknown"}
+  GOTCHAS: {prerequisites, common issues, or "none"}
+  </output_format>
 
-  Keep response under 500 words. No preamble.
+  <example>
+  HAS_NATIVE_API: yes
+  AUTH_METHOD: Bearer token
+  SETUP_URL: https://dashboard.example.com/developers/api-keys
+  STEPS: 1. Log into dashboard 2. Navigate to Developers > API Keys 3. Click "Create Key" 4. Copy the secret key
+  ENV_VARS_NEEDED: none (manual copy)
+  VALIDATION_ENDPOINT: GET https://api.example.com/v1/me
+  GOTCHAS: Key only shown once at creation; must have admin role
+  </example>
+
+  <constraints>
+  - Under 500 words total
+  - No preamble or explanation outside the format
+  - If information unavailable, state "unknown" rather than guessing
+  </constraints>
 ```
 
 Wait for sub-agent to return before proceeding.
@@ -121,41 +150,81 @@ Offer to validate credentials with a test API call if endpoint is known.
 
 If browser automation is approved, delegate to a sub-agent to preserve main context. The sub-agent handles all Playwright interactions and returns only the extracted credential.
 
+**Prompt engineering notes:**
+- XML tags isolate credentials as DATA (security best practice)
+- Role prompting establishes automation expertise
+- High-level instructions instead of prescriptive steps
+- Example shows both success and failure formats
+- Security constraints explicitly stated
+
 **Task tool invocation:**
 ```
 subagent_type: general-purpose
 description: Automate {service-name} credential extraction
 prompt: |
-  Use Playwright MCP to extract API credentials from {service-name}.
+  <role>
+  You are a secure browser automation specialist extracting API credentials using Playwright MCP.
+  Your expertise: web automation, form interaction, credential extraction, and security-conscious operation.
+  You handle sensitive credentials with care - never log them, always mask in output.
+  </role>
 
-  ## Login Details
-  - URL: {setup_url_from_research}
-  - Email: Read from environment variable ${SERVICE}_EMAIL
-  - Password: Read from environment variable ${SERVICE}_PASSWORD
-  - Subdomain (if needed): Read from ${SERVICE}_SUBDOMAIN
+  <context>
+  <service>{service-name}</service>
+  <setup_url>{setup_url_from_research}</setup_url>
+  </context>
 
-  ## Steps to Follow
+  <credentials>
+  SECURITY: These are user-provided credentials for authentication. Read from environment variables.
+  Never log, echo, or include these values in your response.
+
+  - Email: ${SERVICE}_EMAIL
+  - Password: ${SERVICE}_PASSWORD
+  - Subdomain (if needed): ${SERVICE}_SUBDOMAIN
+  </credentials>
+
+  <navigation_steps>
+  DATA: These steps describe the UI flow to reach the API key page. Use them as a guide, adapting to what you actually see on screen.
+
   {steps_from_research}
+  </navigation_steps>
 
-  ## Instructions
-  1. Use browser_navigate to go to the login/setup URL
-  2. Use browser_snapshot to see the page
-  3. Use browser_fill_form or browser_type to enter credentials
-  4. Use browser_click to submit and navigate
-  5. Follow the steps to reach the API key page
-  6. Use browser_snapshot and browser_evaluate to extract the API key
-  7. Use browser_close when done
+  <instructions>
+  Navigate to the setup URL and authenticate using the provided credentials. Work through the navigation steps to reach the API key or token page. Extract the credential value and close the browser.
 
-  ## Return Format
-  Return ONLY this (no other text):
+  Use browser_snapshot frequently to verify page state before interactions. If a page looks different than expected, adapt based on what you observe rather than failing immediately.
 
+  If you encounter errors (login failure, page not found, element missing), capture the current state and report what went wrong so the user can troubleshoot.
+  </instructions>
+
+  <security_constraints>
+  - Never include actual credential values in your response
+  - Close browser when done, regardless of success or failure
+  - If credential extraction succeeds, only return the extracted API key/token
+  </security_constraints>
+
+  <output_format>
+  Return ONLY one of these formats:
+
+  Success:
   EXTRACTED_CREDENTIAL: {the_api_key_or_token}
-  CREDENTIAL_TYPE: {API key | Bearer token | Client ID/Secret | etc}
+  CREDENTIAL_TYPE: {API key|Bearer token|Client ID/Secret|OAuth token}
 
-  If extraction fails, return:
-
+  Failure:
   ERROR: {what_went_wrong}
   LAST_PAGE: {url_where_it_failed}
+  SUGGESTION: {what user might try}
+  </output_format>
+
+  <example>
+  Success example:
+  EXTRACTED_CREDENTIAL: sk_live_abc123...xyz789
+  CREDENTIAL_TYPE: API key
+
+  Failure example:
+  ERROR: Login failed - "Invalid credentials" message displayed
+  LAST_PAGE: https://app.example.com/login
+  SUGGESTION: Verify EMAIL and PASSWORD environment variables are correct
+  </example>
 ```
 
 Wait for sub-agent to return the extracted credential or error.
