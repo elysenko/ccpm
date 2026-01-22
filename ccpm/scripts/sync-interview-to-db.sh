@@ -35,6 +35,9 @@ JOURNEYS_SYNCED=0
 USER_TYPES_SYNCED=0
 INTEGRATIONS_SYNCED=0
 CONCERNS_SYNCED=0
+TECH_COMPONENTS_SYNCED=0
+DB_ENTITIES_SYNCED=0
+PAGES_SYNCED=0
 
 usage() {
   cat << 'EOF'
@@ -50,18 +53,22 @@ Options:
   --force      Re-sync even if session appears complete
 
 Sources (in order of preference):
-  1. .claude/scopes/<session>/01_features.md (structured)
-  2. .claude/scopes/<session>/02_user_journeys.md (structured)
-  3. .claude/interrogations/<session>/conversation.md (raw)
+  1. .claude/scopes/<session>/00_scope_document.md (comprehensive)
+  2. .claude/scopes/<session>/01_features.md (structured)
+  3. .claude/scopes/<session>/02_user_journeys.md (structured)
+  4. .claude/scopes/<session>/04_nfr_requirements.md (NFR)
+  5. .claude/scopes/<session>/05_technical_architecture.md (tech stack)
+  6. .claude/interrogations/<session>/conversation.md (raw fallback)
 
 Target Tables:
-  - feature
-  - journey
-  - journey_steps_detailed
-  - user_type
-  - user_type_feature
-  - integration
-  - cross_cutting_concern
+  - feature              (from 01_features.md or 00_scope_document.md)
+  - journey              (from 02_user_journeys.md or 00_scope_document.md)
+  - user_type            (from 00_scope_document.md User Types section)
+  - technical_components (from 05_technical_architecture.md or 00_scope_document.md)
+  - database_entities    (from 00_scope_document.md Database section)
+  - page                 (from 00_scope_document.md Pages section)
+  - integration          (from 05_technical_architecture.md)
+  - cross_cutting_concern (from 04_nfr_requirements.md)
 EOF
   exit 1
 }
@@ -741,12 +748,15 @@ parse_user_types() {
 # Insert user type
 insert_user_type() {
   local -r name="$1"
+  local -r description="${2:-Synced from scope document}"
 
   local -r escaped_name=$(sql_escape "${name}")
+  local -r escaped_desc=$(sql_escape "${description}")
 
   local sql="INSERT INTO user_type (session_name, name, description)
-VALUES ('${SESSION}', '${escaped_name}', 'Synced from interrogation')
-ON CONFLICT (session_name, name) DO NOTHING;"
+VALUES ('${SESSION}', '${escaped_name}', '${escaped_desc}')
+ON CONFLICT (session_name, name) DO UPDATE
+SET description = EXCLUDED.description, updated_at = NOW();"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log_dry "INSERT user_type: ${name}"
@@ -756,6 +766,363 @@ ON CONFLICT (session_name, name) DO NOTHING;"
   fi
 
   ((USER_TYPES_SYNCED++))
+}
+
+# Parse user types from scope document (00_scope_document.md)
+# Looks for patterns like:
+#   ## User Types / ## Users / ### User Roles
+#   | Type | Description |
+#   | Individual User | Primary end users |
+#   - **Individual User**: Primary users
+parse_user_types_from_scope() {
+  local -r file="$1"
+
+  log "Parsing user types from scope: ${file}"
+
+  local in_user_section=false
+  local in_table=false
+  local table_header_seen=false
+
+  while IFS= read -r line; do
+    # Detect user types section header
+    if [[ "${line}" =~ ^#{1,3}[[:space:]]+(User[[:space:]]*(Types?|Roles?)|Users|Actors)[[:space:]]*$ ]]; then
+      in_user_section=true
+      in_table=false
+      table_header_seen=false
+      continue
+    fi
+
+    # End section on new major header
+    if [[ "${in_user_section}" == "true" ]] && [[ "${line}" =~ ^#{1,2}[[:space:]] ]] && [[ ! "${line}" =~ [Uu]ser ]]; then
+      in_user_section=false
+      in_table=false
+    fi
+
+    # Detect table header: | Type | Description | or | User Type | ...
+    if [[ "${in_user_section}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*(Type|User|Role|Actor)[[:space:]]*\| ]]; then
+      in_table=true
+      table_header_seen=false
+      continue
+    fi
+
+    # Skip table separator
+    if [[ "${in_table}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*-+[[:space:]]*\| ]]; then
+      table_header_seen=true
+      continue
+    fi
+
+    # Parse table row: | User Type | Description |
+    if [[ "${in_table}" == "true" ]] && [[ "${table_header_seen}" == "true" ]] && [[ "${line}" =~ ^\| ]]; then
+      local row="${line#|}"
+      row="${row%|}"
+
+      local field_name field_desc
+      IFS='|' read -r field_name field_desc _ <<< "${row}"
+
+      field_name=$(echo "${field_name}" | xargs)
+      field_desc=$(echo "${field_desc}" | xargs)
+
+      if [[ -n "${field_name}" ]] && [[ ! "${field_name}" =~ ^-+$ ]] && [[ "${field_name}" != "Type" ]]; then
+        insert_user_type "${field_name}" "${field_desc}"
+      fi
+      continue
+    fi
+
+    # Parse bullet format: - **User Type**: Description
+    if [[ "${in_user_section}" == "true" ]] && [[ "${line}" =~ ^[[:space:]]*[-*][[:space:]]+\*\*([^*]+)\*\*:?[[:space:]]*(.*)$ ]]; then
+      local name="${BASH_REMATCH[1]}"
+      local desc="${BASH_REMATCH[2]}"
+      insert_user_type "${name}" "${desc}"
+      continue
+    fi
+
+    # Parse simple bullet: - User Type
+    if [[ "${in_user_section}" == "true" ]] && [[ "${line}" =~ ^[[:space:]]*[-*][[:space:]]+([A-Z][A-Za-z[:space:]]+)$ ]]; then
+      local name="${BASH_REMATCH[1]}"
+      name=$(echo "${name}" | xargs)
+      if [[ -n "${name}" ]] && [[ ! "${name}" =~ ^(The|A|An|This) ]]; then
+        insert_user_type "${name}" ""
+      fi
+    fi
+  done < "${file}"
+}
+
+# Parse technical components from scope/architecture documents
+# Looks for Technology Stack tables:
+#   | Layer | Technology | Rationale |
+#   | Backend | FastAPI | High performance |
+parse_technical_components() {
+  local -r file="$1"
+
+  log "Parsing technical components from: ${file}"
+
+  local in_tech_section=false
+  local in_table=false
+  local table_header_seen=false
+
+  while IFS= read -r line; do
+    # Detect tech stack section
+    if [[ "${line}" =~ ^#{1,3}[[:space:]]+(Technology[[:space:]]*Stack|Tech[[:space:]]*Stack|Technical[[:space:]]*Architecture|Stack) ]]; then
+      in_tech_section=true
+      in_table=false
+      table_header_seen=false
+      continue
+    fi
+
+    # End section on new major header
+    if [[ "${in_tech_section}" == "true" ]] && [[ "${line}" =~ ^#{1,2}[[:space:]] ]] && [[ ! "${line}" =~ [Tt]ech ]]; then
+      in_tech_section=false
+      in_table=false
+    fi
+
+    # Detect table header: | Layer | Technology | or | Component | Technology |
+    if [[ "${in_tech_section}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*(Layer|Component|Category)[[:space:]]*\| ]]; then
+      in_table=true
+      table_header_seen=false
+      continue
+    fi
+
+    # Skip table separator
+    if [[ "${in_table}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*-+[[:space:]]*\| ]]; then
+      table_header_seen=true
+      continue
+    fi
+
+    # Parse table row: | Layer | Technology | Rationale |
+    if [[ "${in_table}" == "true" ]] && [[ "${table_header_seen}" == "true" ]] && [[ "${line}" =~ ^\| ]]; then
+      local row="${line#|}"
+      row="${row%|}"
+
+      local field_layer field_tech field_rationale
+      IFS='|' read -r field_layer field_tech field_rationale <<< "${row}"
+
+      field_layer=$(echo "${field_layer}" | xargs)
+      field_tech=$(echo "${field_tech}" | xargs)
+      field_rationale=$(echo "${field_rationale}" | xargs)
+
+      if [[ -n "${field_layer}" ]] && [[ ! "${field_layer}" =~ ^-+$ ]] && [[ "${field_layer}" != "Layer" ]]; then
+        insert_technical_component "${field_layer}" "${field_tech}" "${field_rationale}"
+      fi
+      continue
+    fi
+
+    # Parse bullet format: - **Backend**: FastAPI
+    if [[ "${in_tech_section}" == "true" ]] && [[ "${line}" =~ ^[[:space:]]*[-*][[:space:]]+\*\*([^*]+)\*\*:?[[:space:]]*(.+)$ ]]; then
+      local layer="${BASH_REMATCH[1]}"
+      local tech="${BASH_REMATCH[2]}"
+      insert_technical_component "${layer}" "${tech}" ""
+    fi
+  done < "${file}"
+}
+
+# Insert technical component
+insert_technical_component() {
+  local -r component_type="$1"
+  local -r technology="$2"
+  local -r rationale="${3:-}"
+
+  local -r escaped_type=$(sql_escape "${component_type}")
+  local -r escaped_tech=$(sql_escape "${technology}")
+  local -r escaped_rationale=$(sql_escape "${rationale}")
+
+  local sql="INSERT INTO technical_components (session_name, component_type, technology, rationale)
+VALUES ('${SESSION}', '${escaped_type}', '${escaped_tech}', '${escaped_rationale}')
+ON CONFLICT (session_name, component_type) DO UPDATE
+SET technology = EXCLUDED.technology, rationale = EXCLUDED.rationale, updated_at = NOW();"
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log_dry "INSERT tech_component: ${component_type} = ${technology}"
+  else
+    db_exec "${sql}"
+    log "  Tech: ${component_type} = ${technology}"
+  fi
+
+  ((TECH_COMPONENTS_SYNCED++))
+}
+
+# Parse database entities from scope document
+# Looks for patterns like:
+#   ## Database Schema / ## Data Model / ## Entities
+#   | Entity | Description |
+#   - **Transaction**: Financial record
+parse_database_entities() {
+  local -r file="$1"
+
+  log "Parsing database entities from: ${file}"
+
+  local in_db_section=false
+  local in_table=false
+  local table_header_seen=false
+
+  while IFS= read -r line; do
+    # Detect database section
+    if [[ "${line}" =~ ^#{1,3}[[:space:]]+(Database|Data[[:space:]]*Model|Entities|Schema|Tables) ]]; then
+      in_db_section=true
+      in_table=false
+      table_header_seen=false
+      continue
+    fi
+
+    # End section on new major header
+    if [[ "${in_db_section}" == "true" ]] && [[ "${line}" =~ ^#{1,2}[[:space:]] ]] && [[ ! "${line}" =~ [Dd]ata|[Ee]ntit|[Ss]chema ]]; then
+      in_db_section=false
+      in_table=false
+    fi
+
+    # Detect table header: | Entity | Description | or | Table | ...
+    if [[ "${in_db_section}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*(Entity|Table|Model)[[:space:]]*\| ]]; then
+      in_table=true
+      table_header_seen=false
+      continue
+    fi
+
+    # Skip table separator
+    if [[ "${in_table}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*-+[[:space:]]*\| ]]; then
+      table_header_seen=true
+      continue
+    fi
+
+    # Parse table row: | Entity | Description | Fields |
+    if [[ "${in_table}" == "true" ]] && [[ "${table_header_seen}" == "true" ]] && [[ "${line}" =~ ^\| ]]; then
+      local row="${line#|}"
+      row="${row%|}"
+
+      local field_name field_desc field_fields
+      IFS='|' read -r field_name field_desc field_fields <<< "${row}"
+
+      field_name=$(echo "${field_name}" | xargs)
+      field_desc=$(echo "${field_desc}" | xargs)
+
+      if [[ -n "${field_name}" ]] && [[ ! "${field_name}" =~ ^-+$ ]] && [[ "${field_name}" != "Entity" ]]; then
+        insert_database_entity "${field_name}" "${field_desc}"
+      fi
+      continue
+    fi
+
+    # Parse bullet format: - **Entity**: Description
+    if [[ "${in_db_section}" == "true" ]] && [[ "${line}" =~ ^[[:space:]]*[-*][[:space:]]+\*\*([^*]+)\*\*:?[[:space:]]*(.*)$ ]]; then
+      local name="${BASH_REMATCH[1]}"
+      local desc="${BASH_REMATCH[2]}"
+      insert_database_entity "${name}" "${desc}"
+    fi
+  done < "${file}"
+}
+
+# Insert database entity
+insert_database_entity() {
+  local -r entity_name="$1"
+  local -r description="${2:-}"
+
+  local -r escaped_name=$(sql_escape "${entity_name}")
+  local -r escaped_desc=$(sql_escape "${description}")
+
+  local sql="INSERT INTO database_entities (session_name, entity_name, description)
+VALUES ('${SESSION}', '${escaped_name}', '${escaped_desc}')
+ON CONFLICT (session_name, entity_name) DO UPDATE
+SET description = EXCLUDED.description, updated_at = NOW();"
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log_dry "INSERT db_entity: ${entity_name}"
+  else
+    db_exec "${sql}"
+    log "  Entity: ${entity_name}"
+  fi
+
+  ((DB_ENTITIES_SYNCED++))
+}
+
+# Parse pages from scope document
+# Looks for patterns like:
+#   ## Pages / ## Screens / ## Views
+#   | Page | Route | Description |
+parse_pages() {
+  local -r file="$1"
+
+  log "Parsing pages from: ${file}"
+
+  local in_page_section=false
+  local in_table=false
+  local table_header_seen=false
+
+  while IFS= read -r line; do
+    # Detect pages section
+    if [[ "${line}" =~ ^#{1,3}[[:space:]]+(Pages?|Screens?|Views?|Routes?|UI[[:space:]]*Components?) ]]; then
+      in_page_section=true
+      in_table=false
+      table_header_seen=false
+      continue
+    fi
+
+    # End section on new major header
+    if [[ "${in_page_section}" == "true" ]] && [[ "${line}" =~ ^#{1,2}[[:space:]] ]] && [[ ! "${line}" =~ [Pp]age|[Ss]creen|[Vv]iew ]]; then
+      in_page_section=false
+      in_table=false
+    fi
+
+    # Detect table header: | Page | Route | or | Screen | Description |
+    if [[ "${in_page_section}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*(Page|Screen|View|Route|Component)[[:space:]]*\| ]]; then
+      in_table=true
+      table_header_seen=false
+      continue
+    fi
+
+    # Skip table separator
+    if [[ "${in_table}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*-+[[:space:]]*\| ]]; then
+      table_header_seen=true
+      continue
+    fi
+
+    # Parse table row: | Page | Route | Description |
+    if [[ "${in_table}" == "true" ]] && [[ "${table_header_seen}" == "true" ]] && [[ "${line}" =~ ^\| ]]; then
+      local row="${line#|}"
+      row="${row%|}"
+
+      local field_name field_route field_desc
+      IFS='|' read -r field_name field_route field_desc <<< "${row}"
+
+      field_name=$(echo "${field_name}" | xargs)
+      field_route=$(echo "${field_route}" | xargs)
+      field_desc=$(echo "${field_desc}" | xargs)
+
+      if [[ -n "${field_name}" ]] && [[ ! "${field_name}" =~ ^-+$ ]] && [[ "${field_name}" != "Page" ]]; then
+        insert_page "${field_name}" "${field_route}" "${field_desc}"
+      fi
+      continue
+    fi
+
+    # Parse bullet format: - **Page Name**: /route - Description
+    if [[ "${in_page_section}" == "true" ]] && [[ "${line}" =~ ^[[:space:]]*[-*][[:space:]]+\*\*([^*]+)\*\*:?[[:space:]]*(/?[a-z0-9/-]*)?[[:space:]]*-?[[:space:]]*(.*)$ ]]; then
+      local name="${BASH_REMATCH[1]}"
+      local route="${BASH_REMATCH[2]}"
+      local desc="${BASH_REMATCH[3]}"
+      insert_page "${name}" "${route}" "${desc}"
+    fi
+  done < "${file}"
+}
+
+# Insert page
+insert_page() {
+  local -r page_name="$1"
+  local -r route="${2:-}"
+  local -r description="${3:-}"
+
+  local -r escaped_name=$(sql_escape "${page_name}")
+  local -r escaped_route=$(sql_escape "${route}")
+  local -r escaped_desc=$(sql_escape "${description}")
+
+  local sql="INSERT INTO page (session_name, page_name, route, description)
+VALUES ('${SESSION}', '${escaped_name}', '${escaped_route}', '${escaped_desc}')
+ON CONFLICT (session_name, page_name) DO UPDATE
+SET route = EXCLUDED.route, description = EXCLUDED.description, updated_at = NOW();"
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log_dry "INSERT page: ${page_name} (${route})"
+  else
+    db_exec "${sql}"
+    log "  Page: ${page_name} (${route})"
+  fi
+
+  ((PAGES_SYNCED++))
 }
 
 # Mark session as synced
@@ -794,14 +1161,18 @@ run_sync() {
     fi
   fi
 
-  # Determine source files
+  # Determine source files (priority order)
+  local scope_doc="${SCOPE_DIR}/00_scope_document.md"
   local features_file="${SCOPE_DIR}/01_features.md"
   local journeys_file="${SCOPE_DIR}/02_user_journeys.md"
   local nfr_file="${SCOPE_DIR}/04_nfr_requirements.md"
+  local arch_file="${SCOPE_DIR}/05_technical_architecture.md"
 
   # Parse features
   if [[ -f "${features_file}" ]]; then
     parse_features_structured "${features_file}"
+  elif [[ -f "${scope_doc}" ]]; then
+    parse_features_structured "${scope_doc}"
   elif [[ -f "${CONV_FILE}" ]]; then
     parse_features_raw "${CONV_FILE}"
   else
@@ -811,23 +1182,54 @@ run_sync() {
   # Parse journeys
   if [[ -f "${journeys_file}" ]]; then
     parse_journeys_structured "${journeys_file}"
+  elif [[ -f "${scope_doc}" ]]; then
+    parse_journeys_structured "${scope_doc}"
   elif [[ -f "${CONV_FILE}" ]]; then
     parse_journeys_raw "${CONV_FILE}"
   else
     log_warn "No journey source found"
   fi
 
-  # Parse cross-cutting concerns
+  # Parse user types (prefer scope document over conversation)
+  if [[ -f "${scope_doc}" ]]; then
+    parse_user_types_from_scope "${scope_doc}"
+  elif [[ -f "${CONV_FILE}" ]]; then
+    parse_user_types "${CONV_FILE}"
+  fi
+
+  # Parse technical components (from scope or architecture)
+  if [[ -f "${arch_file}" ]]; then
+    parse_technical_components "${arch_file}"
+  elif [[ -f "${scope_doc}" ]]; then
+    parse_technical_components "${scope_doc}"
+  fi
+
+  # Parse database entities (from scope document)
+  if [[ -f "${scope_doc}" ]]; then
+    parse_database_entities "${scope_doc}"
+  fi
+
+  # Parse pages (from scope document)
+  if [[ -f "${scope_doc}" ]]; then
+    parse_pages "${scope_doc}"
+  fi
+
+  # Parse cross-cutting concerns (from NFR or scope)
   if [[ -f "${nfr_file}" ]]; then
     parse_cross_cutting_concerns "${nfr_file}"
+  elif [[ -f "${scope_doc}" ]]; then
+    parse_cross_cutting_concerns "${scope_doc}"
   elif [[ -f "${CONV_FILE}" ]]; then
     parse_cross_cutting_concerns "${CONV_FILE}"
   fi
 
-  # Parse integrations and user types from conversation
-  if [[ -f "${CONV_FILE}" ]]; then
+  # Parse integrations (from architecture, scope, or conversation)
+  if [[ -f "${arch_file}" ]]; then
+    parse_integrations "${arch_file}"
+  elif [[ -f "${scope_doc}" ]]; then
+    parse_integrations "${scope_doc}"
+  elif [[ -f "${CONV_FILE}" ]]; then
     parse_integrations "${CONV_FILE}"
-    parse_user_types "${CONV_FILE}"
   fi
 
   # Mark as synced
@@ -839,11 +1241,14 @@ run_sync() {
   echo "Sync Complete"
   echo "========================================"
   echo ""
-  echo "  Features:     ${FEATURES_SYNCED}"
-  echo "  Journeys:     ${JOURNEYS_SYNCED}"
-  echo "  User Types:   ${USER_TYPES_SYNCED}"
-  echo "  Integrations: ${INTEGRATIONS_SYNCED}"
-  echo "  Concerns:     ${CONCERNS_SYNCED}"
+  echo "  Features:       ${FEATURES_SYNCED}"
+  echo "  Journeys:       ${JOURNEYS_SYNCED}"
+  echo "  User Types:     ${USER_TYPES_SYNCED}"
+  echo "  Tech Components:${TECH_COMPONENTS_SYNCED}"
+  echo "  DB Entities:    ${DB_ENTITIES_SYNCED}"
+  echo "  Pages:          ${PAGES_SYNCED}"
+  echo "  Integrations:   ${INTEGRATIONS_SYNCED}"
+  echo "  Concerns:       ${CONCERNS_SYNCED}"
   echo ""
 
   if [[ "${DRY_RUN}" == "true" ]]; then
