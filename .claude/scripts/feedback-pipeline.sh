@@ -1,0 +1,630 @@
+#!/usr/bin/env bash
+# feedback-pipeline.sh - Orchestrate test-driven issue resolution
+#
+# Pipeline flow:
+#   test-journey -> generate-feedback -> analyze-feedback -> research -> fix
+#
+# Usage:
+#   ./feedback-pipeline.sh <session-name>           # Run full pipeline
+#   ./feedback-pipeline.sh <session-name> --resume  # Resume from saved state
+#   ./feedback-pipeline.sh <session-name> --status  # Show pipeline status
+
+set -euo pipefail
+
+# Constants
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+
+# Colors
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m'
+
+# Pipeline state (globals)
+SESSION=""
+TEST_RUN_ID=""
+FEEDBACK_STATE_DIR=""
+FEEDBACK_STATE_FILE=""
+
+# Source pipeline library for state management
+if [[ -f "${SCRIPT_DIR}/pipeline-lib.sh" ]]; then
+  # shellcheck source=pipeline-lib.sh
+  source "${SCRIPT_DIR}/pipeline-lib.sh"
+fi
+
+# Show usage information.
+# Outputs:
+#   Writes usage to stdout
+usage() {
+  cat << 'EOF'
+Feedback Pipeline - Test-Driven Issue Resolution
+
+Usage:
+  ./feedback-pipeline.sh <session-name>           Run full pipeline
+  ./feedback-pipeline.sh <session-name> --resume  Resume from saved state
+  ./feedback-pipeline.sh <session-name> --status  Show pipeline status
+
+Pipeline Steps:
+  1. Ensure feedback tables exist
+  2. Run journey tests for all personas
+  3. Generate synthetic feedback
+  4. Analyze and prioritize issues
+  5. Deep research on each issue
+  6. Fix each issue (with retry/escalation)
+
+Database Status Transitions:
+  analyze-feedback creates issue -> status='open'
+  /dr completes research        -> status='triaged'
+  fix-problem succeeds          -> status='resolved'
+  fix-problem fails (3x)        -> status='escalated'
+
+Output:
+  Pipeline state: .claude/pipeline/<session>/feedback-state.yaml
+  Fix logs:       .claude/pipeline/<session>/fix-issue-*.md
+EOF
+  exit 1
+}
+
+# Log info message with timestamp.
+# Arguments:
+#   $1 - message to log
+log() {
+  echo -e "${BLUE}[$(date +%H:%M:%S)]${NC} $1"
+}
+
+# Log success message with timestamp.
+# Arguments:
+#   $1 - message to log
+log_success() {
+  echo -e "${GREEN}[$(date +%H:%M:%S)] ✓${NC} $1"
+}
+
+# Log error message with timestamp.
+# Arguments:
+#   $1 - message to log
+log_error() {
+  echo -e "${RED}[$(date +%H:%M:%S)] ✗${NC} $1"
+}
+
+# Log warning message with timestamp.
+# Arguments:
+#   $1 - message to log
+log_warn() {
+  echo -e "${YELLOW}[$(date +%H:%M:%S)] ⚠${NC} $1"
+}
+
+# Initialize feedback pipeline state.
+# Globals:
+#   FEEDBACK_STATE_DIR - set to state directory
+#   FEEDBACK_STATE_FILE - set to state file path
+#   TEST_RUN_ID - loaded from existing state if present
+# Arguments:
+#   $1 - session name
+init_feedback_state() {
+  local -r session="$1"
+
+  FEEDBACK_STATE_DIR="${PROJECT_ROOT}/.claude/pipeline/${session}"
+  FEEDBACK_STATE_FILE="${FEEDBACK_STATE_DIR}/feedback-state.yaml"
+
+  mkdir -p "${FEEDBACK_STATE_DIR}"
+
+  if [[ ! -f "${FEEDBACK_STATE_FILE}" ]]; then
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    cat > "${FEEDBACK_STATE_FILE}" << EOF
+---
+session: ${session}
+pipeline: feedback
+status: pending
+test_run_id: ""
+current_step: 0
+started: ${now}
+updated: ${now}
+steps:
+  1: {name: ensure_tables, status: pending}
+  2: {name: test_journeys, status: pending}
+  3: {name: generate_feedback, status: pending}
+  4: {name: analyze_feedback, status: pending}
+  5: {name: research_issues, status: pending}
+  6: {name: fix_issues, status: pending}
+stats:
+  journeys_tested: 0
+  personas_tested: 0
+  issues_found: 0
+  issues_triaged: 0
+  issues_resolved: 0
+  issues_escalated: 0
+---
+EOF
+    log "Pipeline state initialized: ${FEEDBACK_STATE_FILE}"
+  else
+    log "Pipeline state loaded: ${FEEDBACK_STATE_FILE}"
+    # Load existing test_run_id
+    TEST_RUN_ID=$(grep "^test_run_id:" "${FEEDBACK_STATE_FILE}" | cut -d'"' -f2)
+  fi
+}
+
+# Update feedback state key-value pair.
+# Arguments:
+#   $1 - key to update
+#   $2 - value to set
+update_feedback_state() {
+  local -r key="$1"
+  local -r value="$2"
+  local now
+  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  sed -i "s/^${key}:.*/${key}: ${value}/" "${FEEDBACK_STATE_FILE}"
+  sed -i "s/^updated:.*/updated: ${now}/" "${FEEDBACK_STATE_FILE}"
+}
+
+# Update step status in state file.
+# Arguments:
+#   $1 - step number (1-6)
+#   $2 - status (pending, running, complete)
+update_step_status() {
+  local -r step_num="$1"
+  local -r status="$2"
+  local step_name
+
+  case "${step_num}" in
+    1) step_name="ensure_tables" ;;
+    2) step_name="test_journeys" ;;
+    3) step_name="generate_feedback" ;;
+    4) step_name="analyze_feedback" ;;
+    5) step_name="research_issues" ;;
+    6) step_name="fix_issues" ;;
+  esac
+
+  sed -i "s/^  ${step_num}: {name: ${step_name}, status: [a-z]*}/  ${step_num}: {name: ${step_name}, status: ${status}}/" "${FEEDBACK_STATE_FILE}"
+  update_feedback_state "current_step" "${step_num}"
+
+  if [[ "${status}" == "running" ]]; then
+    update_feedback_state "status" "in_progress"
+  elif [[ "${status}" == "complete" ]] && ((step_num == 6)); then
+    update_feedback_state "status" "complete"
+  fi
+}
+
+# Update stats in state file.
+# Arguments:
+#   $1 - stat name
+#   $2 - value
+update_stat() {
+  local -r stat="$1"
+  local -r value="$2"
+  sed -i "s/^  ${stat}:.*$/  ${stat}: ${value}/" "${FEEDBACK_STATE_FILE}"
+}
+
+# Get database connection string from environment.
+# Outputs:
+#   Writes connection string to stdout
+get_db_conn() {
+  if [[ -f "${PROJECT_ROOT}/.env" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "${PROJECT_ROOT}/.env"
+    set +a
+  fi
+
+  local -r host="${POSTGRES_HOST:-localhost}"
+  local -r port="${POSTGRES_PORT:-5432}"
+  local -r user="${POSTGRES_USER:-postgres}"
+  local -r pass="${POSTGRES_PASSWORD:-}"
+  local db
+  db="${POSTGRES_DB:-$(basename "${PROJECT_ROOT}")}"
+
+  echo "postgresql://${user}:${pass}@${host}:${port}/${db}"
+}
+
+# Run database query.
+# Arguments:
+#   $1 - SQL query
+# Outputs:
+#   Writes query result to stdout
+db_query() {
+  local -r query="$1"
+  local conn
+  conn=$(get_db_conn)
+  psql "${conn}" -t -A -c "${query}" 2>/dev/null || echo ""
+}
+
+# Step 1: Ensure feedback tables exist.
+step_ensure_tables() {
+  log "Step 1: Ensuring feedback tables exist"
+  update_step_status 1 "running"
+
+  if [[ -f "${SCRIPT_DIR}/create-feedback-schema.sh" ]]; then
+    "${SCRIPT_DIR}/create-feedback-schema.sh"
+  else
+    log_error "create-feedback-schema.sh not found"
+    return 1
+  fi
+
+  update_step_status 1 "complete"
+  log_success "Feedback tables ready"
+}
+
+# Step 2: Run all journey tests.
+step_test_journeys() {
+  log "Step 2: Testing user journeys"
+  update_step_status 2 "running"
+
+  # Generate test run ID
+  TEST_RUN_ID="run-$(date +%Y%m%d-%H%M%S)"
+  update_feedback_state "test_run_id" "\"${TEST_RUN_ID}\""
+
+  # Get journeys from database
+  local journeys
+  journeys=$(db_query "SELECT id FROM journey WHERE session_name='${SESSION}'")
+
+  if [[ -z "${journeys}" ]]; then
+    log_warn "No journeys found in database for session: ${SESSION}"
+    # Try to get from file
+    local -r journeys_file="${PROJECT_ROOT}/.claude/scopes/${SESSION}/02_user_journeys.md"
+    if [[ -f "${journeys_file}" ]]; then
+      log "Using journeys from file: ${journeys_file}"
+    fi
+  fi
+
+  # Get personas
+  local -r personas_file="${PROJECT_ROOT}/.claude/testing/personas/${SESSION}-personas.json"
+  if [[ ! -f "${personas_file}" ]]; then
+    log_warn "Personas file not found: ${personas_file}"
+    log "Generating personas first..."
+    claude --dangerously-skip-permissions --print "/pm:generate-personas ${SESSION} --count 5"
+  fi
+
+  local journey_count=0
+  local persona_count=0
+
+  # Run test-journey for each combination
+  if [[ -f "${personas_file}" ]]; then
+    local personas
+    personas=$(jq -r '.[].id' "${personas_file}" 2>/dev/null || echo "")
+
+    local journey_id
+    for journey_id in ${journeys}; do
+      [[ -z "${journey_id}" ]] && continue
+      ((journey_count++))
+
+      local persona_id
+      for persona_id in ${personas}; do
+        [[ -z "${persona_id}" ]] && continue
+        ((persona_count++))
+
+        log "Testing journey ${journey_id} with persona ${persona_id}"
+        claude --dangerously-skip-permissions --print \
+          "/pm:test-journey ${SESSION} ${journey_id} --persona ${persona_id} --run ${TEST_RUN_ID}" || true
+      done
+    done
+  fi
+
+  update_stat "journeys_tested" "${journey_count}"
+  update_stat "personas_tested" "${persona_count}"
+  update_step_status 2 "complete"
+  log_success "Tested ${journey_count} journeys with ${persona_count} persona runs"
+}
+
+# Step 3: Generate synthetic feedback.
+step_generate_feedback() {
+  log "Step 3: Generating feedback"
+  update_step_status 3 "running"
+
+  claude --dangerously-skip-permissions --print "/pm:generate-feedback ${SESSION} --run ${TEST_RUN_ID}"
+
+  update_step_status 3 "complete"
+  log_success "Feedback generated"
+}
+
+# Step 4: Analyze and prioritize issues.
+step_analyze_feedback() {
+  log "Step 4: Analyzing feedback"
+  update_step_status 4 "running"
+
+  claude --dangerously-skip-permissions --print "/pm:analyze-feedback ${SESSION} --run ${TEST_RUN_ID}"
+
+  # Count issues created
+  local issue_count
+  issue_count=$(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND test_run_id='${TEST_RUN_ID}'")
+  update_stat "issues_found" "${issue_count:-0}"
+
+  update_step_status 4 "complete"
+  log_success "Analysis complete: ${issue_count:-0} issues found"
+}
+
+# Step 5: Deep research on each issue.
+step_research_issues() {
+  log "Step 5: Researching fixes"
+  update_step_status 5 "running"
+
+  local issues
+  issues=$(db_query "
+    SELECT issue_id, title, description, category, severity
+    FROM issues
+    WHERE session_name='${SESSION}'
+      AND test_run_id='${TEST_RUN_ID}'
+      AND status='open'
+    ORDER BY
+      CASE severity
+        WHEN 'critical' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3
+        ELSE 4
+      END,
+      rice_score DESC NULLS LAST
+  ")
+
+  local triaged_count=0
+  local issue_id title description category severity
+
+  while IFS='|' read -r issue_id title description category severity; do
+    [[ -z "${issue_id}" ]] && continue
+    issue_id=$(echo "${issue_id}" | xargs)
+    title=$(echo "${title}" | xargs)
+
+    log "Researching: ${issue_id} - ${title}"
+
+    # Build research prompt
+    local prompt="How to fix this ${category} issue (${severity} severity):
+Title: ${title}
+Description: ${description}
+
+Research: root causes, best practices, specific code fixes for this codebase"
+
+    # Run deep research
+    local research_output
+    research_output=$(claude --dangerously-skip-permissions --print "/dr ${prompt}" 2>&1 || echo "Research incomplete")
+
+    # Escape for SQL
+    local escaped_research
+    escaped_research=$(echo "${research_output}" | sed "s/'/''/g" | head -c 50000)
+
+    # Store research in database and update status
+    db_query "UPDATE issues
+             SET research_context = '${escaped_research}',
+                 status = 'triaged'
+             WHERE session_name='${SESSION}'
+               AND test_run_id='${TEST_RUN_ID}'
+               AND issue_id='${issue_id}'"
+
+    ((triaged_count++))
+    log_success "${issue_id} triaged"
+  done <<< "${issues}"
+
+  update_stat "issues_triaged" "${triaged_count}"
+  update_step_status 5 "complete"
+  log_success "Researched ${triaged_count} issues"
+}
+
+# Step 6: Fix each issue.
+step_fix_issues() {
+  log "Step 6: Fixing issues"
+  update_step_status 6 "running"
+
+  local issues
+  issues=$(db_query "
+    SELECT issue_id, title, description, category, severity, research_context
+    FROM issues
+    WHERE session_name='${SESSION}'
+      AND test_run_id='${TEST_RUN_ID}'
+      AND status='triaged'
+    ORDER BY
+      CASE severity
+        WHEN 'critical' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3
+        ELSE 4
+      END
+  ")
+
+  local resolved_count=0
+  local escalated_count=0
+  local -r max_attempts=3
+  local issue_id title description category severity research
+
+  while IFS='|' read -r issue_id title description category severity research; do
+    [[ -z "${issue_id}" ]] && continue
+    issue_id=$(echo "${issue_id}" | xargs)
+    title=$(echo "${title}" | xargs)
+
+    log "Fixing: ${issue_id} - ${title}"
+
+    # Create fix log
+    local -r fix_log="${FEEDBACK_STATE_DIR}/fix-issue-${issue_id}.md"
+    cat > "${fix_log}" << EOF
+# Fix Attempts for Issue ${issue_id}
+
+## Issue Details
+- **Title**: ${title}
+- **Category**: ${category}
+- **Severity**: ${severity}
+- **Description**: ${description}
+
+## Research Findings
+${research}
+
+## Fix Attempts
+
+EOF
+
+    local fixed=false
+    local attempt
+    for attempt in $(seq 1 "${max_attempts}"); do
+      log "  Attempt ${attempt}/${max_attempts}"
+
+      # Build error context for fix-problem
+      local error_context="Issue: ${title}
+Category: ${category}
+Severity: ${severity}
+Description: ${description}
+
+Research findings:
+${research}"
+
+      # Escape quotes
+      local escaped_context
+      escaped_context=$(echo "${error_context}" | sed 's/"/\\"/g' | head -c 5000)
+
+      echo "### Attempt ${attempt} - $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "${fix_log}"
+
+      # Call fix-problem
+      if claude --dangerously-skip-permissions --print \
+        "/pm:fix-problem \"${escaped_context}\" --desired \"${title} is resolved\"" >> "${fix_log}" 2>&1; then
+
+        # Update status to resolved
+        db_query "UPDATE issues
+                 SET status = 'resolved',
+                     fix_attempts = ${attempt},
+                     resolved_at = NOW()
+                 WHERE session_name='${SESSION}'
+                   AND test_run_id='${TEST_RUN_ID}'
+                   AND issue_id='${issue_id}'"
+
+        ((resolved_count++))
+        log_success "${issue_id} resolved on attempt ${attempt}"
+        fixed=true
+        break
+      else
+        echo "**Result**: Failed" >> "${fix_log}"
+        echo "" >> "${fix_log}"
+
+        # Increment fix_attempts
+        db_query "UPDATE issues
+                 SET fix_attempts = ${attempt}
+                 WHERE session_name='${SESSION}'
+                   AND test_run_id='${TEST_RUN_ID}'
+                   AND issue_id='${issue_id}'"
+      fi
+    done
+
+    if [[ "${fixed}" == "false" ]]; then
+      # Escalate after max attempts
+      db_query "UPDATE issues
+               SET status = 'escalated',
+                   fix_attempts = ${max_attempts}
+               WHERE session_name='${SESSION}'
+                 AND test_run_id='${TEST_RUN_ID}'
+                 AND issue_id='${issue_id}'"
+
+      ((escalated_count++))
+      log_error "${issue_id} escalated (fix failed after ${max_attempts} attempts)"
+      echo "**Final Status**: ESCALATED - requires manual intervention" >> "${fix_log}"
+    fi
+  done <<< "${issues}"
+
+  update_stat "issues_resolved" "${resolved_count}"
+  update_stat "issues_escalated" "${escalated_count}"
+  update_step_status 6 "complete"
+
+  log_success "Fixed ${resolved_count} issues, escalated ${escalated_count}"
+}
+
+# Show pipeline status.
+show_status() {
+  if [[ ! -f "${FEEDBACK_STATE_FILE}" ]]; then
+    echo "No feedback pipeline state found for: ${SESSION}"
+    return 1
+  fi
+
+  echo ""
+  echo "=== Feedback Pipeline: ${SESSION} ==="
+  echo ""
+  cat "${FEEDBACK_STATE_FILE}"
+  echo ""
+
+  # Show issue counts from database
+  echo "Database Status:"
+  echo "  Open:      $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='open'")"
+  echo "  Triaged:   $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='triaged'")"
+  echo "  Resolved:  $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='resolved'")"
+  echo "  Escalated: $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='escalated'")"
+  echo ""
+}
+
+# Run pipeline from specified step.
+# Arguments:
+#   $1 - starting step (default: 1)
+run_pipeline() {
+  local -r start_step="${1:-1}"
+
+  echo ""
+  echo "========================================"
+  echo "Feedback Pipeline: ${SESSION}"
+  echo "========================================"
+  echo ""
+
+  local step
+  for step in $(seq "${start_step}" 6); do
+    case "${step}" in
+      1) step_ensure_tables ;;
+      2) step_test_journeys ;;
+      3) step_generate_feedback ;;
+      4) step_analyze_feedback ;;
+      5) step_research_issues ;;
+      6) step_fix_issues ;;
+    esac
+
+    echo ""
+  done
+
+  # Final summary
+  local resolved escalated
+  resolved=$(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND test_run_id='${TEST_RUN_ID}' AND status='resolved'")
+  escalated=$(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND test_run_id='${TEST_RUN_ID}' AND status='escalated'")
+
+  echo ""
+  echo "========================================"
+  echo "Pipeline Complete"
+  echo "========================================"
+  echo ""
+  echo "  Resolved:  ${resolved:-0} issues"
+  echo "  Escalated: ${escalated:-0} issues"
+  echo ""
+  echo "State: ${FEEDBACK_STATE_FILE}"
+  echo ""
+}
+
+# Main entry point.
+# Arguments:
+#   $@ - command line arguments
+main() {
+  (($# < 1)) && usage
+
+  SESSION="$1"
+  shift
+
+  # Initialize state
+  init_feedback_state "${SESSION}"
+
+  # Handle options
+  case "${1:-}" in
+    --resume)
+      # Get last completed step and resume from next
+      local current
+      current=$(grep "^current_step:" "${FEEDBACK_STATE_FILE}" | cut -d: -f2 | tr -d ' ')
+      if [[ -z "${current}" ]] || ((current == 0)); then
+        run_pipeline 1
+      elif ((current >= 6)); then
+        echo "Pipeline already complete for: ${SESSION}"
+        show_status
+      else
+        run_pipeline $((current + 1))
+      fi
+      ;;
+    --status)
+      show_status
+      ;;
+    "")
+      run_pipeline 1
+      ;;
+    *)
+      usage
+      ;;
+  esac
+}
+
+main "$@"

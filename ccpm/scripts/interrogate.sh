@@ -58,6 +58,7 @@ Individual Steps (run independently):
    3. ./interrogate.sh --repo [name]           Ensure GitHub repo exists
    4. ./interrogate.sh --interrogate-only <name>  Run structured Q&A conversation
    5. ./interrogate.sh --extract <name>        Extract scope document
+ 5.5. ./interrogate.sh --sync <name>          Sync markdown to database (auto-runs after extract)
    6. ./interrogate.sh --credentials [name]    Gather integration credentials (auto-detects)
    7. ./interrogate.sh --roadmap <name>        Generate MVP roadmap
    8. ./interrogate.sh --generate-template <name> Generate K8s + code scaffolds
@@ -67,6 +68,7 @@ Individual Steps (run independently):
   12. ./interrogate.sh --deploy <name>         Deploy full application
   13. ./interrogate.sh --synthetic <name>      Synthetic persona testing (alias: --test)
   14. ./interrogate.sh --remediation <name>    Generate remediation PRDs (alias: --fix)
+  15. ./interrogate.sh --feedback <name>       Run feedback pipeline (test→research→fix)
 
 Pipeline Commands:
   ./interrogate.sh --build <name>             Run full pipeline from step 1
@@ -116,6 +118,8 @@ Output Files:
 
 Pipeline State:
   .claude/pipeline/<name>/state.yaml             Pipeline progress tracking
+  .claude/pipeline/<name>/feedback-state.yaml    Feedback pipeline progress
+  .claude/pipeline/<name>/fix-issue-*.md         Fix attempt logs per issue
 EOF
 }
 
@@ -306,12 +310,51 @@ extract_findings() {
     echo ""
     echo "Output: .claude/scopes/$name/"
     echo ""
+
+    # Auto-sync to database
+    echo "Syncing to database..."
+    if [ -f "./.claude/scripts/sync-interview-to-db.sh" ]; then
+      ./.claude/scripts/sync-interview-to-db.sh "$name" || echo "⚠️ DB sync had issues (non-fatal)"
+    fi
+
+    echo ""
     echo "Next steps:"
     echo "  1. Review: cat .claude/scopes/$name/00_scope_document.md"
     echo "  2. Build:  ./interrogate.sh --build $name"
   else
     echo "❌ Scope document generation failed"
     echo "Check output above for errors"
+  fi
+}
+
+# Sync interview data to database (Step 5.5)
+sync_to_database() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --sync <session-name>"
+    exit 1
+  fi
+
+  local conv=".claude/interrogations/$name/conversation.md"
+  local scope_dir=".claude/scopes/$name"
+
+  if [ ! -f "$conv" ] && [ ! -d "$scope_dir" ]; then
+    echo "❌ No source files found for session: $name"
+    echo ""
+    echo "First run: ./interrogate.sh --extract $name"
+    exit 1
+  fi
+
+  echo "=== Sync to Database: $name ==="
+  echo ""
+
+  if [ -f "./.claude/scripts/sync-interview-to-db.sh" ]; then
+    ./.claude/scripts/sync-interview-to-db.sh "$name"
+  else
+    echo "❌ sync-interview-to-db.sh not found"
+    exit 1
   fi
 }
 
@@ -735,6 +778,37 @@ generate_remediation() {
   fi
 }
 
+# Run feedback pipeline (Step 15)
+run_feedback_pipeline() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --feedback <session-name>"
+    exit 1
+  fi
+
+  local journeys=".claude/scopes/$name/02_user_journeys.md"
+  if [ ! -f "$journeys" ]; then
+    echo "❌ User journeys not found: $journeys"
+    echo ""
+    echo "First run: ./interrogate.sh --extract $name"
+    exit 1
+  fi
+
+  echo "=== Feedback Pipeline: $name ==="
+  echo ""
+  echo "Pipeline: test-journey → generate-feedback → analyze → research → fix"
+  echo ""
+
+  if [ -f "./.claude/scripts/feedback-pipeline.sh" ]; then
+    ./.claude/scripts/feedback-pipeline.sh "$name"
+  else
+    echo "❌ feedback-pipeline.sh not found"
+    exit 1
+  fi
+}
+
 # Setup infrastructure services (PostgreSQL, MinIO)
 setup_services() {
   local project_name="${1:-$(basename "$(pwd)" | tr '_' '-')}"
@@ -959,6 +1033,14 @@ case "$1" in
     ;;
   --remediation|--fix)
     generate_remediation "$2"
+    exit 0
+    ;;
+  --feedback)
+    run_feedback_pipeline "$2"
+    exit 0
+    ;;
+  --sync)
+    sync_to_database "$2"
     exit 0
     ;;
   --build|-b)
