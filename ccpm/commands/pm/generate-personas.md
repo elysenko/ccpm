@@ -16,7 +16,8 @@ Generate 10 diverse synthetic personas for E2E testing based on user journeys an
 **Optional:** `.claude/scopes/{session-name}/01_features.md`
 
 ## Output
-**File:** `.claude/testing/personas/{session-name}-personas.json`
+**Database:** `persona` table (session_name, persona_id, name, role, demographics, behavioral, journeys, test_data, feedback_preferences, metadata)
+**File:** `.claude/testing/personas/{session-name}-personas.json` (backup copy)
 
 ---
 
@@ -240,9 +241,47 @@ If coverage gaps exist, adjust persona distribution.
 
 ---
 
-### Step 8: Write Output File
+### Step 8: Insert Personas into Database
 
-Write to `.claude/testing/personas/{session-name}-personas.json`:
+**Primary storage is the database.** For each generated persona, insert into the `persona` table:
+
+```bash
+# Load database credentials from .env
+source .env 2>/dev/null || true
+POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+POSTGRES_DB="${POSTGRES_DB:-$(basename $(pwd))}"
+POSTGRES_USER="${POSTGRES_USER:-postgres}"
+```
+
+For each persona, execute:
+```sql
+INSERT INTO persona (session_name, persona_id, name, role, demographics, behavioral, journeys, test_data, feedback_preferences, metadata)
+VALUES (
+  '{session-name}',
+  '{persona.id}',
+  '{persona.name}',
+  '{persona.role}',
+  '{persona.demographics as JSONB}',
+  '{persona.behavioral as JSONB}',
+  '{persona.journeys as JSONB}',
+  '{persona.testData as JSONB}',
+  '{persona.feedback as JSONB}',
+  '{persona.metadata as JSONB}'
+)
+ON CONFLICT (session_name, persona_id)
+DO UPDATE SET
+  name = EXCLUDED.name,
+  role = EXCLUDED.role,
+  demographics = EXCLUDED.demographics,
+  behavioral = EXCLUDED.behavioral,
+  journeys = EXCLUDED.journeys,
+  test_data = EXCLUDED.test_data,
+  feedback_preferences = EXCLUDED.feedback_preferences,
+  metadata = EXCLUDED.metadata;
+```
+
+**Also write backup JSON file** to `.claude/testing/personas/{session-name}-personas.json`:
 
 ```json
 {
@@ -296,11 +335,14 @@ Feedback Styles:
 
 Journey Coverage: 100% ({N}/{N} journeys)
 
-Output: .claude/testing/personas/{session-name}-personas.json
+Storage:
+- Database: {count} rows in `persona` table (session: {session-name})
+- Backup: .claude/testing/personas/{session-name}-personas.json
 
 Next Steps:
-1. Review personas: cat {output-file} | jq '.personas[].name'
-2. Generate tests: /pm:generate-tests {session-name}
+1. Review personas: psql -c "SELECT persona_id, name, role FROM persona WHERE session_name='{session-name}'"
+2. Run pipeline: ./feedback-pipeline.sh {session-name}
+3. Or generate tests: /pm:generate-tests {session-name}
 ```
 
 ---

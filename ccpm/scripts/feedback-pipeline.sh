@@ -232,6 +232,62 @@ db_query() {
   psql "${conn}" -t -A -c "${query}" 2>/dev/null || echo ""
 }
 
+# Sync personas from JSON file to database.
+# Arguments:
+#   $1 - path to personas JSON file
+sync_personas_to_db() {
+  local -r json_file="$1"
+
+  if [[ ! -f "${json_file}" ]]; then
+    log_error "Personas file not found: ${json_file}"
+    return 1
+  fi
+
+  local count=0
+  local persona_ids
+  persona_ids=$(jq -r '.personas[].id' "${json_file}" 2>/dev/null || echo "")
+
+  if [[ -z "${persona_ids}" ]]; then
+    log_error "No personas found in JSON file"
+    return 1
+  fi
+
+  # Process each persona
+  local idx=0
+  while IFS= read -r persona_id; do
+    [[ -z "${persona_id}" ]] && continue
+
+    # Extract persona data using jq
+    local name role demographics behavioral journeys test_data feedback metadata
+    name=$(jq -r ".personas[${idx}].name // \"\"" "${json_file}" | sed "s/'/''/g")
+    role=$(jq -r ".personas[${idx}].role // \"\"" "${json_file}" | sed "s/'/''/g")
+    demographics=$(jq -c ".personas[${idx}].demographics // {}" "${json_file}" | sed "s/'/''/g")
+    behavioral=$(jq -c ".personas[${idx}].behavioral // {}" "${json_file}" | sed "s/'/''/g")
+    journeys=$(jq -c ".personas[${idx}].journeys // {}" "${json_file}" | sed "s/'/''/g")
+    test_data=$(jq -c ".personas[${idx}].testData // {}" "${json_file}" | sed "s/'/''/g")
+    feedback=$(jq -c ".personas[${idx}].feedback // {}" "${json_file}" | sed "s/'/''/g")
+    metadata=$(jq -c ".personas[${idx}].metadata // {}" "${json_file}" | sed "s/'/''/g")
+
+    # Upsert into database (suppress output)
+    db_query "INSERT INTO persona (session_name, persona_id, name, role, demographics, behavioral, journeys, test_data, feedback_preferences, metadata)
+              VALUES ('${SESSION}', '${persona_id}', '${name}', '${role}', '${demographics}'::jsonb, '${behavioral}'::jsonb, '${journeys}'::jsonb, '${test_data}'::jsonb, '${feedback}'::jsonb, '${metadata}'::jsonb)
+              ON CONFLICT (session_name, persona_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                role = EXCLUDED.role,
+                demographics = EXCLUDED.demographics,
+                behavioral = EXCLUDED.behavioral,
+                journeys = EXCLUDED.journeys,
+                test_data = EXCLUDED.test_data,
+                feedback_preferences = EXCLUDED.feedback_preferences,
+                metadata = EXCLUDED.metadata" > /dev/null
+
+    ((++count))
+    ((++idx))
+  done <<< "${persona_ids}"
+
+  log_success "Synced ${count} personas to database"
+}
+
 # Step 1: Ensure feedback tables exist.
 step_ensure_tables() {
   log "Step 1: Ensuring feedback tables exist"
@@ -270,38 +326,63 @@ step_test_journeys() {
     fi
   fi
 
-  # Get personas
-  local -r personas_file="${PROJECT_ROOT}/.claude/testing/personas/${SESSION}-personas.json"
-  if [[ ! -f "${personas_file}" ]]; then
-    log_warn "Personas file not found: ${personas_file}"
-    log "Generating personas first..."
-    claude --dangerously-skip-permissions --print "/pm:generate-personas ${SESSION} --count 5"
+  # Get personas from database
+  local personas
+  personas=$(db_query "SELECT persona_id FROM persona WHERE session_name='${SESSION}'")
+
+  if [[ -z "${personas}" ]]; then
+    log_warn "No personas found in database for session: ${SESSION}"
+
+    # Check if JSON file exists and sync to database
+    local -r personas_file="${PROJECT_ROOT}/.claude/testing/personas/${SESSION}-personas.json"
+    if [[ -f "${personas_file}" ]]; then
+      log "Found personas JSON file, syncing to database..."
+      sync_personas_to_db "${personas_file}"
+      # Re-query after sync
+      personas=$(db_query "SELECT persona_id FROM persona WHERE session_name='${SESSION}'")
+    fi
+
+    # If still empty, generate personas automatically
+    if [[ -z "${personas}" ]]; then
+      log "Generating personas automatically..."
+      claude --dangerously-skip-permissions --print "/pm:generate-personas ${SESSION} --count 5" || true
+
+      # Sync newly generated JSON to database
+      if [[ -f "${personas_file}" ]]; then
+        sync_personas_to_db "${personas_file}"
+      fi
+
+      # Re-query after generation
+      personas=$(db_query "SELECT persona_id FROM persona WHERE session_name='${SESSION}'")
+
+      if [[ -z "${personas}" ]]; then
+        log_error "Failed to generate personas"
+        update_step_status 2 "complete"
+        log_warn "Step 2 skipped - persona generation failed"
+        return 0
+      fi
+    fi
   fi
 
   local journey_count=0
   local persona_count=0
 
   # Run test-journey for each combination
-  if [[ -f "${personas_file}" ]]; then
-    local personas
-    personas=$(jq -r '.[].id' "${personas_file}" 2>/dev/null || echo "")
+  local journey_id
+  for journey_id in ${journeys}; do
+    [[ -z "${journey_id}" ]] && continue
+    ((++journey_count))
 
-    local journey_id
-    for journey_id in ${journeys}; do
-      [[ -z "${journey_id}" ]] && continue
-      ((journey_count++))
+    local persona_id
+    for persona_id in ${personas}; do
+      [[ -z "${persona_id}" ]] && continue
+      ((++persona_count))
 
-      local persona_id
-      for persona_id in ${personas}; do
-        [[ -z "${persona_id}" ]] && continue
-        ((persona_count++))
-
-        log "Testing journey ${journey_id} with persona ${persona_id}"
-        claude --dangerously-skip-permissions --print \
-          "/pm:test-journey ${SESSION} ${journey_id} --persona ${persona_id} --run ${TEST_RUN_ID}" || true
-      done
+      log "Testing journey ${journey_id} with persona ${persona_id}"
+      claude --dangerously-skip-permissions --print \
+        "/pm:test-journey ${SESSION} ${journey_id} --persona ${persona_id} --run ${TEST_RUN_ID}" || true
     done
-  fi
+  done
 
   update_stat "journeys_tested" "${journey_count}"
   update_stat "personas_tested" "${persona_count}"
@@ -391,7 +472,7 @@ Research: root causes, best practices, specific code fixes for this codebase"
                AND test_run_id='${TEST_RUN_ID}'
                AND issue_id='${issue_id}'"
 
-    ((triaged_count++))
+    ((++triaged_count))
     log_success "${issue_id} triaged"
   done <<< "${issues}"
 
@@ -484,7 +565,7 @@ ${research}"
                    AND test_run_id='${TEST_RUN_ID}'
                    AND issue_id='${issue_id}'"
 
-        ((resolved_count++))
+        ((++resolved_count))
         log_success "${issue_id} resolved on attempt ${attempt}"
         fixed=true
         break
@@ -510,7 +591,7 @@ ${research}"
                  AND test_run_id='${TEST_RUN_ID}'
                  AND issue_id='${issue_id}'"
 
-      ((escalated_count++))
+      ((++escalated_count))
       log_error "${issue_id} escalated (fix failed after ${max_attempts} attempts)"
       echo "**Final Status**: ESCALATED - requires manual intervention" >> "${fix_log}"
     fi
