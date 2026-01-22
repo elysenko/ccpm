@@ -98,6 +98,7 @@ log_warn() {
 # App process tracking
 FRONTEND_PID=""
 BACKEND_PID=""
+FRONTEND_PORT=""
 APP_STARTED=false
 
 # Cleanup function - kill app processes on exit.
@@ -119,12 +120,19 @@ trap cleanup EXIT INT TERM
 start_app() {
   log "Starting application for E2E tests..."
 
-  # Check if already running
-  if curl -s --max-time 2 http://localhost:3000 > /dev/null 2>&1; then
-    log "Frontend already running on port 3000"
-    APP_STARTED=false  # Don't kill it on exit since we didn't start it
-    return 0
-  fi
+  # Common frontend ports: Vite (5173-5175), CRA/Next (3000-3002)
+  local -a FRONTEND_PORTS=(5173 5174 5175 3000 3001 3002)
+
+  # Check if already running on any common port
+  local port
+  for port in "${FRONTEND_PORTS[@]}"; do
+    if curl -s --max-time 2 "http://localhost:${port}" > /dev/null 2>&1; then
+      log "Frontend already running on port ${port}"
+      FRONTEND_PORT="${port}"
+      APP_STARTED=false  # Don't kill it on exit since we didn't start it
+      return 0
+    fi
+  done
 
   # Start backend
   if [[ -d "${PROJECT_ROOT}/backend" ]]; then
@@ -157,14 +165,34 @@ start_app() {
 
   APP_STARTED=true
 
-  # Wait for services to be ready
-  log "Waiting for services to be ready..."
+  # Wait for services to be ready - check log for actual port or try common ports
+  log "Waiting for frontend to be ready..."
   local retries=30
+  local detected_port=""
   while ((retries > 0)); do
-    if curl -s --max-time 2 http://localhost:3000 > /dev/null 2>&1; then
-      log_success "Frontend is ready on port 3000"
-      break
+    # Try to detect port from Vite log output
+    if [[ -f "${FEEDBACK_STATE_DIR}/frontend.log" ]]; then
+      detected_port=$(grep -oE 'http://localhost:[0-9]+' "${FEEDBACK_STATE_DIR}/frontend.log" | head -1 | grep -oE '[0-9]+$' || echo "")
     fi
+
+    # Check detected port first, then fall back to common ports
+    if [[ -n "${detected_port}" ]]; then
+      if curl -s --max-time 2 "http://localhost:${detected_port}" > /dev/null 2>&1; then
+        FRONTEND_PORT="${detected_port}"
+        log_success "Frontend is ready on port ${FRONTEND_PORT}"
+        break
+      fi
+    else
+      # Check common ports
+      for port in "${FRONTEND_PORTS[@]}"; do
+        if curl -s --max-time 2 "http://localhost:${port}" > /dev/null 2>&1; then
+          FRONTEND_PORT="${port}"
+          log_success "Frontend is ready on port ${FRONTEND_PORT}"
+          break 2
+        fi
+      done
+    fi
+
     ((--retries))
     sleep 1
   done
