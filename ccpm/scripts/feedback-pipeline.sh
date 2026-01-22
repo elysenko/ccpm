@@ -313,9 +313,9 @@ step_test_journeys() {
   TEST_RUN_ID="run-$(date +%Y%m%d-%H%M%S)"
   update_feedback_state "test_run_id" "\"${TEST_RUN_ID}\""
 
-  # Get journeys from database
+  # Get journeys from database (journey_id is the human-readable ID like "J-001")
   local journeys
-  journeys=$(db_query "SELECT id FROM journey WHERE session_name='${SESSION}'")
+  journeys=$(db_query "SELECT journey_id FROM journey WHERE session_name='${SESSION}'")
 
   if [[ -z "${journeys}" ]]; then
     log_warn "No journeys found in database for session: ${SESSION}"
