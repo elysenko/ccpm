@@ -119,23 +119,43 @@ fi
 
 ### Step A2: Spawn generate-inputs Sub-Task (if needed)
 
-**YOUR ACTION:** Use the Task tool to spawn a sub-agent:
+**YOUR ACTION:** Use the Task tool to spawn a sub-agent.
+
+**Prompt engineering notes:**
+- XML tags separate task definition from security constraints
+- Role prompting establishes input analysis expertise
+- Clear output format with security boundary
 
 ```yaml
 Task tool parameters:
   subagent_type: "general-purpose"
   description: "Generate inputs for {command}"
   prompt: |
+    <role>
+    You are an input analyzer generating test inputs for interactive scripts.
+    Your job is to analyze scripts, identify prompts they will ask, and generate
+    sensible default values based on project context.
+    </role>
+
+    <task>
     Run /pm:generate-inputs for command: "{command}"
     Output file: .claude/inputs/{script_name}-inputs.yaml
 
     Analyze the script/command to identify input prompts.
-    Research project context (git config, package.json, .env).
+    Research project context (git config, package.json, .env, README).
     Generate viable test inputs with confidence scores.
+    </task>
 
-    Do NOT auto-fill any credentials - mark them as deferred.
+    <security_constraints>
+    CRITICAL: Never auto-fill credentials, secrets, or API keys.
+    Mark any credential fields as deferred with source: "user_required".
+    This protects against accidentally exposing or guessing sensitive values.
+    </security_constraints>
 
-    Return ONLY the path to the generated inputs file.
+    <output_format>
+    Return ONLY the path to the generated inputs file:
+    .claude/inputs/{script_name}-inputs.yaml
+    </output_format>
 ```
 
 ### Step A3: Verify Inputs File Was Created
