@@ -153,21 +153,27 @@ check_db_connection() {
 }
 
 # Parse features from 01_features.md (structured format)
+# Supports both formats:
+#   Format A: ### F-001: Name  (with **Description:** lines)
+#   Format B: ### F1: Name     (with markdown tables)
 parse_features_structured() {
   local -r file="$1"
 
   log "Parsing features from: ${file}"
 
   local in_details=false
+  local in_table=false
   local current_id=""
   local current_name=""
   local current_desc=""
   local current_priority="medium"
   local current_complexity="medium"
+  local table_header_seen=false
 
   while IFS= read -r line; do
-    # Detect feature header: ### F-001: Name
-    if [[ "${line}" =~ ^###[[:space:]]+(F-[0-9]+):[[:space:]]*(.+)$ ]]; then
+    # Detect feature header: ## or ### followed by F-001, F1, F001, etc.
+    # Patterns: ### F-001: Name, ## F1: Name, ### F001: Name
+    if [[ "${line}" =~ ^#{2,3}[[:space:]]+(F-?[0-9]+[A-Za-z]?):[[:space:]]*(.+)$ ]]; then
       # Save previous feature if exists
       if [[ -n "${current_id}" ]]; then
         insert_feature "${current_id}" "${current_name}" "${current_desc}" "${current_priority}" "${current_complexity}"
@@ -179,30 +185,96 @@ parse_features_structured() {
       current_priority="medium"
       current_complexity="medium"
       in_details=true
+      in_table=false
+      table_header_seen=false
       continue
     fi
 
-    # Parse description
-    if [[ "${in_details}" == "true" ]] && [[ "${line}" =~ ^\*\*Description:\*\*[[:space:]]*(.+)$ ]]; then
+    # Detect table header row: | ID | Feature | Description | Priority | Complexity |
+    if [[ "${in_details}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*ID[[:space:]]*\| ]]; then
+      in_table=true
+      table_header_seen=false
+      continue
+    fi
+
+    # Skip table separator row: | --- | --- | ...
+    if [[ "${in_table}" == "true" ]] && [[ "${line}" =~ ^\|[[:space:]]*-+[[:space:]]*\| ]]; then
+      table_header_seen=true
+      continue
+    fi
+
+    # Parse table data row: | F1.1 | Add Transaction | description | Must Have | Low |
+    if [[ "${in_table}" == "true" ]] && [[ "${table_header_seen}" == "true" ]] && [[ "${line}" =~ ^\| ]]; then
+      # Split by | and extract fields
+      local row="${line#|}"  # Remove leading |
+      row="${row%|}"         # Remove trailing |
+
+      # Parse fields (ID | Feature | Description | Priority | Complexity)
+      local field_id field_name field_desc field_prio field_complex
+      IFS='|' read -r field_id field_name field_desc field_prio field_complex <<< "${row}"
+
+      # Trim whitespace
+      field_id=$(echo "${field_id}" | xargs)
+      field_name=$(echo "${field_name}" | xargs)
+      field_desc=$(echo "${field_desc}" | xargs)
+      field_prio=$(echo "${field_prio}" | xargs)
+      field_complex=$(echo "${field_complex}" | xargs)
+
+      # Skip if empty or header-like
+      if [[ -n "${field_id}" ]] && [[ "${field_id}" != "ID" ]] && [[ ! "${field_id}" =~ ^-+$ ]]; then
+        # Map priority values: "Must Have" -> "high", "Should Have" -> "medium", etc.
+        local mapped_prio="medium"
+        case "${field_prio,,}" in
+          "must have"|"critical"|"high") mapped_prio="high" ;;
+          "should have"|"medium")        mapped_prio="medium" ;;
+          "could have"|"low"|"nice to have") mapped_prio="low" ;;
+        esac
+
+        # Map complexity: "Low" -> "low", etc.
+        local mapped_complex="medium"
+        case "${field_complex,,}" in
+          "low"|"simple")   mapped_complex="low" ;;
+          "medium")         mapped_complex="medium" ;;
+          "high"|"complex") mapped_complex="high" ;;
+        esac
+
+        insert_feature "${field_id}" "${field_name}" "${field_desc}" "${mapped_prio}" "${mapped_complex}"
+      fi
+      continue
+    fi
+
+    # Parse description: **Description:** value OR **Description**: value
+    if [[ "${in_details}" == "true" ]] && [[ "${line}" =~ ^\*\*Description\*?\*?:?\*?[[:space:]]*(.+)$ ]]; then
       current_desc="${BASH_REMATCH[1]}"
       continue
     fi
 
-    # Parse priority
-    if [[ "${in_details}" == "true" ]] && [[ "${line}" =~ ^\*\*Priority:\*\*[[:space:]]*(.+)$ ]]; then
+    # Parse priority: **Priority:** value OR **Priority**: value
+    if [[ "${in_details}" == "true" ]] && [[ "${line}" =~ ^\*\*Priority\*?\*?:?\*?[[:space:]]*(.+)$ ]]; then
       current_priority="${BASH_REMATCH[1]}"
       continue
     fi
 
-    # Parse complexity
-    if [[ "${in_details}" == "true" ]] && [[ "${line}" =~ ^\*\*Complexity:\*\*[[:space:]]*(.+)$ ]]; then
+    # Parse complexity: **Complexity:** value OR **Complexity**: value
+    if [[ "${in_details}" == "true" ]] && [[ "${line}" =~ ^\*\*Complexity\*?\*?:?\*?[[:space:]]*(.+)$ ]]; then
       current_complexity="${BASH_REMATCH[1]}"
       continue
     fi
 
-    # End of feature section
+    # End of feature section (new header or separator)
     if [[ "${in_details}" == "true" ]] && [[ "${line}" =~ ^---$ ]]; then
       in_details=false
+      in_table=false
+    fi
+
+    # New section header ends current feature
+    if [[ "${in_details}" == "true" ]] && [[ "${line}" =~ ^#{1,2}[[:space:]] ]] && [[ ! "${line}" =~ ^#{2,3}[[:space:]]+(F-?[0-9]) ]]; then
+      if [[ -n "${current_id}" ]]; then
+        insert_feature "${current_id}" "${current_name}" "${current_desc}" "${current_priority}" "${current_complexity}"
+        current_id=""
+      fi
+      in_details=false
+      in_table=false
     fi
   done < "${file}"
 
@@ -213,7 +285,7 @@ parse_features_structured() {
 }
 
 # Parse features from conversation.md (raw format)
-# Looks for patterns like: [F-001] Name - Description
+# Looks for patterns like: [F-001] Name - Description, [F1] Name - Description
 parse_features_raw() {
   local -r file="$1"
 
@@ -222,8 +294,9 @@ parse_features_raw() {
   local feature_num=1
 
   while IFS= read -r line; do
-    # Pattern: [F-001] Name - Description
-    if [[ "${line}" =~ ^\[?(F-[0-9]+)\]?[[:space:]]+([^-]+)[[:space:]]*-[[:space:]]*(.+)$ ]]; then
+    # Pattern: [F-001] Name - Description or [F1] Name - Description
+    # Flexible ID: F-001, F001, F1, F1.1, F1a
+    if [[ "${line}" =~ ^\[?(F-?[0-9]+[A-Za-z0-9.]*)\]?[[:space:]]+([^-]+)[[:space:]]*-[[:space:]]*(.+)$ ]]; then
       local id="${BASH_REMATCH[1]}"
       local name="${BASH_REMATCH[2]}"
       local desc="${BASH_REMATCH[3]}"
@@ -234,7 +307,7 @@ parse_features_raw() {
     fi
 
     # Pattern: N. [F-001] Name - Description (numbered list)
-    if [[ "${line}" =~ ^[0-9]+\.[[:space:]]+\[?(F-[0-9]+)\]?[[:space:]]+([^-]+)[[:space:]]*-[[:space:]]*(.+)$ ]]; then
+    if [[ "${line}" =~ ^[0-9]+\.[[:space:]]+\[?(F-?[0-9]+[A-Za-z0-9.]*)\]?[[:space:]]+([^-]+)[[:space:]]*-[[:space:]]*(.+)$ ]]; then
       local id="${BASH_REMATCH[1]}"
       local name="${BASH_REMATCH[2]}"
       local desc="${BASH_REMATCH[3]}"
@@ -294,6 +367,9 @@ insert_feature() {
 }
 
 # Parse journeys from 02_user_journeys.md (structured format)
+# Supports both formats:
+#   Format A: ### J-001: Name  (with **Actor:** lines)
+#   Format B: ## J1: Name      (with **Actor**: lines)
 parse_journeys_structured() {
   local -r file="$1"
 
@@ -307,8 +383,9 @@ parse_journeys_structured() {
   local in_journey=false
 
   while IFS= read -r line; do
-    # Detect journey header: ### J-001: Name
-    if [[ "${line}" =~ ^###[[:space:]]+(J-[0-9]+):[[:space:]]*(.+)$ ]]; then
+    # Detect journey header: ## or ### followed by J-001, J1, J001, etc.
+    # Patterns: ### J-001: Name, ## J1: Name, ### J001: Name
+    if [[ "${line}" =~ ^#{2,3}[[:space:]]+(J-?[0-9]+[A-Za-z]?):[[:space:]]*(.+)$ ]]; then
       # Save previous journey if exists
       if [[ -n "${current_id}" ]]; then
         insert_journey "${current_id}" "${current_name}" "${current_actor}" "${current_trigger}" "${current_goal}"
@@ -323,26 +400,59 @@ parse_journeys_structured() {
       continue
     fi
 
-    # Parse actor
-    if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^\*\*Actor:\*\*[[:space:]]*(.+)$ ]]; then
+    # Parse actor: **Actor:** value OR **Actor**: value
+    if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^\*\*Actor\*?\*?:?[[:space:]]*(.+)$ ]]; then
       current_actor="${BASH_REMATCH[1]}"
+      # Remove trailing ** if present (from **Actor**: User**)
+      current_actor="${current_actor%%\*\*}"
       continue
     fi
 
-    # Parse trigger
-    if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^\*\*Trigger:\*\*[[:space:]]*(.+)$ ]]; then
+    # Parse trigger: **Trigger:** value OR **Trigger**: value
+    if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^\*\*Trigger\*?\*?:?[[:space:]]*(.+)$ ]]; then
       current_trigger="${BASH_REMATCH[1]}"
+      current_trigger="${current_trigger%%\*\*}"
       continue
     fi
 
-    # Parse goal
-    if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^\*\*Goal:\*\*[[:space:]]*(.+)$ ]]; then
+    # Parse goal: **Goal:** value OR **Goal**: value
+    if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^\*\*Goal\*?\*?:?[[:space:]]*(.+)$ ]]; then
       current_goal="${BASH_REMATCH[1]}"
+      current_goal="${current_goal%%\*\*}"
       continue
     fi
 
-    # End of journey section
+    # Parse precondition (additional field some formats have)
+    if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^\*\*Precondition\*?\*?:?[[:space:]]*(.+)$ ]]; then
+      # Store in trigger if trigger is empty
+      if [[ -z "${current_trigger}" ]]; then
+        current_trigger="${BASH_REMATCH[1]}"
+        current_trigger="${current_trigger%%\*\*}"
+      fi
+      continue
+    fi
+
+    # Parse success criteria (additional field some formats have)
+    if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^\*\*Success\*?\*?:?[[:space:]]*(.+)$ ]]; then
+      # Store in goal if goal is empty
+      if [[ -z "${current_goal}" ]]; then
+        current_goal="${BASH_REMATCH[1]}"
+        current_goal="${current_goal%%\*\*}"
+      fi
+      continue
+    fi
+
+    # End of journey section (separator)
     if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^---$ ]]; then
+      in_journey=false
+    fi
+
+    # New section header ends current journey
+    if [[ "${in_journey}" == "true" ]] && [[ "${line}" =~ ^#{1,2}[[:space:]] ]] && [[ ! "${line}" =~ ^#{2,3}[[:space:]]+(J-?[0-9]) ]]; then
+      if [[ -n "${current_id}" ]]; then
+        insert_journey "${current_id}" "${current_name}" "${current_actor}" "${current_trigger}" "${current_goal}"
+        current_id=""
+      fi
       in_journey=false
     fi
   done < "${file}"
@@ -354,6 +464,7 @@ parse_journeys_structured() {
 }
 
 # Parse journeys from conversation.md (raw format)
+# Flexible ID: J-001, J001, J1, J1a
 parse_journeys_raw() {
   local -r file="$1"
 
@@ -362,8 +473,8 @@ parse_journeys_raw() {
   local journey_num=1
 
   while IFS= read -r line; do
-    # Pattern: [J-001] Name (Actor: X)
-    if [[ "${line}" =~ ^\[?(J-[0-9]+)\]?[[:space:]]+([^(]+)\(Actor:[[:space:]]*([^)]+)\) ]]; then
+    # Pattern: [J-001] Name (Actor: X) or [J1] Name (Actor: X)
+    if [[ "${line}" =~ ^\[?(J-?[0-9]+[A-Za-z0-9.]*)\]?[[:space:]]+([^(]+)\(Actor:[[:space:]]*([^)]+)\) ]]; then
       local id="${BASH_REMATCH[1]}"
       local name="${BASH_REMATCH[2]}"
       local actor="${BASH_REMATCH[3]}"
@@ -374,7 +485,7 @@ parse_journeys_raw() {
     fi
 
     # Pattern: N. [J-001] Name (Actor: X)
-    if [[ "${line}" =~ ^[0-9]+\.[[:space:]]+\[?(J-[0-9]+)\]?[[:space:]]+([^(]+)\(Actor:[[:space:]]*([^)]+)\) ]]; then
+    if [[ "${line}" =~ ^[0-9]+\.[[:space:]]+\[?(J-?[0-9]+[A-Za-z0-9.]*)\]?[[:space:]]+([^(]+)\(Actor:[[:space:]]*([^)]+)\) ]]; then
       local id="${BASH_REMATCH[1]}"
       local name="${BASH_REMATCH[2]}"
       local actor="${BASH_REMATCH[3]}"
