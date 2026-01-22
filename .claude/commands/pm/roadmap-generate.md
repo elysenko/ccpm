@@ -4,12 +4,13 @@ Transform a scope document into a phased MVP implementation roadmap with priorit
 
 ## Usage
 ```
-/pm:roadmap-generate <session-name> [--phases N]
+/pm:roadmap-generate <session-name> [--phases N] [--sections]
 ```
 
 ## Arguments
 - `session-name` (required): Name of the scoped session (from /pm:extract-findings)
 - `--phases N` (optional): Number of phases to generate (default: 4)
+- `--sections` (optional): Generate section-specific roadmaps with cross-section dependencies
 
 ## Input
 **Required:** `.claude/scopes/{session-name}/` containing:
@@ -32,6 +33,12 @@ SESSION_NAME="${ARGUMENTS%% *}"
 PHASES="${ARGUMENTS#*--phases }"
 [ "$PHASES" = "$ARGUMENTS" ] && PHASES=4
 SCOPE_DIR=".claude/scopes/$SESSION_NAME"
+
+# Check for --sections flag
+GENERATE_SECTIONS=false
+if [[ "$ARGUMENTS" == *"--sections"* ]]; then
+    GENERATE_SECTIONS=true
+fi
 ```
 
 Verify scope directory exists:
@@ -68,6 +75,65 @@ For each feature, extract:
 - Priority (Must Have / Should Have / Could Have / Won't Have)
 - Acceptance criteria count
 - Related features (dependencies)
+
+---
+
+### Step 2.5: Detect Feature Sections (if --sections)
+
+**Only if `$GENERATE_SECTIONS` is true:**
+
+For each feature, detect applicable sections using keyword analysis against the section taxonomy.
+
+**Section Taxonomy Reference:** `templates/roadmap/section-taxonomy.yaml`
+
+**Core Sections:**
+| Section | Description | Keywords (sample) |
+|---------|-------------|-------------------|
+| `infrastructure` | CI/CD, deployment, observability | deploy, pipeline, k8s, terraform, monitoring |
+| `backend` | APIs, business logic, services | api, endpoint, service, grpc, rest, auth |
+| `frontend` | UI, user-facing applications | ui, component, react, vue, mobile, form |
+| `data` | Database, storage, pipelines | database, schema, migration, etl, warehouse |
+| `ml-ai` | Machine learning, AI features | model, training, inference, llm, embedding |
+
+**Conditional Sections (only if triggers detected):**
+| Section | Triggers |
+|---------|----------|
+| `embedded` | iot, firmware, hardware, microcontroller |
+| `security` | auth, oauth, encryption, compliance, audit |
+| `integration` | webhook, third-party, external-api, sync |
+
+**Section Detection Algorithm:**
+
+```bash
+# Use section-detector.sh for each feature
+for feature in FEATURES:
+    result = scripts/section-detector.sh --text "$feature.description $feature.name"
+    feature.sections = result.sections
+    feature.primary_section = result.primary_section
+```
+
+**Build Section-Feature Map:**
+
+```
+SECTION_FEATURES = {}
+for section in [infrastructure, backend, frontend, data, ml-ai, ...]:
+    SECTION_FEATURES[section] = [f for f in FEATURES if section in f.sections]
+```
+
+**Detect Active Sections:**
+
+```
+ACTIVE_SECTIONS = [s for s in SECTION_FEATURES if len(SECTION_FEATURES[s]) > 0]
+```
+
+**Edge Case Detection:**
+
+| Scenario | Detection | Handling |
+|----------|-----------|----------|
+| ML without Frontend | `ml-ai` in ACTIVE, `frontend` not in ACTIVE | Skip frontend roadmap |
+| API-only | `frontend` not in ACTIVE, `backend` in ACTIVE | Skip frontend roadmap |
+| Monolith | All features in single section | Generate unified roadmap |
+| Data Pipeline | `data` primary, no `frontend`/`backend` | Focus on data flow |
 
 ---
 
@@ -201,6 +267,141 @@ function topological_sort(features):
         ERROR: Circular dependency detected
 
     return sorted
+```
+
+---
+
+### Step 6.5: Generate Section Roadmaps (if --sections)
+
+**Only if `$GENERATE_SECTIONS` is true:**
+
+For each active section, generate a section-specific roadmap with cross-section dependencies.
+
+#### 6.5.1: Build Cross-Section Dependency Matrix
+
+**Dependency Types Reference:** `templates/roadmap/dependency-types.yaml`
+
+| Type | Symbol | Description |
+|------|--------|-------------|
+| `FS` (Finish-to-Start) | → | B cannot start until A finishes (default) |
+| `SS` (Start-to-Start) | ⇢ | B can start after A starts (parallel with offset) |
+| `FF` (Finish-to-Finish) | ⇉ | A and B must finish together |
+| `SF` (Start-to-Finish) | ⤳ | B cannot finish until A starts (handoff) |
+
+**Default Cross-Section Dependencies:**
+
+```
+Infrastructure → All sections (FS)
+Data → ML/AI (FS)
+Backend → Frontend (SS if API contract-first, FS otherwise)
+ML/AI → Frontend (SS)
+```
+
+**Build Dependency Matrix:**
+
+```
+CROSS_SECTION_DEPS = {}
+for each feature F in section A:
+    for each dependency D in F.depends_on:
+        if D.primary_section != A:
+            CROSS_SECTION_DEPS[(D.section, A)] = {
+                type: determine_dep_type(D, F),
+                items: [(D, F)],
+                description: "..."
+            }
+```
+
+**Determine Dependency Type:**
+
+```python
+def determine_dep_type(source, target):
+    # API contract-first enables parallelization
+    if source.section == 'backend' and target.section == 'frontend':
+        if has_api_contract(source):
+            return 'SS'  # Start-to-Start
+
+    # Coordinated release required
+    if breaking_api_change(source, target):
+        return 'FF'  # Finish-to-Finish
+
+    # Default: sequential
+    return 'FS'  # Finish-to-Start
+```
+
+#### 6.5.2: Generate Section Roadmaps
+
+For each section in ACTIVE_SECTIONS:
+
+**1. Filter Features:**
+```
+section_features = [f for f in ALL_FEATURES if section in f.sections]
+```
+
+**2. Assign to Phases:**
+- Phase 0: Infrastructure/foundation items for this section
+- Phase 1: Must Have features for this section
+- Phase 2: Should Have features for this section
+- Phase 3+: Remaining features
+
+**3. Extract Cross-Section Dependencies:**
+
+```
+inbound_deps = [(source, target, type)
+                for (source.section, section) in CROSS_SECTION_DEPS]
+
+outbound_deps = [(source, target, type)
+                 for (section, target.section) in CROSS_SECTION_DEPS]
+```
+
+**4. Identify Parallelization Opportunities:**
+
+```
+parallel_items = [f for f in section_features
+                  if no_FS_dependencies_from_other_sections(f)]
+```
+
+**5. Write Section Roadmap:**
+
+Use template: `templates/roadmap/section-roadmap.md`
+
+Write to: `$SCOPE_DIR/07_roadmap_{section_id}.md`
+
+#### 6.5.3: Generate Cross-Section Dependency Matrix
+
+Create a summary matrix showing all cross-section dependencies:
+
+```markdown
+## Cross-Section Dependency Matrix
+
+| From ↓ / To → | Infrastructure | Backend | Frontend | Data | ML/AI |
+|---------------|----------------|---------|----------|------|-------|
+| Infrastructure | - | FS | FS | FS | FS |
+| Backend | - | - | SS* | FS | FS |
+| Frontend | - | - | - | - | - |
+| Data | - | - | - | - | FS |
+| ML/AI | - | - | SS | - | - |
+
+*SS = Start-to-Start (API contract-first enables parallelization)
+```
+
+#### 6.5.4: Calculate Critical Path
+
+**Critical Path = Longest FS dependency chain across sections**
+
+```
+1. Build directed graph of section dependencies (FS only)
+2. Find longest path from Infrastructure to last section
+3. Mark all items on critical path
+4. Sum effort of critical path items
+```
+
+**Critical Path Report:**
+
+```
+Critical Path: Infrastructure → Data → Backend → Frontend
+Critical Items: {N}
+Critical Path Effort: {X} days
+Parallel Opportunities: {Y} items can run alongside
 ```
 
 ---
@@ -347,6 +548,68 @@ Write to `$SCOPE_DIR/07_roadmap.md`:
 
 ---
 
+## Section Roadmaps (if --sections enabled)
+
+### Active Sections
+
+| Section | Features | Phase 0 | Phase 1 | Phase 2+ | Critical Path |
+|---------|----------|---------|---------|----------|---------------|
+| Infrastructure | {N} | {N} | {N} | {N} | ✓ |
+| Backend | {N} | {N} | {N} | {N} | ✓ |
+| Frontend | {N} | {N} | {N} | {N} | |
+| Data | {N} | {N} | {N} | {N} | ✓ |
+| ML/AI | {N} | {N} | {N} | {N} | |
+
+### Section-Specific Roadmaps
+
+Individual section roadmaps are generated in separate files:
+- `07_roadmap_infrastructure.md`
+- `07_roadmap_backend.md`
+- `07_roadmap_frontend.md`
+- `07_roadmap_data.md`
+- `07_roadmap_ml-ai.md`
+
+### Cross-Section Dependency Matrix
+
+| From ↓ / To → | Infrastructure | Backend | Frontend | Data | ML/AI |
+|---------------|----------------|---------|----------|------|-------|
+| Infrastructure | - | FS | FS | FS | FS |
+| Backend | - | - | SS* | - | - |
+| Frontend | - | - | - | - | - |
+| Data | - | FS | - | - | FS |
+| ML/AI | - | - | SS | - | - |
+
+**Dependency Types:**
+- `FS` (→): Finish-to-Start - must complete before next starts
+- `SS` (⇢): Start-to-Start - can start in parallel with offset
+- `FF` (⇉): Finish-to-Finish - must complete together
+- `SF` (⤳): Start-to-Finish - handoff scenario
+
+*SS with API contract-first enables parallelization
+
+### Cross-Section Dependencies Detail
+
+| From | To | Items | Type | Enabler |
+|------|-----|-------|------|---------|
+| Infrastructure | Backend | CI/CD → API Deployment | FS | - |
+| Backend | Frontend | User API → User UI | SS | OpenAPI spec |
+| Data | ML/AI | Feature Store → Model Training | FS | - |
+
+### Critical Path Analysis
+
+```
+Critical Path: Infrastructure → Data → Backend → Frontend
+                    │              │         │
+                    ↓              ↓         ↓
+              [ML/AI parallel] [Integration parallel]
+```
+
+**Critical Path Items:** {N}
+**Critical Path Effort:** {X} days (estimated)
+**Parallelization Savings:** {Y} items can run alongside critical path
+
+---
+
 ## Dependency Map
 
 ### Feature Dependencies
@@ -468,6 +731,41 @@ Next Steps:
 3. Start Phase 0: /pm:prd-parse {session-name}
 ```
 
+**If `--sections` was enabled, also show:**
+
+```
+Section Breakdown:
+| Section | Features | On Critical Path |
+|---------|----------|------------------|
+| Infrastructure | {N} | ✓ |
+| Backend | {N} | ✓ |
+| Frontend | {N} | |
+| Data | {N} | ✓ |
+| ML/AI | {N} | |
+
+Cross-Section Dependencies:
+- {N} cross-section dependencies identified
+- {N} parallelization opportunities found
+- Dependency types: {N} FS, {N} SS, {N} FF, {N} SF
+
+Critical Path:
+  Infrastructure → Data → Backend → Frontend
+  Effort: {X} days (parallel work can reduce by {Y} days)
+
+Section Roadmaps:
+- .claude/scopes/{session-name}/07_roadmap_infrastructure.md
+- .claude/scopes/{session-name}/07_roadmap_backend.md
+- .claude/scopes/{session-name}/07_roadmap_frontend.md
+- .claude/scopes/{session-name}/07_roadmap_data.md
+{only sections with features are listed}
+
+Next Steps (with sections):
+1. Review main roadmap and section roadmaps
+2. Validate cross-section dependencies
+3. Identify API contracts for SS dependencies
+4. Start Phase 0: /pm:prd-parse {session-name}
+```
+
 ---
 
 ## Important Rules
@@ -480,6 +778,16 @@ Next Steps:
 6. **No time estimates** - Use effort sizes (S/M/L) not calendar dates
 7. **Must Have = MVP** - If it's not Must Have, it's not MVP
 8. **Defer wisely** - Could Have items are explicitly post-MVP
+
+### Section Roadmap Rules (when --sections enabled)
+
+9. **Infrastructure first** - Infrastructure section always Phase 0
+10. **Data before ML/AI** - ML/AI requires data foundation
+11. **API contract-first** - Use SS dependencies when contracts exist
+12. **Cross-section dependencies explicit** - Always document cross-section deps
+13. **Critical path awareness** - Know which sections block others
+14. **Parallelization opportunities** - Identify SS/parallel work to reduce timeline
+15. **Section-appropriate phases** - Each section may have different phase distributions
 
 ---
 
@@ -529,5 +837,12 @@ This roadmap methodology is based on:
 - Kano Model for feature categorization
 - Walking Skeleton pattern (Alistair Cockburn)
 - Vertical Slice Architecture (Jimmy Bogard)
+- Critical Path Method (CPM) for dependency modeling
+- PERT dependency relationships (FS, SS, FF, SF)
+
+**Section Taxonomy:** See `templates/roadmap/section-taxonomy.yaml`
+**Dependency Types:** See `templates/roadmap/dependency-types.yaml`
+**Section Template:** See `templates/roadmap/section-roadmap.md`
+**Section Detector:** See `scripts/section-detector.sh`
 
 Research: See `research-report.md` for detailed methodology.

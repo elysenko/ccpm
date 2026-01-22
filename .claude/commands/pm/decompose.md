@@ -156,6 +156,56 @@ Validate the output:
 
 If invalid, regenerate with feedback.
 
+### Step 3.5: Assign Sections to PRDs
+
+For each generated PRD, detect and assign applicable sections using keyword analysis.
+
+**Use section-detector script:**
+
+```bash
+# For each PRD, analyze content and assign sections
+for prd in generated_prds:
+    content = "${prd.title} ${prd.user_story} ${prd.acceptance_criteria}"
+    result = scripts/section-detector.sh --text "$content"
+
+    prd.sections = result.sections        # e.g., [backend, data]
+    prd.primary_section = result.primary_section  # e.g., backend
+```
+
+**Section Taxonomy Reference:** `templates/roadmap/section-taxonomy.yaml`
+
+**Core Sections:**
+| Section ID | Description |
+|------------|-------------|
+| `infrastructure` | CI/CD, deployment, observability |
+| `backend` | APIs, business logic, services |
+| `frontend` | UI, user-facing applications |
+| `data` | Database, storage, pipelines |
+| `ml-ai` | Machine learning, AI features |
+
+**Conditional Sections (assigned only if triggers detected):**
+| Section ID | Triggers |
+|------------|----------|
+| `embedded` | iot, firmware, hardware |
+| `security` | auth, oauth, encryption, compliance |
+| `integration` | webhook, third-party, external-api |
+
+**Section Assignment Rules:**
+1. PRDs can belong to multiple sections (e.g., backend + data)
+2. Primary section is used for roadmap scheduling
+3. Vertical slices typically span multiple sections
+4. Features can have max 3 sections assigned
+
+**Cross-Section PRD Example:**
+
+```yaml
+id: PRD-AUTH-001
+title: User login with email/password
+sections: [backend, frontend, security]
+primary_section: backend
+# This PRD touches backend (API), frontend (UI), and security (auth)
+```
+
 ### Step 4: INVEST Validation
 
 For each generated PRD, calculate INVEST scores:
@@ -279,6 +329,8 @@ tags: [{tags}]
 invest_composite: {0.00}
 review_required: {true|false}
 dependencies: [{dep_ids}]
+sections: [{section_ids}]        # Assigned sections (e.g., [backend, data])
+primary_section: {section_id}    # Main section for scheduling (e.g., backend)
 ---
 
 # {title}
@@ -353,6 +405,32 @@ graph TD
 - Confidence: {score}
 - Review Required: {yes/no}
 
+## Section Distribution
+
+| Section | PRD Count | Primary For |
+|---------|-----------|-------------|
+| infrastructure | {N} | {N} |
+| backend | {N} | {N} |
+| frontend | {N} | {N} |
+| data | {N} | {N} |
+| ml-ai | {N} | {N} |
+| security | {N} | {N} |
+| integration | {N} | {N} |
+
+### PRD-Section Matrix
+
+| PRD | Infrastructure | Backend | Frontend | Data | ML/AI | Primary |
+|-----|----------------|---------|----------|------|-------|---------|
+| PRD-001 | | ✓ | ✓ | | | backend |
+| PRD-002 | | ✓ | | ✓ | | data |
+
+### Cross-Section Dependencies
+
+| From (Section) | To (Section) | PRDs Involved | Dependency Type |
+|----------------|--------------|---------------|-----------------|
+| data | backend | PRD-002 → PRD-003 | FS |
+| backend | frontend | PRD-003 → PRD-004 | SS |
+
 ## INVEST Scores
 
 | PRD | I | N | V | E | S | T | Composite |
@@ -370,6 +448,7 @@ graph TD
 - Chain Depth: {depth}
 - Parallel Groups: {count}
 - Orphan PRDs: {list}
+- Cross-Section Dependencies: {count}
 ```
 
 ### Step 9: Review Decision
@@ -386,12 +465,21 @@ If confidence < `$OPTIONS.confidence-threshold` OR `$OPTIONS.review` is "true":
 ✅ Decomposition complete
 
 Generated {N} PRDs from {epic_id}:
-- PRD-{EPIC}-001: {title} (INVEST: {score})
-- PRD-{EPIC}-002: {title} (INVEST: {score})
+- PRD-{EPIC}-001: {title} (INVEST: {score}, section: {primary_section})
+- PRD-{EPIC}-002: {title} (INVEST: {score}, section: {primary_section})
+...
+
+Section Distribution:
+| Section | PRDs | Primary |
+|---------|------|---------|
+| backend | {N} | {N} |
+| frontend | {N} | {N} |
+| data | {N} | {N} |
 ...
 
 Dependency chain depth: {depth}
 Parallel groups: {groups}
+Cross-section dependencies: {count}
 Confidence: {score}
 
 Files written to: {output_dir}/{epic_id}/
@@ -404,7 +492,9 @@ Issues:
 
 Next steps:
 - Review PRDs in {output_dir}/{epic_id}/
+- Validate section assignments
 - Run /pm:epic-start {epic_id} when ready
+- Run /pm:roadmap-generate --sections to visualize section roadmaps
 ```
 
 ### Failure
@@ -477,6 +567,19 @@ Suggestions:
 - Target **3-7 PRDs** for most epics - fewer for focused features, more for large initiatives
 - Always validate INVEST scores and address HIGH severity anti-patterns before proceeding
 - Human review is **mandatory** when confidence < 0.7
+- **Section assignments** are automatic but can be overridden in PRD frontmatter
+- **Vertical slices typically span sections** - a login feature touches backend, frontend, and security
+
+## Section Assignment Notes
+
+- Sections are assigned automatically based on keyword analysis
+- PRDs can belong to **multiple sections** (e.g., `[backend, frontend, security]`)
+- The **primary_section** is used for roadmap scheduling and critical path calculation
+- Use `/pm:roadmap-generate --sections` to visualize cross-section dependencies
+- Section assignments enable parallel work streams when dependencies allow
+
+**Section Taxonomy:** See `templates/roadmap/section-taxonomy.yaml`
+**Section Detector:** See `scripts/section-detector.sh`
 
 ## Research Foundation
 
@@ -486,5 +589,7 @@ This skill implements algorithms from deep research on PRD decomposition:
 - Vertical slice architecture (Jimmy Bogard)
 - 10 story splitting anti-patterns (Humanizing Work)
 - DAG algorithms (Kahn's topological sort, Tarjan's cycle detection)
+- Critical Path Method (CPM) for cross-section dependencies
+- PERT dependency types (FS, SS, FF, SF)
 
 See: `RESEARCH/roadmap-decomposition/research-report.md`

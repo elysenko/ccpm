@@ -143,7 +143,8 @@ list_sessions() {
         type=$(grep "^Type:" "$conv_file" 2>/dev/null | head -1 | cut -d: -f2 | tr -d ' ')
 
         # Count Q&A exchanges
-        exchanges=$(grep -c "^\*\*Claude:\*\*" "$conv_file" 2>/dev/null || echo "0")
+        exchanges=$(grep -c "^\*\*Claude:\*\*" "$conv_file" 2>/dev/null) || exchanges=0
+        exchanges="${exchanges:-0}"
 
         # Check if scope exists
         scope_status=""
@@ -197,7 +198,9 @@ show_status() {
   grep "^Started:\|^Status:\|^Type:\|^Domain:\|^Completed:" "$conv" 2>/dev/null | head -5
 
   echo ""
-  echo "Exchanges: $(grep -c "^\*\*Claude:\*\*" "$conv" 2>/dev/null || echo "0")"
+  local exchange_count
+  exchange_count=$(grep -c "^\*\*Claude:\*\*" "$conv" 2>/dev/null) || exchange_count=0
+  echo "Exchanges: ${exchange_count:-0}"
 
   # Check scope status
   if [ -f "$scope" ]; then
@@ -1031,8 +1034,27 @@ case "$1" in
     echo "---"
     echo ""
 
-    # Run interactively (no --print flag - this is a conversation)
-    claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
+    # Check if we're running interactively (has a TTY)
+    if [ -t 0 ]; then
+      # Interactive mode - prompt user and launch Claude for them to type
+      echo "When Claude starts, type this command:"
+      echo ""
+      echo "  /pm:interrogate $SESSION_NAME"
+      echo ""
+      echo "Complete the Q&A session, then exit Claude (Ctrl+C or /exit)."
+      echo ""
+      echo "Press Enter to launch Claude..."
+      read
+
+      # Launch interactive Claude (no command = stays open for user input)
+      claude --dangerously-skip-permissions
+    else
+      # Non-interactive mode - run interrogate command directly
+      echo "Running in non-interactive mode."
+      echo "Note: Interactive prompts may require manual input."
+      echo ""
+      claude --dangerously-skip-permissions "/pm:interrogate $SESSION_NAME"
+    fi
 
     # After completion, show next steps
     echo ""

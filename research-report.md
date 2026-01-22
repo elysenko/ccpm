@@ -1,585 +1,344 @@
-# Real-Time Voice AI Agent for Meeting Bots: Always-Listening Architecture
+# Docker Build Fork Bomb Behavior with Containerd: Root Cause Analysis and Claude Code Enforcement
 
-## Research Metadata
-- **Research Date:** January 17, 2026 (Updated)
-- **Methodology:** Graph of Thoughts (GoT) 7-Phase Deep Research
-- **Classification:** Type D Investigation (novel question, high uncertainty)
-- **Intensity Tier:** Deep (5-8 agents, max depth 4)
-- **Update Focus:** Cloud vs self-hosted comparison, GPU requirements, ARM64 feasibility, existing frameworks, **K8s pod architecture**
+**Research Date:** 2026-01-22
+**Classification:** Type C Analysis
+**Confidence Level:** High (multiple independent sources confirm findings)
 
 ---
 
 ## Executive Summary
 
-This report evaluates architectures for an **always-listening voice AI agent** that participates in meetings by answering questions and proactively interjecting when helpful. Unlike wake-word-based assistants, this system requires **continuous streaming ASR** at 100% duty cycle with intelligent response triggering.
+The "fork bomb" behavior observed when using `docker build` in a containerd-only Kubernetes environment is **not a true fork bomb** but rather a combination of two distinct failure modes:
 
-### Key Findings
+1. **BuildKit Initialization Timeout Storm** - Docker daemon with containerd snapshotter enters a CPU-intensive loop during startup when many images/builds exist, causing 100% CPU utilization before timing out
+2. **Containerd-Shim Process Leaks** - Under high pod churn or disk I/O, shim processes accumulate due to timeout mismatches between mount operations and gRPC clients
 
-| Component | Recommended Solution | Latency | Cost (40hr/week) | Confidence |
-|-----------|---------------------|---------|------------------|------------|
-| **Cloud ASR (Best Overall)** | Deepgram Nova-3 | <300ms | ~$74/month | HIGH |
-| **Cloud ASR (Lowest Latency)** | OpenAI Realtime API | <200ms | ~$576/month | HIGH |
-| **Self-Hosted x86/GPU** | faster-whisper + RTX 4060 Ti | 500-1000ms | Hardware only | MEDIUM |
-| **Self-Hosted ARM64** | Vosk streaming | 200-500ms | Hardware only | MEDIUM |
-| **Response Triggering** | Semantic turn detection + LLM | N/A | Included | HIGH |
-| **Audio Routing** | PipeWire virtual mic | <10ms | $0 | HIGH |
+**Key Finding:** Using `nerdctl` instead of `docker` CLI avoids the daemon-related timeout issues because nerdctl interacts directly with containerd without requiring a centralized daemon architecture.
 
-### Bottom Line Recommendations
-
-1. **For Production/Quality:** Use **Deepgram Nova-3** streaming ASR + **OpenAI GPT-4o** for response decisions. Total cost ~$150-250/month for 40hr/week continuous listening.
-
-2. **For Cost Optimization:** Use **AssemblyAI Universal-Streaming** ($0.15/hr) with local Phi-3/Qwen2 for response triggering decisions (not response generation).
-
-3. **For Privacy/Self-Hosted:** Use **Vosk streaming** on ARM64 OR **faster-whisper** on x86/GPU. ARM64 CAN handle continuous ASR but with accuracy tradeoffs.
-
-4. **Hybrid Optimal:** Cloud ASR (Deepgram) + Local LLM trigger decision + Cloud LLM for response generation. Best balance of cost, latency, and quality.
-
-### Critical Finding: ARM64 Feasibility
-
-**Rockchip ARM64 CAN handle 100% duty cycle continuous ASR**, but with significant caveats:
-- **Vosk:** Yes, real-time capable, 200-500ms latency, 10-15% WER
-- **Whisper.cpp tiny:** Marginal, ~1.5-2s latency, thermal concerns
-- **Whisper.cpp base+:** No, too slow for continuous use
-- **Recommendation:** Vosk for ARM64 always-on; upgrade to x86/GPU for Whisper-quality
+**Claude Code Enforcement:** Two reliable methods exist - PreToolUse hooks (guaranteed execution) and binary path aliasing (system-level). CLAUDE.md rules alone are insufficient as they can be deprioritized.
 
 ---
 
-# Part 2: K8s Meeting Bot Pod Architecture
+## Part 1: Root Cause Analysis
 
-## Research Question
-What components and architecture are needed to build a Kubernetes pod that can autonomously join Google Meet, Microsoft Teams, and Zoom meetings to capture and transcribe audio in real-time?
+### The Problem is NOT a Fork Bomb
+
+A true fork bomb recursively spawns processes until system resources are exhausted. What you're experiencing is more accurately described as:
+
+1. **Resource exhaustion from initialization failures** - The docker daemon, when configured with containerd snapshotter, can enter a pathological state during startup
+2. **Shim process accumulation** - containerd-shim-runc-v2 processes leak under specific conditions
+
+### Root Cause #1: BuildKit Initialization Timeout (Docker 27.x)
+
+**Affected Versions:** Docker 27.2.1, 27.3.1 (fixed in 27.4.0)
+
+**Mechanism:** When Docker starts with the containerd snapshotter enabled and many images/builds exist (~40+), the BuildKit component performs consistency checks against containerd. This process:
+
+1. Docker daemon starts and initializes BuildKit
+2. BuildKit validates cache records against containerd's boltdb
+3. gRPC communication between Docker and containerd becomes bottlenecked
+4. Both processes consume 100% CPU for 1-2 minutes
+5. Initialization exceeds the configured timeout
+6. `dockerd` exits with "context deadline exceeded"
+7. systemd restarts dockerd, repeating the cycle (observed 25+ restarts)
+
+This creates the *appearance* of fork bomb behavior due to:
+- Sustained 100% CPU
+- Repeated process spawning (systemd restarts)
+- System unresponsiveness
+
+**Source:** [moby/moby Issue #48569](https://github.com/moby/moby/issues/48569)
+
+**Fix:** [PR #48953](https://github.com/moby/moby/pull/48953) removed the BuildKit init timeout entirely. Merged November 2024, released in Docker 27.4.0.
+
+### Root Cause #2: Containerd-Shim Process Leaks
+
+**Affected Versions:** containerd 2.0.6, 2.1.4 (NOT affecting 1.7.27)
+
+**Mechanism:** Under high pod churn or high disk I/O:
+
+1. Container deletion triggers `mount.UnmountAll` which can take 20-30 seconds
+2. gRPC client timeout is 10 seconds
+3. Client times out but server-side deletion continues
+4. Container ID is removed from local records before shim cleanup completes
+5. Orphaned shim processes remain with PPID=1
+
+**Symptoms:**
+- Hundreds of `containerd-shim-runc-v2` processes
+- `ctr -n k8s.io c info` cannot find associated containers
+- Gradual memory growth leading to OOM
+
+**Source:** [containerd/containerd Issue #12344](https://github.com/containerd/containerd/issues/12344), [Issue #7496](https://github.com/containerd/containerd/issues/7496)
+
+### Why nerdctl Avoids These Issues
+
+| Aspect | Docker CLI | nerdctl |
+|--------|-----------|---------|
+| Architecture | Centralized daemon (dockerd) | Daemonless, direct containerd |
+| BuildKit | Managed by dockerd with init timeout | Standalone buildkitd, no timeout coupling |
+| Startup dependency | Requires full daemon initialization | Per-command execution |
+| Failure isolation | Daemon failure affects all operations | Command failures are isolated |
+
+Both use BuildKit for the actual build process, but nerdctl's direct interaction with containerd bypasses the problematic daemon initialization sequence.
+
+**Source:** [nerdctl GitHub Repository](https://github.com/containerd/nerdctl)
 
 ---
 
-## What Exists vs What's Missing
+## Part 2: Solutions Ranked by Effectiveness
 
-### ✅ EXISTS (in codebase)
+### Solution 1: Claude Code PreToolUse Hook (RECOMMENDED)
 
-| Component | Location | Status |
-|-----------|----------|--------|
-| Trigger LLM (phi3:mini) | `k8s/ollama/` | ✅ Working |
-| Vosk ASR | `scripts/meeting-bot/stream_asr_ffmpeg.py` | ✅ Working |
-| Trigger Client | `scripts/meeting-bot/trigger.py` | ✅ Working |
-| Listen-Only Bot | `scripts/meeting-bot/listen_only.py` | ✅ Working (needs container) |
-| K8s Job Template | `k8s/meeting-bot/job-template.yaml` | ⚠️ Needs audio stack |
+**Reliability:** Guaranteed execution
+**Complexity:** Low
+**Persistence:** Survives context window limits
 
-### ❌ MISSING (need to build)
+PreToolUse hooks execute before every tool call and cannot be overridden by conversation context or CLAUDE.md instructions.
 
-| Component | Purpose | Priority |
-|-----------|---------|----------|
-| **Dockerfile** | Container with Xvfb + PulseAudio + Chromium | 🔴 Critical |
-| **Entrypoint Script** | Start audio stack before bot | 🔴 Critical |
-| **Platform Join Logic** | Meet/Teams/Zoom specific handlers | 🔴 Critical |
-| **Audio Routing** | PulseAudio virtual sink → FFmpeg → Vosk | 🔴 Critical |
-| **ARM64 Browser Image** | Chromium that works on Rockchip | 🟡 Important |
+#### Implementation
+
+Create `~/.claude/settings.json` or `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"import json, sys; data=json.load(sys.stdin); cmd=data.get('tool_input',{}).get('command',''); blocked=['docker build','docker push','docker-compose build']; sys.exit(2) if any(b in cmd for b in blocked) else sys.exit(0)\" 2>&1 || echo 'Use nerdctl instead of docker. Run: nerdctl build' >&2"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Or use a dedicated script for better maintainability:
+
+**`.claude/hooks/block-docker.py`:**
+```python
+#!/usr/bin/env python3
+import json
+import sys
+
+BLOCKED_PATTERNS = [
+    'docker build',
+    'docker push',
+    'docker-compose build',
+    'docker compose build',
+]
+
+ALLOWED_ALTERNATIVES = {
+    'docker build': 'nerdctl build',
+    'docker push': 'nerdctl push',
+    'docker-compose': 'nerdctl compose',
+}
+
+try:
+    data = json.load(sys.stdin)
+    cmd = data.get('tool_input', {}).get('command', '')
+
+    for pattern in BLOCKED_PATTERNS:
+        if pattern in cmd:
+            print(f"BLOCKED: '{pattern}' is not allowed in this environment.", file=sys.stderr)
+            print(f"Use '{ALLOWED_ALTERNATIVES.get(pattern, 'nerdctl')}' instead.", file=sys.stderr)
+            print("Reason: docker CLI causes resource exhaustion with containerd snapshotter.", file=sys.stderr)
+            sys.exit(2)  # Exit code 2 = block the action
+
+    sys.exit(0)  # Allow
+except Exception as e:
+    print(f"Hook error: {e}", file=sys.stderr)
+    sys.exit(0)  # Fail open to avoid blocking legitimate commands
+```
+
+**`settings.json`:**
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/block-docker.py"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Why this works:** Exit code 2 is a hard block. The stderr message is shown to Claude, providing feedback on what to do instead. Unlike CLAUDE.md instructions, hooks execute deterministically every time.
+
+**Source:** [Claude Code Hooks Guide](https://code.claude.com/docs/en/hooks-guide)
 
 ---
 
-## Container Architecture
+### Solution 2: System-Level Binary Aliasing
 
-### Pod Stack Diagram
+**Reliability:** High (bypasses Claude entirely)
+**Complexity:** Medium
+**Persistence:** Permanent until reversed
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        K8s Meeting Bot Pod                       │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────────┐ │
-│  │  Xvfb    │──▶│ Chromium │──▶│PulseAudio│──▶│ FFmpeg/Vosk  │ │
-│  │ :99      │   │ Playwright│   │ v-sink   │   │  Transcribe  │ │
-│  └──────────┘   └──────────┘   └──────────┘   └──────────────┘ │
-│        │              │              │               │          │
-│        ▼              ▼              ▼               ▼          │
-│  Virtual Display  Join Meeting   Audio Capture   Transcript     │
-└─────────────────────────────────────────────────────────────────┘
-```
+Replace or alias the `docker` binary at the system level so all invocations use nerdctl.
 
-### Dockerfile
+#### Option A: Shell Alias (User Level)
 
-```dockerfile
-FROM ubuntu:22.04
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV DISPLAY=:99
-ENV PULSE_SERVER=unix:/tmp/pulseaudio.socket
-
-# System dependencies
-RUN apt-get update && apt-get install -y \
-    # Virtual display
-    xvfb \
-    # Audio stack
-    pulseaudio \
-    pulseaudio-utils \
-    # Media processing
-    ffmpeg \
-    # Browser (ARM64 compatible)
-    chromium-browser \
-    # Fonts for rendering
-    fonts-liberation \
-    fonts-noto-cjk \
-    # Browser dependencies
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    # Python
-    python3 \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Python dependencies
-COPY requirements.txt /app/
-RUN pip3 install --no-cache-dir -r /app/requirements.txt
-
-# Playwright (for browser automation)
-RUN pip3 install playwright && \
-    playwright install chromium --with-deps
-
-# Vosk model
-RUN mkdir -p /app/models && \
-    wget -qO- https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip | \
-    busybox unzip -d /app/models -
-
-# Application code
-COPY scripts/meeting-bot/ /app/
-
-# PulseAudio configuration
-COPY pulse/default.pa /etc/pulse/default.pa
-COPY pulse/client.conf /etc/pulse/client.conf
-
-# Entrypoint
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-WORKDIR /app
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python3", "listen_only.py"]
-```
-
-### Entrypoint Script
+Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
+# Redirect docker to nerdctl
+alias docker='nerdctl'
+alias docker-compose='nerdctl compose'
+
+# For Kubernetes namespace compatibility
+alias docker='nerdctl -n k8s.io'
+```
+
+**Limitation:** Only works for interactive shells. Scripts using `#!/bin/bash` may bypass aliases.
+
+#### Option B: Binary Wrapper (System Level)
+
+```bash
+# Backup original docker (if exists)
+sudo mv /usr/bin/docker /usr/bin/docker.disabled 2>/dev/null || true
+
+# Create wrapper script
+sudo tee /usr/bin/docker << 'EOF'
 #!/bin/bash
-set -e
+echo "WARNING: docker CLI is disabled. Using nerdctl instead." >&2
+exec nerdctl "$@"
+EOF
 
-echo "[entrypoint] Starting audio stack..."
-
-# Start PulseAudio daemon (no system mode in container)
-pulseaudio -D --exit-idle-time=-1 --system=false --disallow-exit
-
-# Create virtual sink for browser audio capture
-pacmd load-module module-virtual-sink sink_name=meeting_audio
-pacmd set-default-sink meeting_audio
-pacmd set-default-source meeting_audio.monitor
-
-echo "[entrypoint] Starting virtual display..."
-
-# Start Xvfb
-Xvfb :99 -screen 0 1920x1080x24 -ac &
-sleep 2
-
-# Verify display is working
-if ! xdpyinfo -display :99 > /dev/null 2>&1; then
-    echo "[entrypoint] ERROR: Xvfb failed to start"
-    exit 1
-fi
-
-echo "[entrypoint] Audio + Display ready. Starting bot..."
-exec "$@"
+sudo chmod +x /usr/bin/docker
 ```
 
-### PulseAudio Configuration
-
-**`pulse/default.pa`**:
-```
-# Load essential modules
-load-module module-native-protocol-unix
-load-module module-always-sink
-
-# Virtual sink for capturing browser audio
-load-module module-virtual-sink sink_name=meeting_audio sink_properties=device.description="Meeting_Audio"
-
-# Set defaults
-set-default-sink meeting_audio
-set-default-source meeting_audio.monitor
-```
-
-**`pulse/client.conf`**:
-```
-default-server = unix:/tmp/pulseaudio.socket
-autospawn = no
-daemon-binary = /bin/true
-enable-shm = false
-```
-
----
-
-## Platform-Specific Join Logic
-
-### Google Meet
-
-```python
-async def join_google_meet(page, meeting_url: str, display_name: str = "CCPM Bot"):
-    """Join Google Meet as guest."""
-    await page.goto(meeting_url)
-
-    # Dismiss "Join with Google Meet app" if shown
-    try:
-        await page.click('text="Join now"', timeout=5000)
-    except:
-        pass
-
-    # Enter display name
-    name_input = await page.wait_for_selector('input[placeholder="Your name"]')
-    await name_input.fill(display_name)
-
-    # Mute mic/camera before joining
-    await page.click('[aria-label*="microphone"]')  # Toggle off
-    await page.click('[aria-label*="camera"]')      # Toggle off
-
-    # Click "Ask to join" or "Join now"
-    join_btn = await page.wait_for_selector('button:has-text("Join"), button:has-text("Ask to join")')
-    await join_btn.click()
-
-    # Wait for meeting to load
-    await page.wait_for_selector('[data-meeting-title]', timeout=60000)
-    print("[meet] Successfully joined meeting")
-```
-
-### Microsoft Teams
-
-```python
-async def join_teams_meeting(page, meeting_url: str, display_name: str = "CCPM Bot"):
-    """Join Teams meeting as guest (no auth required)."""
-    # Add params to skip app prompt
-    url = f"{meeting_url}?msLaunch=false&directDl=true&suppressPrompt=true"
-
-    # Set consistent User-Agent (Teams serves different DOM based on UA)
-    await page.set_extra_http_headers({
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36'
-    })
-
-    await page.goto(url)
-
-    # Click "Continue on this browser"
-    await page.click('text="Continue on this browser"', timeout=10000)
-
-    # Enter name
-    name_input = await page.wait_for_selector('input[data-tid="prejoin-display-name-input"]')
-    await name_input.fill(display_name)
-
-    # Disable mic/camera
-    await page.click('[data-tid="prejoin-audio-toggle"]')
-    await page.click('[data-tid="prejoin-video-toggle"]')
-
-    # Join
-    await page.click('[data-tid="prejoin-join-button"]')
-    await page.wait_for_selector('[data-tid="meeting-stage"]', timeout=60000)
-    print("[teams] Successfully joined meeting")
-```
-
-### Zoom
-
-```python
-async def join_zoom_meeting(page, meeting_url: str, display_name: str = "CCPM Bot"):
-    """Join Zoom via web client (limited features)."""
-    # Convert to web client URL
-    # From: https://zoom.us/j/123456789
-    # To:   https://zoom.us/wc/join/123456789
-    meeting_id = meeting_url.split('/j/')[-1].split('?')[0]
-    web_url = f"https://zoom.us/wc/join/{meeting_id}"
-
-    await page.goto(web_url)
-
-    # Enter name
-    name_input = await page.wait_for_selector('#inputname')
-    await name_input.fill(display_name)
-
-    # Check "I agree to Terms"
-    await page.click('#wc_agree1')
-
-    # Join
-    await page.click('button:has-text("Join")')
-
-    # Handle password if required
-    try:
-        pwd_input = await page.wait_for_selector('#inputpasscode', timeout=5000)
-        raise Exception("Password-protected meetings not supported")
-    except:
-        pass
-
-    await page.wait_for_selector('.meeting-client', timeout=60000)
-    print("[zoom] Successfully joined meeting")
-```
-
----
-
-## Audio Capture Pipeline
-
-```
-Browser Audio → PulseAudio Virtual Sink → FFmpeg → Vosk ASR → Trigger LLM
-     ↓                    ↓                  ↓         ↓           ↓
-  WebRTC         meeting_audio.monitor    stdin     JSON      YES/NO
-```
-
-### Updated ASR for Container
-
-```python
-def start(self, on_transcript, audio_source="meeting_audio.monitor"):
-    """Start streaming ASR from PulseAudio virtual sink."""
-
-    # Capture from PulseAudio sink monitor
-    self._ffmpeg_proc = subprocess.Popen([
-        "ffmpeg",
-        "-f", "pulse",
-        "-i", audio_source,  # meeting_audio.monitor
-        "-ar", "16000",
-        "-ac", "1",
-        "-f", "s16le",
-        "-acodec", "pcm_s16le",
-        "-"
-    ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-```
-
----
-
-## Kubernetes Deployment
-
-### Updated Job Template
-
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: meeting-bot-${MEETING_ID}
-  namespace: robert
-spec:
-  ttlSecondsAfterFinished: 3600
-  backoffLimit: 0
-  template:
-    spec:
-      restartPolicy: Never
-      containers:
-      - name: bot
-        image: meeting-bot:latest
-        env:
-        - name: MEETING_URL
-          value: "${MEETING_URL}"
-        - name: MEETING_PLATFORM
-          value: "${PLATFORM}"  # google-meet | teams | zoom
-        - name: DISPLAY
-          value: ":99"
-        - name: PULSE_SERVER
-          value: "unix:/tmp/pulseaudio.socket"
-        - name: OLLAMA_URL
-          value: "http://ollama:11434"
-        - name: TRIGGER_MODEL
-          value: "phi3:mini"
-        - name: VOSK_MODEL_PATH
-          value: "/app/models/vosk-model-small-en-us-0.15"
-        resources:
-          requests:
-            memory: "2Gi"
-            cpu: "1"
-          limits:
-            memory: "4Gi"
-            cpu: "2"
-        securityContext:
-          capabilities:
-            add: ["SYS_ADMIN"]  # For Chrome sandbox
-        volumeMounts:
-        - name: dshm
-          mountPath: /dev/shm
-        - name: output
-          mountPath: /app/output
-      volumes:
-      - name: dshm
-        emptyDir:
-          medium: Memory
-          sizeLimit: "2Gi"  # Increased for browser
-      - name: output
-        emptyDir: {}
-      nodeSelector:
-        kubernetes.io/arch: arm64
-```
-
----
-
-## ARM64 Considerations
-
-### Browser Compatibility
-
-| Browser | ARM64 Support | Notes |
-|---------|---------------|-------|
-| Chromium (apt) | ✅ Yes | `apt install chromium-browser` |
-| Chrome (Google) | ❌ No | Only x86_64 on Linux |
-| Playwright Chromium | ✅ Yes | `playwright install chromium` |
-| Firefox | ✅ Yes | Works but less common for bots |
-
-### Recommended ARM64 Stack
-
-```dockerfile
-# Use Ubuntu base (better ARM64 support than Alpine)
-FROM --platform=linux/arm64 ubuntu:22.04
-
-# Install Chromium from Ubuntu repos (ARM64 native)
-RUN apt-get install -y chromium-browser
-
-# OR use Playwright's ARM64 build
-RUN pip install playwright && playwright install chromium
-```
-
-### x86 Fallback
-
-If ARM64 doesn't work, add x86 node and use:
-```yaml
-nodeSelector:
-  kubernetes.io/arch: amd64
-```
-
----
-
-## Implementation Order
-
-### Phase 1: Container Build (Day 1)
-1. Create `Dockerfile` with Xvfb + PulseAudio + Chromium
-2. Create `entrypoint.sh` to start audio stack
-3. Build and test locally with `docker run`
-
-### Phase 2: Platform Joining (Day 2)
-1. Implement Google Meet join logic (easiest)
-2. Test with real meeting
-3. Add Teams and Zoom support
-
-### Phase 3: Audio Pipeline (Day 3)
-1. Verify PulseAudio captures browser audio
-2. Connect FFmpeg to Vosk
-3. Test end-to-end transcription
-
-### Phase 4: K8s Deployment (Day 4)
-1. Push image to registry
-2. Update job template
-3. Deploy and test
-
----
-
-## Reference Implementations
-
-### Best Open-Source Examples
-
-| Project | URL | Why Use It |
-|---------|-----|------------|
-| **ScreenApp** | [github.com/screenappai/meeting-bot](https://github.com/screenappai/meeting-bot) | Playwright, multi-platform, MIT license |
-| **Vexa** | [github.com/Vexa-ai/vexa](https://github.com/Vexa-ai/vexa) | Python, Whisper integration, Apache 2.0 |
-| **Recall Blog** | [recall.ai/blog](https://www.recall.ai/blog/how-i-built-an-in-house-google-meet-bot) | Detailed build guide |
-
-### Borrow From ScreenApp
+#### Option C: Remove Docker CLI Entirely
 
 ```bash
-git clone https://github.com/screenappai/meeting-bot
-# Look at:
-# - Dockerfile
-# - src/browser/ (Playwright setup)
-# - src/platforms/ (Meet/Teams/Zoom handlers)
+# Remove docker CLI package
+sudo apt remove docker-ce-cli  # Debian/Ubuntu
+# or
+sudo yum remove docker-ce-cli  # RHEL/CentOS
+
+# Ensure nerdctl is installed
+# See: https://github.com/containerd/nerdctl/releases
+```
+
+**Source:** [Docker to nerdctl Migration Guide](https://medium.com/@pirocheto/installation-guide-for-migrating-from-docker-to-containerd-nerdctl-0847e30d608c)
+
+---
+
+### Solution 3: CLAUDE.md Rules (Supplementary Only)
+
+**Reliability:** Low to Medium (can be deprioritized)
+**Complexity:** Very Low
+**Persistence:** Can be pushed out of context window
+
+Your existing `docker-operations.md` rule is a good start but should be supplemented with hooks.
+
+**Why CLAUDE.md is insufficient:**
+
+> "An instruction in your CLAUDE.md file is a suggestion. The AI will probably follow it, but in a long conversation, it might get pushed out of the context window or just de-prioritized. A hook, on the other hand, is a hard-coded rule."
+
+**Source:** [Claude Code Hooks: Guardrails That Actually Work](https://paddo.dev/blog/claude-code-hooks-guardrails/)
+
+**Recommendation:** Keep your existing rule for documentation and guidance, but enforce with hooks.
+
+---
+
+### Solution 4: Upgrade Docker (If You Must Use Docker)
+
+If you cannot migrate to nerdctl:
+
+1. **Upgrade to Docker 27.4.0+** - Contains the BuildKit timeout fix
+2. **Use containerd 1.7.x** - Avoids shim leak issues in 2.x
+3. **Monitor shim processes:**
+   ```bash
+   watch 'ps aux | grep containerd-shim | wc -l'
+   ```
+4. **Set resource limits:**
+   ```bash
+   # In /etc/docker/daemon.json
+   {
+     "containerd-snapshotter": {
+       "gc": true,
+       "gc-config": {
+         "schedule": "24h"
+       }
+     }
+   }
+   ```
+
+---
+
+## Part 3: Implementation Checklist
+
+### Immediate Actions (Today)
+
+- [ ] Create `.claude/hooks/block-docker.py` with the script above
+- [ ] Add PreToolUse hook to `.claude/settings.json`
+- [ ] Test by asking Claude to run `docker build` - should be blocked
+
+### Short-Term Actions (This Week)
+
+- [ ] Create system-level docker wrapper script
+- [ ] Verify nerdctl is installed and functional: `nerdctl version`
+- [ ] Update any existing scripts that call `docker` to use `nerdctl`
+- [ ] Add monitoring for containerd-shim process count
+
+### Validation
+
+Test that enforcement works:
+
+```
+# In Claude Code session:
+"Run docker build -t test ."
+
+# Expected response:
+"I cannot run docker build as it's blocked by a PreToolUse hook.
+ Use nerdctl build instead: nerdctl build -t test ."
 ```
 
 ---
 
-## Files to Create
+## Limitations and Open Questions
 
-```
-k8s/meeting-bot/
-├── Dockerfile              # Container build
-├── entrypoint.sh           # Audio stack startup
-├── pulse/
-│   ├── default.pa          # PulseAudio config
-│   └── client.conf         # Client config
-├── requirements.txt        # Python deps
-└── job-template.yaml       # Updated K8s job
+### Limitations
 
-scripts/meeting-bot/
-├── platforms/
-│   ├── google_meet.py      # Meet join logic
-│   ├── teams.py            # Teams join logic
-│   └── zoom.py             # Zoom join logic
-└── bot.py                  # Main bot (updated)
-```
+1. **Hook bypass via scripts** - If Claude writes and executes a shell script that contains `docker build`, the hook only sees the script execution, not the docker command within
+2. **nerdctl feature gaps** - Some advanced Docker commands may not have nerdctl equivalents
+3. **Namespace handling** - nerdctl uses containerd namespaces; images built without `-n k8s.io` won't be visible to Kubernetes
+
+### What Would Change Our Conclusions
+
+1. Evidence that nerdctl also triggers the BuildKit timeout issue
+2. A Docker update that fundamentally changes the daemon architecture
+3. Claude Code implementing command-level analysis for script contents
 
 ---
 
-## Success Criteria
+## Sources
 
-✅ **"What exactly do I need to add to make a pod join a meeting and output transcript.json?"**
+### Primary Sources (Grade A)
+- [moby/moby Issue #48569: dockerd fails with containerd snapshotter](https://github.com/moby/moby/issues/48569)
+- [moby/moby PR #48953: Remove buildkit init timeout](https://github.com/moby/moby/pull/48953)
+- [containerd/containerd Issue #12344: Shim process leaks](https://github.com/containerd/containerd/issues/12344)
+- [containerd/nerdctl: Official Repository](https://github.com/containerd/nerdctl)
+- [Claude Code Hooks Documentation](https://code.claude.com/docs/en/hooks-guide)
 
-1. **Dockerfile** with:
-   - Ubuntu 22.04 base
-   - Xvfb, PulseAudio, Chromium, FFmpeg
-   - Python + Playwright + Vosk
+### Secondary Sources (Grade B)
+- [containerd/containerd Issue #7496: Shim leaks under high disk I/O](https://github.com/containerd/containerd/issues/7496)
+- [Claude Code Hooks: Guardrails That Actually Work](https://paddo.dev/blog/claude-code-hooks-guardrails/)
+- [Docker vs Podman vs Containerd vs nerdctl Comparison](https://sanj.dev/post/docker-vs-podman-comparison)
 
-2. **entrypoint.sh** that:
-   - Starts PulseAudio with virtual sink
-   - Starts Xvfb on :99
-   - Runs the bot
-
-3. **Platform handlers** for:
-   - Google Meet (guest join)
-   - Teams (guest join)
-   - Zoom (web client)
-
-4. **Audio routing** from:
-   - Browser → PulseAudio → FFmpeg → Vosk
-
-5. **K8s Job** with:
-   - 4Gi memory, 2 CPU
-   - SYS_ADMIN capability
-   - /dev/shm mount (2Gi)
-
----
-
-## Sources (K8s Meeting Bot Research)
-
-### Container Audio
-- [x11docker Wiki: Container Sound](https://github.com/mviereck/x11docker/wiki/Container-sound:-ALSA-or-Pulseaudio)
-- [PulseAudio in Docker Gist](https://gist.github.com/janvda/e877ee01686697ceaaabae0f3f87da9c)
-- [Mux: Lessons Learned Building Headless Chrome](https://www.mux.com/blog/lessons-learned-building-headless-chrome-as-a-service)
-- [Jibri PulseAudio Issue](https://github.com/jitsi/jibri/issues/160)
-- [openfun/jibri-pulseaudio](https://github.com/openfun/jibri-pulseaudio)
-- [Walker Griggs: PipeWire in Docker](https://walkergriggs.com/2022/12/03/pipewire_in_docker/)
-
-### Browser Automation
-- [ScreenApp Meeting Bot](https://github.com/screenappai/meeting-bot) - MIT
-- [Recall.ai Blog: Google Meet Bot](https://www.recall.ai/blog/how-i-built-an-in-house-google-meet-bot)
-- [Recall.ai Blog: Teams Bot](https://www.recall.ai/blog/how-to-build-a-microsoft-teams-bot)
-- [Recall.ai Blog: Zoom Bot](https://www.recall.ai/blog/how-to-build-a-zoom-bot)
-- [puppeteer-extra-plugin-stealth](https://www.npmjs.com/package/puppeteer-extra-plugin-stealth)
-
-### Open-Source Meeting Bots
-- [Vexa](https://github.com/Vexa-ai/vexa) - Apache 2.0
-- [dunkbing/meeting-bot](https://github.com/dunkbing/meeting-bot)
-- [puppeteer-stream](https://github.com/SamuelScheit/puppeteer-stream)
-- [OmGuptaIND/Recorder](https://github.com/OmGuptaIND/recorder)
-
-### ARM64 Browser
-- [Puppeteer ARM64 Issue #7740](https://github.com/puppeteer/puppeteer/issues/7740)
-- [JacobLinCool/playwright-docker](https://github.com/JacobLinCool/playwright-docker)
-- [browserless/chrome Docker Hub](https://hub.docker.com/r/browserless/chrome)
-- [Sparticuz/chromium](https://github.com/Sparticuz/chromium)
-
-### Kubernetes
-- [Kubernetes Sound Discussion](https://discuss.kubernetes.io/t/sound-on-kubernetes/12261)
-- [k8s-device-plugin-v4l2loopback](https://github.com/mpreu/k8s-device-plugin-v4l2loopback)
-
----
-
-*Research completed: January 17, 2026*
-*Methodology: Graph of Thoughts (GoT) with 7-phase deep research*
-*Total sources: 50+ primary and secondary sources*
-*Confidence: HIGH for recommendations, MEDIUM for ARM64 continuous performance claims*
+### Supplementary Sources (Grade C)
+- [Docker to nerdctl Migration Guide](https://medium.com/@pirocheto/installation-guide-for-migrating-from-docker-to-containerd-nerdctl-0847e30d608c)
+- [Building Images with containerd](https://www.jimangel.io/posts/building-images-with-containerd/)
+- [Embracing Nerdctl: Shift from DockerD to ContainerD](https://blogs.halodoc.io/docker-removal-nerdctl-adoption/)

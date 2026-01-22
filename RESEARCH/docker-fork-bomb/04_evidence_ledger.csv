@@ -1,0 +1,11 @@
+claim_id,claim,claim_type,source_url,source_grade,supports,independence_check,notes
+E1,"Docker daemon with containerd snapshotter can fail to start with 100% CPU for 1-2 minutes then exit with context deadline exceeded when many images/builds exist",C1,https://github.com/moby/moby/issues/48569,A,SUPPORTS,Independent - GitHub issue with maintainer responses,Root cause confirmed as BuildKit init timeout
+E2,"Fix for timeout issue merged in PR #48953 removing buildkit init timeout",C1,https://github.com/moby/moby/pull/48953,A,SUPPORTS,Independent - Official PR merged Nov 2024,Fix in Docker 27.4.0
+E3,"Containerd-shim processes can leak during high pod churn in containerd 2.x",C1,https://github.com/containerd/containerd/issues/12344,A,SUPPORTS,Independent - GitHub issue,Affects v2.0.6 and 2.1.4 but not 1.7.27
+E4,"Shim leaks occur under high disk I/O due to mount.UnmountAll timeout vs GRPC timeout mismatch",C1,https://github.com/containerd/containerd/issues/7496,A,SUPPORTS,Independent - GitHub issue,Root cause: 20-30s unmount vs 10s GRPC timeout
+E5,"nerdctl + containerd can replace docker + dockerd with Docker-compatible CLI",C1,https://github.com/containerd/nerdctl,A,SUPPORTS,Official repo README,CNCF project
+E6,"Claude Code PreToolUse hooks can block commands with exit code 2",C1,https://code.claude.com/docs/en/hooks-guide,A,SUPPORTS,Official documentation,Guaranteed execution vs CLAUDE.md suggestions
+E7,"CLAUDE.md instructions are suggestions that can be deprioritized or pushed out of context window",C1,https://paddo.dev/blog/claude-code-hooks-guardrails/,B,SUPPORTS,Independent analysis,Hooks provide guaranteed enforcement
+E8,"Docker uses centralized daemon architecture while nerdctl interacts directly with containerd",C2,https://sanj.dev/post/docker-vs-podman-comparison,B,SUPPORTS,Technical comparison,Architecture difference
+E9,"BuildKit is used by both docker build and nerdctl build behind the scenes",C2,https://www.jimangel.io/posts/building-images-with-containerd/,B,SUPPORTS,Technical blog,Same underlying build technology
+E10,"Alias docker to nerdctl is common migration pattern",C2,https://medium.com/@pirocheto/installation-guide-for-migrating-from-docker-to-containerd-nerdctl-0847e30d608c,C,SUPPORTS,Migration guide,Used in production environments
