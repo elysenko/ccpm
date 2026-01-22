@@ -59,26 +59,49 @@ Determine if tasks can be created in parallel:
 
 ### 3. Parallel Task Creation (When Possible)
 
-If tasks can be created in parallel, spawn sub-agents:
+If tasks can be created in parallel, spawn sub-agents.
+
+**Prompt engineering notes:**
+- XML tags separate epic context from task specifications
+- Role prompting establishes task file creation expertise
+- Clear output format for verification
 
 ```yaml
 Task:
   description: "Create task files batch {X}"
   subagent_type: "general-purpose"
   prompt: |
-    Create task files for epic: $ARGUMENTS
+    <role>
+    You are a task file creator generating properly formatted task markdown files.
+    You work in parallel with other agents, each handling a different batch.
+    Your job is to create consistent, well-structured task files.
+    </role>
 
+    <context>
+    <epic>$ARGUMENTS</epic>
+    <output_dir>.claude/epics/$ARGUMENTS/</output_dir>
+    </context>
+
+    <batch>
     Tasks to create:
     - {list of 3-4 tasks for this batch}
+    </batch>
 
-    For each task:
-    1. Create file: .claude/epics/$ARGUMENTS/{number}.md
-    2. Use exact format with frontmatter and all sections
-    3. Follow task breakdown from epic
-    4. Set parallel/depends_on fields appropriately
-    5. Number sequentially (001.md, 002.md, etc.)
+    <instructions>
+    For each task in your batch:
+    1. Create file at: .claude/epics/$ARGUMENTS/{number}.md
+    2. Include complete frontmatter (name, status, created, updated, depends_on, parallel, conflicts_with)
+    3. Follow the task breakdown from the epic specification
+    4. Set parallel: true/false and depends_on fields based on task relationships
+    5. Number sequentially within your batch range
+    </instructions>
 
-    Return: List of files created
+    <output_format>
+    Return list of files created:
+    - .claude/epics/$ARGUMENTS/001.md
+    - .claude/epics/$ARGUMENTS/002.md
+    - .claude/epics/$ARGUMENTS/003.md
+    </output_format>
 ```
 
 ### 4. Task File Format with Frontmatter

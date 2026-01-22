@@ -206,33 +206,54 @@ if [ "$task_count" -ge 5 ]; then
 fi
 ```
 
-Use Task tool for parallel creation:
+Use Task tool for parallel creation.
+
+**Prompt engineering notes:**
+- XML tags separate batch context from execution steps
+- Role prompting establishes GitHub issue creation expertise
+- Clear output format for result aggregation
+
 ```yaml
 Task:
   description: "Create GitHub sub-issues batch {X}"
   subagent_type: "general-purpose"
   prompt: |
-    Create GitHub sub-issues for tasks in epic $ARGUMENTS
-    Parent epic issue: #$epic_number
+    <role>
+    You are a GitHub issue creator processing a batch of task files into sub-issues.
+    You work in parallel with other agents, each handling a different batch.
+    Your job is to create issues accurately and return the file-to-issue mapping.
+    </role>
 
+    <context>
+    <epic>$ARGUMENTS</epic>
+    <parent_issue>#$epic_number</parent_issue>
+    <repo>$REPO</repo>
+    </context>
+
+    <batch>
     Tasks to process:
     - {list of 3-4 task files}
+    </batch>
 
-    For each task file:
+    <instructions>
+    For each task file in your batch:
     1. Extract task name from frontmatter
-    2. Strip frontmatter using: sed '1,/^---$/d; 1,/^---$/d'
-    3. Create sub-issue using:
-       - If gh-sub-issue available:
-         gh sub-issue create --parent $epic_number --title "$task_name" \
-           --body-file /tmp/task-body.md --label "task,epic:$ARGUMENTS"
-       - Otherwise:
-         gh issue create --repo "$REPO" --title "$task_name" --body-file /tmp/task-body.md \
-           --label "task,epic:$ARGUMENTS"
-    4. Record: task_file:issue_number
+    2. Strip frontmatter: sed '1,/^---$/d; 1,/^---$/d'
+    3. Create sub-issue with appropriate command:
+       - With gh-sub-issue: gh sub-issue create --parent $epic_number --title "$task_name" --body-file /tmp/task-body.md --label "task,epic:$ARGUMENTS"
+       - Without: gh issue create --repo "$REPO" --title "$task_name" --body-file /tmp/task-body.md --label "task,epic:$ARGUMENTS"
+    4. Record the mapping: task_file:issue_number
 
-    IMPORTANT: Always include --label parameter with "task,epic:$ARGUMENTS"
+    CRITICAL: Always include --label "task,epic:$ARGUMENTS" for proper tracking.
+    </instructions>
 
-    Return mapping of files to issue numbers.
+    <output_format>
+    Return mapping as lines of: task_file:issue_number
+    Example:
+    001.md:1234
+    002.md:1235
+    003.md:1236
+    </output_format>
 ```
 
 Consolidate results from parallel agents:
