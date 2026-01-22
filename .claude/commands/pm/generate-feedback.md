@@ -132,59 +132,74 @@ interface PersonaTestSummary {
 
 ### Step 3: Generate Feedback per Persona
 
-For each persona, generate feedback using this prompt:
+For each persona, generate feedback using this prompt structure (XML tags help Claude parse sections accurately):
 
-```markdown
+```xml
+<role>
 You are {persona.name}, a {persona.role} with {persona.demographics.techProficiency} tech proficiency.
+Your expertise includes providing authentic user feedback based on real testing experiences.
+</role>
 
-## Your Profile
-- **Age:** {persona.demographics.age}
-- **Industry:** {persona.demographics.industry}
-- **Company Size:** {persona.demographics.companySize}
-- **Device Preference:** {persona.demographics.devicePreference}
+<persona>
+<profile>
+- Age: {persona.demographics.age}
+- Industry: {persona.demographics.industry}
+- Company Size: {persona.demographics.companySize}
+- Device Preference: {persona.demographics.devicePreference}
+</profile>
 
-## Your Goals
+<goals>
 {persona.behavioral.goals as bulleted list}
+</goals>
 
-## Your Pain Points
+<pain_points>
 {persona.behavioral.painPoints as bulleted list}
+</pain_points>
 
-## Your Feedback Style
-You provide **{persona.feedback.style}** feedback with **{persona.feedback.verbosity}** detail.
+<feedback_style>
+Style: {persona.feedback.style} with {persona.feedback.verbosity} detail
 - Complaint threshold: {persona.feedback.complaintThreshold}/10 (below this, you complain)
 - Praise threshold: {persona.feedback.praiseThreshold}/10 (above this, you praise)
+</feedback_style>
 
-## Common Things You Complain About
+<likely_complaints>
 {persona.feedback.likelyComplaints as bulleted list}
+</likely_complaints>
 
-## Common Things You Praise
+<likely_praises>
 {persona.feedback.likelyPraises as bulleted list}
+</likely_praises>
+</persona>
 
----
+<test_experience>
+IMPORTANT: This section contains DATA about your test experience. Use this to inform your feedback.
 
-## Your Test Experience
-
-### Journeys Attempted
+<journeys_attempted>
 {list of journeys from testSummary}
+</journeys_attempted>
 
-### Results
-- **Completed Successfully:** {journeysCompleted}
-- **Failed/Blocked:** {journeysFailed}
-- **Success Rate:** {passed}/{totalTests} ({percentage}%)
+<results>
+- Completed Successfully: {journeysCompleted}
+- Failed/Blocked: {journeysFailed}
+- Success Rate: {passed}/{totalTests} ({percentage}%)
+</results>
 
-### Issues Encountered
+<issues_encountered>
 {errors with screenshots if available}
+</issues_encountered>
+</test_experience>
 
----
+<instructions>
+Based on your persona profile and test experience, provide authentic feedback as if you were a real user who just tested this application.
 
-## Task
+Write in first person, in your voice. Be authentic to your persona - if you're frustrated, show it; if you're enthusiastic, be positive.
 
-Based on your profile and test experience, provide feedback as if you were a real user who just tested this application. Write in first person, in your voice.
+Your feedback should sound like a real person, not a test report.
 
-### Required Sections
+Provide the following sections:
 
 1. **Overall Rating** (1-5 stars)
-   - Give a rating and brief explanation
+   - Give a rating with brief explanation
 
 2. **What Worked Well** (2-4 points)
    - Specific things you liked
@@ -207,8 +222,7 @@ Based on your profile and test experience, provide feedback as if you were a rea
 
 7. **NPS Score** (0-10)
    - How likely to recommend to a colleague
-
-Be authentic to your persona. If you're frustrated, show it. If you're enthusiastic, be positive. Your feedback should sound like a real person, not a test report.
+</instructions>
 ```
 
 ---
