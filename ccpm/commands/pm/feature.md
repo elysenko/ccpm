@@ -72,7 +72,7 @@ PHASE 1: Input Analysis
 PHASE 2: Discovery (conditional)
     - Simple: Skip to Phase 3
     - Medium: /pm:decompose → PRDs
-    - Complex: /pm:interrogate → /pm:extract-findings → /pm:roadmap-generate → /pm:decompose
+    - Complex: /pm:interrogate → /pm:extract-findings → /pm:roadmap-generate → /pm:roadmap-verify → [/pm:roadmap-research if gaps] → /pm:decompose
     ↓
 PHASE 3: PRD Validation
     - Verify at least 1 PRD exists
@@ -385,11 +385,24 @@ Needs research and structured discovery:
    - Generates MVP roadmap with phases and dependencies
    - Outputs to `.claude/scopes/$SESSION_NAME/07_roadmap.md`
 
-4. **Invoke:** Use Skill tool: `pm:decompose` with args: `.claude/scopes/$SESSION_NAME/07_roadmap.md`
+4. **Invoke:** Use Skill tool: `pm:roadmap-verify` with args: `$SESSION_NAME`
+   - Verifies roadmap against scope documents
+   - Detects coverage gaps, dependency issues, scoring problems
+   - Outputs to `.claude/scopes/$SESSION_NAME/08_roadmap_verification.md`
+   - Returns gap count and severity summary
+
+5. **Conditional: If HIGH or MEDIUM gaps found:**
+   Invoke Skill tool: `pm:roadmap-research` with args: `$SESSION_NAME`
+   - Researches each gap using /dr
+   - Updates `07_roadmap.md` with fixes
+   - Outputs research log to `.claude/scopes/$SESSION_NAME/09_roadmap_research.md`
+   - Skip if no HIGH/MEDIUM gaps (proceed directly to decompose)
+
+6. **Invoke:** Use Skill tool: `pm:decompose` with args: `.claude/scopes/$SESSION_NAME/07_roadmap.md`
    - Breaks roadmap into independent PRDs with dependency management
    - Outputs PRDs to `.claude/prds/{epic_id}/`
 
-5. **Record PRDs:**
+7. **Record PRDs:**
 ```bash
 ls -t .claude/prds/*.md | head -30 > "$SESSION_DIR/prds.txt"
 ```
@@ -742,6 +755,8 @@ Input: Vague "build an e-commerce platform" request
 | `Skill: pm:interrogate` | Deep discovery | Complex path |
 | `Skill: pm:extract-findings` | Generate scope docs | After interrogate |
 | `Skill: pm:roadmap-generate` | Create phased roadmap | After extract-findings (Complex) |
+| `Skill: pm:roadmap-verify` | Detect gaps in roadmap | After roadmap-generate (Complex) |
+| `Skill: pm:roadmap-research` | Fill gaps with /dr | If HIGH/MEDIUM gaps found |
 | `Skill: pm:decompose` | Break into PRDs | Medium/Complex paths |
 | `Task: pm:prd-complete` | Execute single PRD | Single PRD (via Task agent) |
 | `Skill: pm:batch-process` | Execute multiple PRDs | Multiple PRDs |
