@@ -143,25 +143,16 @@ main() {
     verify_db
     check_issues_table
 
-    # Determine test_run_id if not provided
-    if [[ -z "${TEST_RUN_ID}" ]]; then
-        TEST_RUN_ID=$(db_query "SELECT test_run_id FROM issues
-                               WHERE session_name='${SESSION}' AND status='${STATUS_FILTER}'
-                               ORDER BY created_at DESC LIMIT 1")
+    # test_run_id is now optional - if not provided, process all matching issues for session
+    local run_filter=""
+    if [[ -n "${TEST_RUN_ID}" ]]; then
+        run_filter="AND test_run_id='${TEST_RUN_ID}'"
+        log "Session: ${SESSION}"
+        log "Test Run: ${TEST_RUN_ID}"
+    else
+        log "Session: ${SESSION}"
+        log "Test Run: (all runs)"
     fi
-
-    if [[ -z "${TEST_RUN_ID}" ]]; then
-        log_warn "No ${STATUS_FILTER} issues found for session: ${SESSION}"
-        echo ""
-        echo "Available issue statuses:"
-        db_query "SELECT status, COUNT(*) FROM issues WHERE session_name='${SESSION}' GROUP BY status ORDER BY status"
-        echo ""
-        echo "To change filter: $0 ${SESSION} --status-filter <status>"
-        exit 1
-    fi
-
-    log "Session: ${SESSION}"
-    log "Test Run: ${TEST_RUN_ID}"
     log "Status Filter: ${STATUS_FILTER}"
     echo ""
 
@@ -169,7 +160,7 @@ main() {
     local issue_count
     issue_count=$(db_query "SELECT COUNT(*) FROM issues
                             WHERE session_name='${SESSION}'
-                            AND test_run_id='${TEST_RUN_ID}'
+                            ${run_filter}
                             AND status='${STATUS_FILTER}'")
 
     log "Found ${issue_count} ${STATUS_FILTER} issues"
@@ -189,16 +180,16 @@ main() {
     # Generate JSON using SQL JSON functions
     # Escape session name for SQL
     local escaped_session="${SESSION//\'/\'\'}"
-    local escaped_run="${TEST_RUN_ID//\'/\'\'}"
+    local escaped_run="${TEST_RUN_ID:-all}"
 
     db_query_json "SELECT json_build_object(
         'session', '${escaped_session}',
         'testRun', '${escaped_run}',
         'analyzedAt', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'),
         'metrics', json_build_object(
-            'issuesFound', (SELECT COUNT(*) FROM issues WHERE session_name='${escaped_session}' AND test_run_id='${escaped_run}'),
-            'issuesTriaged', (SELECT COUNT(*) FROM issues WHERE session_name='${escaped_session}' AND test_run_id='${escaped_run}' AND status='triaged'),
-            'issuesResolved', (SELECT COUNT(*) FROM issues WHERE session_name='${escaped_session}' AND test_run_id='${escaped_run}' AND status='resolved')
+            'issuesFound', (SELECT COUNT(*) FROM issues WHERE session_name='${escaped_session}' ${run_filter}),
+            'issuesTriaged', (SELECT COUNT(*) FROM issues WHERE session_name='${escaped_session}' ${run_filter} AND status='triaged'),
+            'issuesResolved', (SELECT COUNT(*) FROM issues WHERE session_name='${escaped_session}' ${run_filter} AND status='resolved')
         ),
         'prioritizedIssues', COALESCE((
             SELECT json_agg(issue_obj ORDER BY rice_score DESC NULLS LAST)
@@ -231,7 +222,7 @@ main() {
                 ) as issue_obj, rice_score
                 FROM issues
                 WHERE session_name='${escaped_session}'
-                  AND test_run_id='${escaped_run}'
+                  ${run_filter}
                   AND status='${STATUS_FILTER}'
                 ORDER BY rice_score DESC NULLS LAST
                 LIMIT ${MAX_PRDS}
@@ -279,7 +270,7 @@ main() {
                           SET status = 'prd_created',
                               updated_at = NOW()
                           WHERE session_name='${escaped_session}'
-                            AND test_run_id='${escaped_run}'
+                            ${run_filter}
                             AND status='${STATUS_FILTER}'
                           RETURNING issue_id")
 

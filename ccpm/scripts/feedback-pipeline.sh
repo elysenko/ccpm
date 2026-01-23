@@ -705,12 +705,13 @@ step_research_issues() {
   log "Step 5: Researching fixes"
   update_step_status 5 "running"
 
+  # Process ALL open issues for this session (not just current test run)
+  # This ensures issues from previous runs or manual imports are also processed
   local issues
   issues=$(db_query "
     SELECT issue_id, title, description, category, severity
     FROM issues
     WHERE session_name='${SESSION}'
-      AND test_run_id='${TEST_RUN_ID}'
       AND status='open'
     ORDER BY
       CASE severity
@@ -752,8 +753,8 @@ Research: root causes, best practices, specific code fixes for this codebase"
              SET research_context = '${escaped_research}',
                  status = 'triaged'
              WHERE session_name='${SESSION}'
-               AND test_run_id='${TEST_RUN_ID}'
-               AND issue_id='${issue_id}'"
+               AND issue_id='${issue_id}'
+               AND status='open'"
 
     ((++triaged_count))
     log_success "${issue_id} triaged"
@@ -769,12 +770,12 @@ step_fix_issues() {
   log "Step 6: Fixing issues"
   update_step_status 6 "running"
 
+  # Process ALL triaged issues for this session (not just current test run)
   local issues
   issues=$(db_query "
     SELECT issue_id, title, description, category, severity, research_context
     FROM issues
     WHERE session_name='${SESSION}'
-      AND test_run_id='${TEST_RUN_ID}'
       AND status='triaged'
     ORDER BY
       CASE severity
@@ -845,7 +846,6 @@ ${research}"
                      fix_attempts = ${attempt},
                      resolved_at = NOW()
                  WHERE session_name='${SESSION}'
-                   AND test_run_id='${TEST_RUN_ID}'
                    AND issue_id='${issue_id}'"
 
         ((++resolved_count))
@@ -860,7 +860,6 @@ ${research}"
         db_query "UPDATE issues
                  SET fix_attempts = ${attempt}
                  WHERE session_name='${SESSION}'
-                   AND test_run_id='${TEST_RUN_ID}'
                    AND issue_id='${issue_id}'"
       fi
     done
@@ -871,7 +870,6 @@ ${research}"
                SET status = 'escalated',
                    fix_attempts = ${max_attempts}
                WHERE session_name='${SESSION}'
-                 AND test_run_id='${TEST_RUN_ID}'
                  AND issue_id='${issue_id}'"
 
       ((++escalated_count))
@@ -892,11 +890,10 @@ step_escalate_to_prds() {
   log "Step 7: Converting escalated issues to PRDs"
   update_step_status 7 "running"
 
-  # Count escalated issues
+  # Count escalated issues (all for session, not just current test run)
   local escalated_count
   escalated_count=$(db_query "SELECT COUNT(*) FROM issues
                               WHERE session_name='${SESSION}'
-                              AND test_run_id='${TEST_RUN_ID}'
                               AND status='escalated'")
 
   if ((escalated_count == 0)); then
@@ -910,16 +907,14 @@ step_escalate_to_prds() {
   # Mark escalated issues as triaged temporarily for PRD generation
   db_query "UPDATE issues SET status='triaged'
             WHERE session_name='${SESSION}'
-            AND test_run_id='${TEST_RUN_ID}'
             AND status='escalated'"
 
   # Call issues-to-prd.sh to generate PRDs
   if [[ -f "${SCRIPT_DIR}/issues-to-prd.sh" ]]; then
-    if "${SCRIPT_DIR}/issues-to-prd.sh" "${SESSION}" --run "${TEST_RUN_ID}" --max "${escalated_count}"; then
+    if "${SCRIPT_DIR}/issues-to-prd.sh" "${SESSION}" --max "${escalated_count}"; then
       local prds_created
       prds_created=$(db_query "SELECT COUNT(*) FROM issues
                                WHERE session_name='${SESSION}'
-                               AND test_run_id='${TEST_RUN_ID}'
                                AND status='prd_created'")
       update_stat "prds_created" "${prds_created:-0}"
       log_success "Created PRDs for ${prds_created:-0} escalated issues"
@@ -928,7 +923,6 @@ step_escalate_to_prds() {
       # Revert status back to escalated
       db_query "UPDATE issues SET status='escalated'
                 WHERE session_name='${SESSION}'
-                AND test_run_id='${TEST_RUN_ID}'
                 AND status='triaged'"
     fi
   else
@@ -936,7 +930,6 @@ step_escalate_to_prds() {
     # Revert status back to escalated
     db_query "UPDATE issues SET status='escalated'
               WHERE session_name='${SESSION}'
-              AND test_run_id='${TEST_RUN_ID}'
               AND status='triaged'"
   fi
 
