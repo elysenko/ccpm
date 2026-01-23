@@ -1041,16 +1041,33 @@ main() {
   # Handle options
   case "${1:-}" in
     --resume)
-      # Get last completed step and resume from next
-      local current
+      # Get current step and check its status
+      local current step_status
       current=$(grep "^current_step:" "${FEEDBACK_STATE_FILE}" | cut -d: -f2 | tr -d ' ')
+
       if [[ -z "${current}" ]] || ((current == 0)); then
         run_pipeline 1
       elif ((current >= 7)); then
-        echo "Pipeline already complete for: ${SESSION}"
-        show_status
+        # Check if step 7 actually completed
+        step_status=$(grep "^  7: {" "${FEEDBACK_STATE_FILE}" | grep -oP 'status: \K[a-z]+' || echo "pending")
+        if [[ "${step_status}" == "complete" ]]; then
+          echo "Pipeline already complete for: ${SESSION}"
+          show_status
+        else
+          log_warn "Resuming interrupted step 7"
+          run_pipeline 7
+        fi
       else
-        run_pipeline $((current + 1))
+        # Check status of current step
+        step_status=$(grep "^  ${current}: {" "${FEEDBACK_STATE_FILE}" | grep -oP 'status: \K[a-z]+' || echo "pending")
+        if [[ "${step_status}" == "complete" ]]; then
+          # Step finished, move to next
+          run_pipeline $((current + 1))
+        else
+          # Step was running or pending, re-run it
+          log_warn "Resuming interrupted step ${current} (status: ${step_status})"
+          run_pipeline "${current}"
+        fi
       fi
       ;;
     --status)
