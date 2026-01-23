@@ -748,9 +748,9 @@ Description: ${description}
 
 Research: root causes, best practices, specific code fixes for this codebase"
 
-    # Run deep research
+    # Run deep research (redirect stdin to prevent consuming while loop input)
     local research_output
-    research_output=$(claude --dangerously-skip-permissions --print "/dr ${prompt}" 2>&1 || echo "Research incomplete")
+    research_output=$(claude --dangerously-skip-permissions --print "/dr ${prompt}" </dev/null 2>&1 || echo "Research incomplete")
 
     # Escape for SQL
     local escaped_research
@@ -849,9 +849,9 @@ ${research}"
 
       echo "### Attempt ${attempt} - $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "${fix_log}"
 
-      # Call fix-problem
+      # Call fix-problem (redirect stdin to prevent consuming while loop input)
       if claude --dangerously-skip-permissions --print \
-        "/pm:fix-problem \"${escaped_context}\" --desired \"${title} is resolved\"" >> "${fix_log}" 2>&1; then
+        "/pm:fix-problem \"${escaped_context}\" --desired \"${title} is resolved\"" </dev/null >> "${fix_log}" 2>&1; then
 
         # Update status to resolved
         db_query "UPDATE issues
