@@ -729,12 +729,17 @@ step_research_issues() {
   local triaged_count=0
   local issue_id title description category severity
 
+  # Debug: show how many issues we'll process
+  local issue_count
+  issue_count=$(echo "${issues}" | grep -c . || echo 0)
+  log "Found ${issue_count} open issues to research"
+
   while IFS='|' read -r issue_id title description category severity; do
     [[ -z "${issue_id}" ]] && continue
     issue_id=$(echo "${issue_id}" | xargs)
     title=$(echo "${title}" | xargs)
 
-    log "Researching: ${issue_id} - ${title}"
+    log "Researching (${triaged_count}/${issue_count}): ${issue_id} - ${title}"
 
     # Build research prompt
     local prompt="How to fix this ${category} issue (${severity} severity):
