@@ -53,12 +53,14 @@ Pipeline Steps:
   4. Analyze and prioritize issues
   5. Deep research on each issue
   6. Fix each issue (with retry/escalation)
+  7. Convert escalated issues to PRDs
 
 Database Status Transitions:
   analyze-feedback creates issue -> status='open'
   /dr completes research        -> status='triaged'
   fix-problem succeeds          -> status='resolved'
   fix-problem fails (3x)        -> status='escalated'
+  issues-to-prd creates PRD     -> status='prd_created'
 
 Output:
   Pipeline state: .claude/pipeline/<session>/feedback-state.yaml
@@ -277,6 +279,7 @@ steps:
   4: {name: analyze_feedback, status: pending}
   5: {name: research_issues, status: pending}
   6: {name: fix_issues, status: pending}
+  7: {name: escalate_to_prds, status: pending}
 stats:
   journeys_tested: 0
   personas_tested: 0
@@ -284,6 +287,7 @@ stats:
   issues_triaged: 0
   issues_resolved: 0
   issues_escalated: 0
+  prds_created: 0
 ---
 EOF
     log "Pipeline state initialized: ${FEEDBACK_STATE_FILE}"
@@ -324,6 +328,7 @@ update_step_status() {
     4) step_name="analyze_feedback" ;;
     5) step_name="research_issues" ;;
     6) step_name="fix_issues" ;;
+    7) step_name="escalate_to_prds" ;;
   esac
 
   sed -i "s/^  ${step_num}: {name: ${step_name}, status: [a-z]*}/  ${step_num}: {name: ${step_name}, status: ${status}}/" "${FEEDBACK_STATE_FILE}"
@@ -331,7 +336,7 @@ update_step_status() {
 
   if [[ "${status}" == "running" ]]; then
     update_feedback_state "status" "in_progress"
-  elif [[ "${status}" == "complete" ]] && ((step_num == 6)); then
+  elif [[ "${status}" == "complete" ]] && ((step_num == 7)); then
     update_feedback_state "status" "complete"
   fi
 }
@@ -882,6 +887,62 @@ ${research}"
   log_success "Fixed ${resolved_count} issues, escalated ${escalated_count}"
 }
 
+# Step 7: Convert escalated issues to PRDs for manual handling.
+step_escalate_to_prds() {
+  log "Step 7: Converting escalated issues to PRDs"
+  update_step_status 7 "running"
+
+  # Count escalated issues
+  local escalated_count
+  escalated_count=$(db_query "SELECT COUNT(*) FROM issues
+                              WHERE session_name='${SESSION}'
+                              AND test_run_id='${TEST_RUN_ID}'
+                              AND status='escalated'")
+
+  if ((escalated_count == 0)); then
+    log "No escalated issues - skipping PRD generation"
+    update_step_status 7 "complete"
+    return 0
+  fi
+
+  log "${escalated_count} issues escalated - converting to PRDs for manual attention"
+
+  # Mark escalated issues as triaged temporarily for PRD generation
+  db_query "UPDATE issues SET status='triaged'
+            WHERE session_name='${SESSION}'
+            AND test_run_id='${TEST_RUN_ID}'
+            AND status='escalated'"
+
+  # Call issues-to-prd.sh to generate PRDs
+  if [[ -f "${SCRIPT_DIR}/issues-to-prd.sh" ]]; then
+    if "${SCRIPT_DIR}/issues-to-prd.sh" "${SESSION}" --run "${TEST_RUN_ID}" --max "${escalated_count}"; then
+      local prds_created
+      prds_created=$(db_query "SELECT COUNT(*) FROM issues
+                               WHERE session_name='${SESSION}'
+                               AND test_run_id='${TEST_RUN_ID}'
+                               AND status='prd_created'")
+      update_stat "prds_created" "${prds_created:-0}"
+      log_success "Created PRDs for ${prds_created:-0} escalated issues"
+    else
+      log_error "PRD generation failed"
+      # Revert status back to escalated
+      db_query "UPDATE issues SET status='escalated'
+                WHERE session_name='${SESSION}'
+                AND test_run_id='${TEST_RUN_ID}'
+                AND status='triaged'"
+    fi
+  else
+    log_error "issues-to-prd.sh not found at ${SCRIPT_DIR}/issues-to-prd.sh"
+    # Revert status back to escalated
+    db_query "UPDATE issues SET status='escalated'
+              WHERE session_name='${SESSION}'
+              AND test_run_id='${TEST_RUN_ID}'
+              AND status='triaged'"
+  fi
+
+  update_step_status 7 "complete"
+}
+
 # Show pipeline status.
 show_status() {
   if [[ ! -f "${FEEDBACK_STATE_FILE}" ]]; then
@@ -897,10 +958,11 @@ show_status() {
 
   # Show issue counts from database
   echo "Database Status:"
-  echo "  Open:      $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='open'")"
-  echo "  Triaged:   $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='triaged'")"
-  echo "  Resolved:  $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='resolved'")"
-  echo "  Escalated: $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='escalated'")"
+  echo "  Open:        $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='open'")"
+  echo "  Triaged:     $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='triaged'")"
+  echo "  Resolved:    $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='resolved'")"
+  echo "  Escalated:   $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='escalated'")"
+  echo "  PRD Created: $(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND status='prd_created'")"
   echo ""
 }
 
@@ -917,7 +979,7 @@ run_pipeline() {
   echo ""
 
   local step
-  for step in $(seq "${start_step}" 6); do
+  for step in $(seq "${start_step}" 7); do
     case "${step}" in
       1) step_ensure_tables ;;
       2) step_test_journeys ;;
@@ -925,25 +987,36 @@ run_pipeline() {
       4) step_analyze_feedback ;;
       5) step_research_issues ;;
       6) step_fix_issues ;;
+      7) step_escalate_to_prds ;;
     esac
 
     echo ""
   done
 
   # Final summary
-  local resolved escalated
+  local resolved escalated prds_created
   resolved=$(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND test_run_id='${TEST_RUN_ID}' AND status='resolved'")
   escalated=$(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND test_run_id='${TEST_RUN_ID}' AND status='escalated'")
+  prds_created=$(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND test_run_id='${TEST_RUN_ID}' AND status='prd_created'")
 
   echo ""
   echo "========================================"
   echo "Pipeline Complete"
   echo "========================================"
   echo ""
-  echo "  Resolved:  ${resolved:-0} issues"
-  echo "  Escalated: ${escalated:-0} issues"
+  echo "  Resolved:     ${resolved:-0} issues"
+  echo "  Escalated:    ${escalated:-0} issues"
+  echo "  PRDs Created: ${prds_created:-0}"
   echo ""
   echo "State: ${FEEDBACK_STATE_FILE}"
+  if ((prds_created > 0)); then
+    echo "PRDs:  .claude/prds/"
+    echo ""
+    echo "Next steps for PRDs:"
+    echo "  1. Review PRDs in .claude/prds/"
+    echo "  2. /pm:prd-parse <name> to create epics"
+    echo "  3. /pm:epic-decompose <name> to create tasks"
+  fi
   echo ""
 }
 
@@ -967,7 +1040,7 @@ main() {
       current=$(grep "^current_step:" "${FEEDBACK_STATE_FILE}" | cut -d: -f2 | tr -d ' ')
       if [[ -z "${current}" ]] || ((current == 0)); then
         run_pipeline 1
-      elif ((current >= 6)); then
+      elif ((current >= 7)); then
         echo "Pipeline already complete for: ${SESSION}"
         show_status
       else
