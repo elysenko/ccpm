@@ -707,9 +707,12 @@ step_research_issues() {
 
   # Process ALL open issues for this session (not just current test run)
   # Use DISTINCT ON to avoid processing duplicate issue_ids from different test runs
+  # Replace newlines in description with spaces to avoid breaking the while read loop
   local issues
   issues=$(db_query "
-    SELECT DISTINCT ON (issue_id) issue_id, title, description, category, severity
+    SELECT DISTINCT ON (issue_id) issue_id, title,
+           REPLACE(REPLACE(COALESCE(description, ''), E'\\n', ' '), E'\\r', ' ') as description,
+           category, severity
     FROM issues
     WHERE session_name='${SESSION}'
       AND status='open'
@@ -772,9 +775,13 @@ step_fix_issues() {
 
   # Process ALL triaged issues for this session (not just current test run)
   # Use DISTINCT ON to avoid processing duplicate issue_ids from different test runs
+  # Replace newlines with spaces to avoid breaking the while read loop
   local issues
   issues=$(db_query "
-    SELECT DISTINCT ON (issue_id) issue_id, title, description, category, severity, research_context
+    SELECT DISTINCT ON (issue_id) issue_id, title,
+           REPLACE(REPLACE(COALESCE(description, ''), E'\\n', ' '), E'\\r', ' ') as description,
+           category, severity,
+           REPLACE(REPLACE(COALESCE(research_context, ''), E'\\n', ' '), E'\\r', ' ') as research_context
     FROM issues
     WHERE session_name='${SESSION}'
       AND status='triaged'
