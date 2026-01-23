@@ -527,13 +527,24 @@ step_test_journeys() {
     [[ -z "${journey_id}" ]] && continue
     ((++journey_count))
 
-    # Fetch journey data from database
+    # Fetch journey data from database (with steps from journey_steps_detailed)
     local journey_data
     journey_data=$(db_query "SELECT json_build_object(
-      'journey_id', journey_id,
-      'name', name,
-      'steps', COALESCE(steps, '[]'::jsonb)
-    ) FROM journey WHERE session_name='${SESSION}' AND journey_id='${journey_id}'") || true
+      'journey_id', j.journey_id,
+      'name', j.name,
+      'goal', j.goal,
+      'steps', COALESCE((
+        SELECT json_agg(json_build_object(
+          'step_number', s.step_number,
+          'step_name', s.step_name,
+          'user_action', s.user_action,
+          'ui_page_route', s.ui_page_route,
+          'ui_component_type', s.ui_component_type,
+          'ui_component_name', s.ui_component_name
+        ) ORDER BY s.step_number)
+        FROM journey_steps_detailed s WHERE s.journey_id = j.id
+      ), '[]'::json)
+    ) FROM journey j WHERE j.session_name='${SESSION}' AND j.journey_id='${journey_id}'") || true
 
     local persona_id
     for persona_id in ${personas}; do
@@ -554,16 +565,46 @@ step_test_journeys() {
 
       log "Testing journey ${journey_id} with persona ${persona_id}"
 
-      # Run direct Playwright test instead of MCP-based test
-      local test_output
+      # Write journey/persona data to temp files to avoid shell quoting issues
+      local journey_file persona_file test_stderr
+      journey_file=$(mktemp)
+      persona_file=$(mktemp)
+      test_stderr=$(mktemp)
+
+      # Write JSON to temp files - use explicit check to avoid bash brace expansion issues
+      if [[ -n "${journey_data}" ]]; then
+        printf '%s' "${journey_data}" > "${journey_file}"
+      else
+        echo '{}' > "${journey_file}"
+      fi
+      if [[ -n "${persona_data}" ]]; then
+        printf '%s' "${persona_data}" > "${persona_file}"
+      else
+        echo '{}' > "${persona_file}"
+      fi
+
+      # Run direct Playwright test
+      local test_output test_exit_code
       test_output=$(node "${SCRIPT_DIR}/playwright-journey-test.js" \
         --session "${SESSION}" \
         --journey "${journey_id}" \
         --persona "${persona_id}" \
-        --journey-data "${journey_data:-{}}" \
-        --persona-data "${persona_data:-{}}" \
+        --journey-file "${journey_file}" \
+        --persona-file "${persona_file}" \
         --base-url "http://localhost:${FRONTEND_PORT:-5173}" \
-        --test-run-id "${TEST_RUN_ID}" 2>/dev/null) || true
+        --test-run-id "${TEST_RUN_ID}" 2>"${test_stderr}") || test_exit_code=$?
+
+      # Clean up temp files
+      rm -f "${journey_file}" "${persona_file}"
+
+      # Log errors/warnings from stderr (skip debug lines)
+      if [[ -s "${test_stderr}" ]]; then
+        if grep -qi "error\|warning\|fail" "${test_stderr}" 2>/dev/null; then
+          log_warn "Playwright issues:"
+          grep -i "error\|warning\|fail" "${test_stderr}" | head -5 | while IFS= read -r line; do log "  $line"; done
+        fi
+      fi
+      rm -f "${test_stderr}"
 
       # Parse and insert results to database
       if [[ -n "${test_output}" ]]; then
@@ -600,9 +641,19 @@ step_test_journeys() {
 # Step 3: Generate synthetic feedback.
 step_generate_feedback() {
   log "Step 3: Generating feedback"
+  log "  This step invokes Claude to generate synthetic user feedback..."
+  log "  Command: /pm:generate-feedback ${SESSION} --run ${TEST_RUN_ID}"
   update_step_status 3 "running"
 
+  local start_time
+  start_time=$(date +%s)
+
   claude --dangerously-skip-permissions --print "/pm:generate-feedback ${SESSION} --run ${TEST_RUN_ID}"
+
+  local end_time elapsed
+  end_time=$(date +%s)
+  elapsed=$((end_time - start_time))
+  log "  Feedback generation completed in ${elapsed}s"
 
   update_step_status 3 "complete"
   log_success "Feedback generated"
@@ -611,9 +662,19 @@ step_generate_feedback() {
 # Step 4: Analyze and prioritize issues.
 step_analyze_feedback() {
   log "Step 4: Analyzing feedback"
+  log "  This step invokes Claude to analyze test results and create issues..."
+  log "  Command: /pm:analyze-feedback ${SESSION} --run ${TEST_RUN_ID}"
   update_step_status 4 "running"
 
+  local start_time
+  start_time=$(date +%s)
+
   claude --dangerously-skip-permissions --print "/pm:analyze-feedback ${SESSION} --run ${TEST_RUN_ID}"
+
+  local end_time elapsed
+  end_time=$(date +%s)
+  elapsed=$((end_time - start_time))
+  log "  Analysis completed in ${elapsed}s"
 
   # Count issues created
   local issue_count

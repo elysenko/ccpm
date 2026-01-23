@@ -22,6 +22,8 @@ function parseArgs() {
     baseUrl: 'http://localhost:5173',
     journeyData: null,
     personaData: null,
+    journeyFile: null,
+    personaFile: null,
     testRunId: `run-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`,
     screenshotsDir: null,
     timeout: 15000
@@ -47,12 +49,42 @@ function parseArgs() {
       case '--persona-data':
         config.personaData = JSON.parse(args[++i]);
         break;
+      case '--journey-file':
+        config.journeyFile = args[++i];
+        break;
+      case '--persona-file':
+        config.personaFile = args[++i];
+        break;
       case '--test-run-id':
         config.testRunId = args[++i];
         break;
       case '--timeout':
         config.timeout = parseInt(args[++i], 10);
         break;
+    }
+  }
+
+  // Load journey data from file if provided
+  if (config.journeyFile && fs.existsSync(config.journeyFile)) {
+    try {
+      const content = fs.readFileSync(config.journeyFile, 'utf-8').trim();
+      if (content && content !== '{}') {
+        config.journeyData = JSON.parse(content);
+      }
+    } catch (e) {
+      console.error(`Warning: Failed to parse journey file: ${e.message}`);
+    }
+  }
+
+  // Load persona data from file if provided
+  if (config.personaFile && fs.existsSync(config.personaFile)) {
+    try {
+      const content = fs.readFileSync(config.personaFile, 'utf-8').trim();
+      if (content && content !== '{}') {
+        config.personaData = JSON.parse(content);
+      }
+    } catch (e) {
+      console.error(`Warning: Failed to parse persona file: ${e.message}`);
     }
   }
 
