@@ -676,6 +676,16 @@ step_analyze_feedback() {
   elapsed=$((end_time - start_time))
   log "  Analysis completed in ${elapsed}s"
 
+  # Sync generated issues from JSON to database
+  log "Syncing issues to database..."
+  if [[ -f "${SCRIPT_DIR}/sync-issues-to-db.sh" ]]; then
+    "${SCRIPT_DIR}/sync-issues-to-db.sh" "${SESSION}" "${TEST_RUN_ID}" || {
+      log_warn "Issue sync had warnings (non-fatal)"
+    }
+  else
+    log_warn "sync-issues-to-db.sh not found - issues not persisted to database"
+  fi
+
   # Count issues created
   local issue_count
   issue_count=$(db_query "SELECT COUNT(*) FROM issues WHERE session_name='${SESSION}' AND test_run_id='${TEST_RUN_ID}'")
