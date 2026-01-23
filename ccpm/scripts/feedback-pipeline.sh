@@ -706,14 +706,14 @@ step_research_issues() {
   update_step_status 5 "running"
 
   # Process ALL open issues for this session (not just current test run)
-  # This ensures issues from previous runs or manual imports are also processed
+  # Use DISTINCT ON to avoid processing duplicate issue_ids from different test runs
   local issues
   issues=$(db_query "
-    SELECT issue_id, title, description, category, severity
+    SELECT DISTINCT ON (issue_id) issue_id, title, description, category, severity
     FROM issues
     WHERE session_name='${SESSION}'
       AND status='open'
-    ORDER BY
+    ORDER BY issue_id,
       CASE severity
         WHEN 'critical' THEN 1
         WHEN 'high' THEN 2
@@ -771,13 +771,14 @@ step_fix_issues() {
   update_step_status 6 "running"
 
   # Process ALL triaged issues for this session (not just current test run)
+  # Use DISTINCT ON to avoid processing duplicate issue_ids from different test runs
   local issues
   issues=$(db_query "
-    SELECT issue_id, title, description, category, severity, research_context
+    SELECT DISTINCT ON (issue_id) issue_id, title, description, category, severity, research_context
     FROM issues
     WHERE session_name='${SESSION}'
       AND status='triaged'
-    ORDER BY
+    ORDER BY issue_id,
       CASE severity
         WHEN 'critical' THEN 1
         WHEN 'high' THEN 2
