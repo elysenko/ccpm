@@ -72,7 +72,7 @@ PHASE 1: Input Analysis
 PHASE 2: Discovery (conditional)
     - Simple: Skip to Phase 3
     - Medium: /pm:decompose → PRDs
-    - Complex: /pm:interrogate → /pm:extract-findings → /pm:roadmap-generate → /pm:roadmap-verify → [/pm:roadmap-research if gaps] → /pm:decompose
+    - Complex: /pm:interrogate → /pm:flow-diagram → [USER CONFIRM or loop back] → /pm:extract-findings → /pm:roadmap-generate → /pm:roadmap-verify → [/pm:roadmap-research if gaps] → /pm:decompose
     ↓
 PHASE 3: PRD Validation
     - Verify at least 1 PRD exists
@@ -419,32 +419,71 @@ Needs research and structured discovery:
    - Stores features/journeys in database
    - Asks quick infrastructure questions
 
-2. **After interrogate returns:** Invoke Skill tool: `pm:extract-findings` with args: `$SESSION_NAME`
+2. **Flow Diagram Verification Loop:**
+
+   **EXCEPTION TO AUTONOMOUS RULE:** This is the ONE place where user confirmation is required.
+
+   ```
+   flow_confirmed = false
+   while not flow_confirmed:
+   ```
+
+   a. **Invoke:** Use Skill tool: `pm:flow-diagram` with args: `$SESSION_NAME`
+      - Generates ASCII diagrams of confirmed user journeys
+      - Displays visual representation of the flows
+
+   b. **Ask user for confirmation:**
+      ```
+      The flow diagrams above show the user journeys I understood from our discussion.
+
+      Does this accurately represent what you want to build?
+      - Type "yes" or "continue" to proceed
+      - Type "no" or describe what needs to change to revisit the interrogation
+      ```
+
+   c. **Process response:**
+      - If user confirms ("yes", "continue", "looks good", "correct"):
+        - Set `flow_confirmed = true`
+        - Continue to step 3
+
+      - If user rejects or requests changes:
+        - Record feedback in `$SESSION_DIR/flow-feedback.md`
+        - **Re-invoke:** Use Skill tool: `pm:interrogate` with args: `$SESSION_NAME`
+          - This resumes the session with user's feedback
+          - User can modify features/journeys
+        - Loop back to step 2a (regenerate flow diagram)
+
+   d. **Update status:**
+      ```bash
+      echo '{"phase": "flow_verified", "confirmed": true}' > "$SESSION_DIR/flow-status.json"
+      ```
+
+3. **After flow confirmed:** Invoke Skill tool: `pm:extract-findings` with args: `$SESSION_NAME`
    - Generates scope documents in `.claude/scopes/$SESSION_NAME/`
 
-3. **Invoke:** Use Skill tool: `pm:roadmap-generate` with args: `$SESSION_NAME`
+4. **Invoke:** Use Skill tool: `pm:roadmap-generate` with args: `$SESSION_NAME`
    - Reads scope documents from `.claude/scopes/$SESSION_NAME/`
    - Generates MVP roadmap with phases and dependencies
    - Outputs to `.claude/scopes/$SESSION_NAME/07_roadmap.md`
 
-4. **Invoke:** Use Skill tool: `pm:roadmap-verify` with args: `$SESSION_NAME`
+5. **Invoke:** Use Skill tool: `pm:roadmap-verify` with args: `$SESSION_NAME`
    - Verifies roadmap against scope documents
    - Detects coverage gaps, dependency issues, scoring problems
    - Outputs to `.claude/scopes/$SESSION_NAME/08_roadmap_verification.md`
    - Returns gap count and severity summary
 
-5. **Conditional: If HIGH or MEDIUM gaps found:**
+6. **Conditional: If HIGH or MEDIUM gaps found:**
    Invoke Skill tool: `pm:roadmap-research` with args: `$SESSION_NAME`
    - Researches each gap using /dr
    - Updates `07_roadmap.md` with fixes
    - Outputs research log to `.claude/scopes/$SESSION_NAME/09_roadmap_research.md`
    - Skip if no HIGH/MEDIUM gaps (proceed directly to decompose)
 
-6. **Invoke:** Use Skill tool: `pm:decompose` with args: `.claude/scopes/$SESSION_NAME/07_roadmap.md`
+7. **Invoke:** Use Skill tool: `pm:decompose` with args: `.claude/scopes/$SESSION_NAME/07_roadmap.md`
    - Breaks roadmap into independent PRDs with dependency management
    - Outputs PRDs to `.claude/prds/{epic_id}/`
 
-7. **Record PRDs:**
+8. **Record PRDs:**
 ```bash
 ls -t .claude/prds/*.md | head -30 > "$SESSION_DIR/prds.txt"
 ```
