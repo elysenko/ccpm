@@ -1,140 +1,215 @@
 #!/bin/bash
-# CCPM Pull - Sync framework files from canonical ccpm repo to local .claude/
+# CCPM Pull - Initialize/update ccpm as git submodule with symlinks
+#
+# This script sets up ccpm as a git submodule at .claude/ccpm/ and creates
+# symlinks so Claude discovers commands at .claude/commands/, etc.
+#
+# Usage:
+#   /pm:ccpm-pull                    # Use default repo (automazeio/ccpm)
+#   CCPM_REPO_URL=... /pm:ccpm-pull  # Use custom repo
+#
+# Environment variables:
+#   CCPM_REPO_URL   - Git URL for ccpm repo (default: https://github.com/automazeio/ccpm.git)
+#   CCPM_BRANCH     - Branch to track (default: main)
+#   CCPM_LEGACY     - Set to "1" to use file-copy mode instead of submodules
 
 set -e
 
-echo "CCPM Pull - Syncing from canonical repository"
-echo "=============================================="
+# Configuration
+CCPM_REPO_URL="${CCPM_REPO_URL:-https://github.com/automazeio/ccpm.git}"
+CCPM_BRANCH="${CCPM_BRANCH:-main}"
+SUBMODULE_PATH=".claude/ccpm"
+
+# Directories to symlink (Claude discovers these)
+SYMLINK_DIRS=("commands" "scripts" "rules" "agents" "hooks" "schemas" "templates" "services" "testing" "k8s")
+
+# Project-specific directories (not symlinked, for local data)
+LOCAL_DIRS=("prds" "epics" "local" ".backups")
+
+echo "CCPM Pull (Submodule Mode)"
+echo "=========================="
 echo ""
 
-# Validation
-if [ -z "$CCPM_SOURCE_REPO" ]; then
-    echo "ERROR: CCPM_SOURCE_REPO environment variable not set"
+# --- Validation ---
+
+if [ ! -d ".git" ]; then
+    echo "ERROR: Not a git repository"
+    echo "Run: git init"
+    exit 1
+fi
+
+# Check for legacy mode
+if [ "$CCPM_LEGACY" = "1" ]; then
+    echo "Legacy mode requested. Use ccpm-pull-legacy.sh instead."
+    if [ -f ".claude/scripts/pm/ccpm-pull-legacy.sh" ]; then
+        exec bash .claude/scripts/pm/ccpm-pull-legacy.sh
+    else
+        echo "ERROR: Legacy script not found"
+        exit 1
+    fi
+fi
+
+# --- Functions ---
+
+init_submodule() {
+    # Check if submodule already exists
+    if [ -f "$SUBMODULE_PATH/.git" ] || [ -d "$SUBMODULE_PATH/.git" ]; then
+        echo "Submodule already exists at $SUBMODULE_PATH"
+        return 0
+    fi
+
+    # Check if path exists but isn't a submodule
+    if [ -d "$SUBMODULE_PATH" ]; then
+        echo "WARNING: $SUBMODULE_PATH exists but is not a submodule"
+        echo "Backing up to ${SUBMODULE_PATH}.bak and reinitializing..."
+        mv "$SUBMODULE_PATH" "${SUBMODULE_PATH}.bak.$(date +%Y%m%d_%H%M%S)"
+    fi
+
+    # Check if already in .gitmodules but directory missing
+    if grep -q "path = $SUBMODULE_PATH" .gitmodules 2>/dev/null; then
+        echo "Submodule registered but missing. Initializing..."
+        git submodule update --init "$SUBMODULE_PATH"
+        return 0
+    fi
+
+    echo "Adding ccpm as submodule..."
+    echo "  URL:    $CCPM_REPO_URL"
+    echo "  Branch: $CCPM_BRANCH"
+    echo "  Path:   $SUBMODULE_PATH"
     echo ""
-    echo "Set it to the path of your canonical ccpm repository:"
-    echo "  export CCPM_SOURCE_REPO=/path/to/ccpm/repo"
-    exit 1
-fi
 
-if [ ! -d "$CCPM_SOURCE_REPO" ]; then
-    echo "ERROR: CCPM_SOURCE_REPO does not exist: $CCPM_SOURCE_REPO"
-    exit 1
-fi
-
-# Check for canonical ccpm/ directory (preferred) or fall back to .claude/
-if [ -d "$CCPM_SOURCE_REPO/ccpm" ]; then
-    SOURCE_BASE="$CCPM_SOURCE_REPO/ccpm"
-elif [ -d "$CCPM_SOURCE_REPO/.claude" ]; then
-    SOURCE_BASE="$CCPM_SOURCE_REPO/.claude"
-else
-    echo "ERROR: Invalid ccpm repo structure (missing ccpm/ or .claude/ folder)"
-    exit 1
-fi
-
-LOCAL_BASE=".claude"
-
-echo "Source: $SOURCE_BASE (canonical)"
-echo "Local:  $LOCAL_BASE"
-echo ""
-
-# Update canonical repo first
-echo "Updating canonical CCPM repo..."
-(
-    cd "$CCPM_SOURCE_REPO"
-    MAIN_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') || MAIN_BRANCH="main"
-    git checkout "$MAIN_BRANCH" 2>/dev/null || true
-    git pull origin "$MAIN_BRANCH" 2>/dev/null || true
-) || echo "Warning: Could not update canonical repo"
-echo ""
-
-# Directories to sync (framework components)
-SYNC_DIRS=("commands" "scripts" "rules" "agents" "hooks" "schemas" "services" "testing" "templates" "k8s")
-
-# Files to sync
-SYNC_FILES=("ccpm.config")
-
-# Stats
-copied_new=0
-copied_updated=0
-backed_up=0
-skipped=0
-
-# Backup function
-backup_file() {
-    local file="$1"
-    local backup_dir="$LOCAL_BASE/.backups/$(date +%Y%m%d_%H%M%S)"
-    local rel_path="${file#$LOCAL_BASE/}"
-    local backup_path="$backup_dir/$rel_path"
-
-    mkdir -p "$(dirname "$backup_path")"
-    cp "$file" "$backup_path"
-    backed_up=$((backed_up + 1))
+    mkdir -p "$(dirname "$SUBMODULE_PATH")"
+    git submodule add -b "$CCPM_BRANCH" "$CCPM_REPO_URL" "$SUBMODULE_PATH"
 }
 
-# Sync single file
-sync_file() {
-    local src="$1"
-    local dst="$2"
-    local rel_path="${dst#$LOCAL_BASE/}"
+update_submodule() {
+    echo "Updating ccpm submodule..."
+    git submodule update --init --recursive "$SUBMODULE_PATH"
 
-    if [ ! -f "$dst" ]; then
-        mkdir -p "$(dirname "$dst")"
-        cp "$src" "$dst"
-        echo "  + $rel_path"
-        copied_new=$((copied_new + 1))
-    elif ! diff -q "$src" "$dst" > /dev/null 2>&1; then
-        backup_file "$dst"
-        cp "$src" "$dst"
-        echo "  ~ $rel_path"
-        copied_updated=$((copied_updated + 1))
-    else
-        skipped=$((skipped + 1))
+    # Optionally update to latest on tracked branch
+    echo "Fetching latest from $CCPM_BRANCH..."
+    (
+        cd "$SUBMODULE_PATH"
+        git fetch origin "$CCPM_BRANCH"
+        git checkout "$CCPM_BRANCH"
+        git pull origin "$CCPM_BRANCH"
+    ) || echo "WARNING: Could not update to latest (may need manual intervention)"
+}
+
+create_symlinks() {
+    echo ""
+    echo "Creating symlinks..."
+
+    # Determine the source path inside the submodule
+    # ccpm repo has structure: ccpm/commands/, ccpm/scripts/, etc.
+    local source_base="ccpm/ccpm"
+
+    if [ ! -d "$SUBMODULE_PATH/ccpm" ]; then
+        # Fallback: maybe it's a flat structure
+        source_base="ccpm"
+    fi
+
+    for dir in "${SYMLINK_DIRS[@]}"; do
+        local target="$source_base/$dir"
+        local link=".claude/$dir"
+
+        # Check if source exists in submodule
+        if [ ! -d "$SUBMODULE_PATH/${target#ccpm/}" ] && [ ! -d "$SUBMODULE_PATH/$dir" ]; then
+            echo "  SKIP $dir (not in ccpm repo)"
+            continue
+        fi
+
+        # Adjust target if flat structure
+        if [ -d "$SUBMODULE_PATH/$dir" ] && [ ! -d "$SUBMODULE_PATH/ccpm/$dir" ]; then
+            target="ccpm/$dir"
+        fi
+
+        # Remove existing (file, dir, or broken symlink)
+        if [ -e "$link" ] || [ -L "$link" ]; then
+            # Don't remove if it's already the correct symlink
+            if [ -L "$link" ]; then
+                current_target=$(readlink "$link")
+                if [ "$current_target" = "$target" ]; then
+                    echo "  OK   $link -> $target"
+                    continue
+                fi
+            fi
+            rm -rf "$link"
+        fi
+
+        # Create relative symlink
+        ln -s "$target" "$link"
+        echo "  NEW  $link -> $target"
+    done
+}
+
+create_local_dirs() {
+    echo ""
+    echo "Creating local directories..."
+    for dir in "${LOCAL_DIRS[@]}"; do
+        if [ ! -d ".claude/$dir" ]; then
+            mkdir -p ".claude/$dir"
+            echo "  + .claude/$dir"
+        fi
+    done
+}
+
+make_scripts_executable() {
+    # Make scripts executable (following symlinks)
+    if [ -d ".claude/scripts" ]; then
+        find -L ".claude/scripts" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
     fi
 }
 
-# Sync directories
-for dir in "${SYNC_DIRS[@]}"; do
-    src_dir="$SOURCE_BASE/$dir"
-    dst_dir="$LOCAL_BASE/$dir"
+update_gitignore() {
+    # Add .claude/.backups to .gitignore
+    if [ -f ".gitignore" ]; then
+        grep -q "^\.claude/\.backups" .gitignore 2>/dev/null || echo ".claude/.backups" >> .gitignore
+    else
+        echo ".claude/.backups" > .gitignore
+    fi
 
-    [ ! -d "$src_dir" ] && continue
+    # Add local dirs to gitignore (optional, depends on preference)
+    grep -q "^\.claude/local" .gitignore 2>/dev/null || echo ".claude/local" >> .gitignore
+}
 
-    echo "Syncing $dir/..."
+configure_submodule() {
+    echo ""
+    echo "Configuring submodule..."
 
-    while IFS= read -r -d '' src_file; do
-        rel_path="${src_file#$src_dir/}"
-        dst_file="$dst_dir/$rel_path"
-        sync_file "$src_file" "$dst_file"
-    done < <(find "$src_dir" -type f -print0)
-done
+    # Set submodule to track branch
+    git config -f .gitmodules submodule."$SUBMODULE_PATH".branch "$CCPM_BRANCH"
 
-# Sync individual files
+    # Optional: set update strategy
+    git config -f .gitmodules submodule."$SUBMODULE_PATH".update rebase
+
+    echo "  Branch tracking: $CCPM_BRANCH"
+}
+
+# --- Main ---
+
+init_submodule
+update_submodule
+configure_submodule
+create_symlinks
+create_local_dirs
+make_scripts_executable
+update_gitignore
+
 echo ""
-echo "Syncing files..."
-for file in "${SYNC_FILES[@]}"; do
-    [ -f "$SOURCE_BASE/$file" ] && sync_file "$SOURCE_BASE/$file" "$LOCAL_BASE/$file"
-done
-
-# Make scripts executable
-find "$LOCAL_BASE/scripts" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
-
-# Add .backups to .gitignore if not present
-if [ -f ".gitignore" ]; then
-    grep -q "^\.claude/\.backups" .gitignore 2>/dev/null || echo ".claude/.backups" >> .gitignore
-elif [ -d ".git" ]; then
-    echo ".claude/.backups" >> .gitignore
-fi
-
-# Summary
-echo ""
-echo "=============================================="
+echo "=========================="
 echo "Done!"
 echo ""
-echo "  New files:     $copied_new"
-echo "  Updated:       $copied_updated"
-echo "  Backed up:     $backed_up"
-echo "  Unchanged:     $skipped"
-
-[ $backed_up -gt 0 ] && echo "" && echo "Backups: $LOCAL_BASE/.backups/"
+echo "Structure:"
+echo "  .claude/ccpm/     -> git submodule (tracked)"
+echo "  .claude/commands/ -> symlink to ccpm"
+echo "  .claude/scripts/  -> symlink to ccpm"
+echo "  .claude/prds/     -> local project data"
+echo ""
+echo "Commands:"
+echo "  Update ccpm:      git submodule update --remote .claude/ccpm"
+echo "  Commit to ccpm:   /pm:ccpm-commit \"message\""
+echo "  Pin version:      cd .claude/ccpm && git checkout <tag>"
+echo ""
 
 exit 0
