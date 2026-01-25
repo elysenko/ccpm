@@ -1,0 +1,263 @@
+#!/bin/bash
+# generate_repo_diagram.sh - Generate baseline repository architecture diagram
+# Caches result and only regenerates when repo changes significantly
+#
+# Usage: ./generate_repo_diagram.sh [output_file]
+# Output: Mermaid architecture diagram of the repository
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+
+CACHE_DIR="$PROJECT_ROOT/.claude/cache"
+DEFAULT_OUTPUT="$CACHE_DIR/repo-architecture.md"
+HASH_FILE="$CACHE_DIR/repo-architecture.hash"
+
+OUTPUT_FILE="${1:-$DEFAULT_OUTPUT}"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log() {
+  echo -e "  ${GREEN}▸${NC} $1" >&2
+}
+
+log_warn() {
+  echo -e "  ${YELLOW}⚠${NC} $1" >&2
+}
+
+# Calculate hash of repo structure for cache invalidation
+calculate_repo_hash() {
+  local hash=""
+
+  # Include git HEAD if available
+  if git rev-parse HEAD &>/dev/null; then
+    hash=$(git rev-parse HEAD)
+  else
+    # Fallback: hash of key source files
+    hash=$(find . -type f \( -name "*.py" -o -name "*.ts" -o -name "*.tsx" -o -name "*.go" -o -name "*.js" \) \
+      ! -path "*/node_modules/*" ! -path "*/.venv/*" ! -path "*/dist/*" ! -path "*/__pycache__/*" \
+      2>/dev/null | head -100 | xargs ls -la 2>/dev/null | md5sum | cut -d' ' -f1)
+  fi
+
+  echo "$hash"
+}
+
+# Check if cached diagram is still valid
+check_cache() {
+  mkdir -p "$CACHE_DIR"
+
+  local current_hash
+  current_hash=$(calculate_repo_hash)
+
+  if [ -f "$HASH_FILE" ] && [ -f "$DEFAULT_OUTPUT" ]; then
+    local cached_hash
+    cached_hash=$(cat "$HASH_FILE")
+    if [ "$current_hash" = "$cached_hash" ]; then
+      return 0  # Cache is valid
+    fi
+  fi
+
+  # Save new hash
+  echo "$current_hash" > "$HASH_FILE"
+  return 1  # Cache invalid, need regeneration
+}
+
+# Gather repository context
+gather_repo_context() {
+  local context=""
+
+  # CRITICAL: Read CLAUDE.md first for project understanding
+  context+="## Project Documentation\n"
+  if [ -f "CLAUDE.md" ]; then
+    context+="### From CLAUDE.md:\n"
+    # Extract key sections - overview, architecture, models
+    context+=$(head -150 CLAUDE.md)
+    context+="\n\n"
+  elif [ -f "README.md" ]; then
+    context+="### From README.md:\n"
+    context+=$(head -80 README.md)
+    context+="\n\n"
+  fi
+
+  # Extract domain models (Python)
+  context+="## Domain Models\n"
+  if [ -d "backend/app/models" ]; then
+    context+="### Python Models:\n"
+    for model_file in backend/app/models/*.py; do
+      if [ -f "$model_file" ] && [ "$(basename "$model_file")" != "__init__.py" ]; then
+        context+="#### $(basename "$model_file"):\n"
+        # Extract class definitions
+        grep -E "^class [A-Z]" "$model_file" 2>/dev/null | head -10
+        context+="\n"
+      fi
+    done
+  fi
+  # TypeScript models
+  if [ -d "src/models" ] || [ -d "frontend/src/models" ]; then
+    context+="### TypeScript Models:\n"
+    find . -path "*/models/*.ts" -o -path "*/types/*.ts" 2>/dev/null | head -10 | while read f; do
+      context+="- $f\n"
+    done
+  fi
+  context+="\n"
+
+  # Extract API routes
+  context+="## API Routes/Endpoints\n"
+  if [ -d "backend/app/api" ]; then
+    context+="### Backend API files:\n"
+    for route_file in backend/app/api/**/*.py; do
+      if [ -f "$route_file" ] && [ "$(basename "$route_file")" != "__init__.py" ]; then
+        context+="- $(basename "$route_file" .py)\n"
+      fi
+    done 2>/dev/null
+  fi
+  # Look for router definitions
+  if [ -d "backend" ]; then
+    context+="### Route decorators found:\n"
+    grep -rh "@router\.\(get\|post\|put\|delete\)" backend/ 2>/dev/null | head -15
+    context+="\n"
+  fi
+  context+="\n"
+
+  # Directory structure (brief)
+  context+="## Directory Structure\n"
+  context+=$(find . -type d \
+    ! -path "*/node_modules/*" ! -path "*/.git/*" ! -path "*/.venv/*" \
+    ! -path "*/dist/*" ! -path "*/__pycache__/*" ! -path "*/.claude/*" \
+    -maxdepth 2 2>/dev/null | sort | head -25)
+  context+="\n\n"
+
+  # Frontend pages/components (if React/Vue)
+  if [ -d "frontend/src/pages" ]; then
+    context+="## Frontend Pages\n"
+    ls -1 frontend/src/pages/*.tsx 2>/dev/null | head -10 | xargs -I {} basename {} .tsx
+    context+="\n"
+  fi
+
+  # Database/external services
+  context+="## External Services\n"
+  if grep -q "postgresql\|postgres" k8s/*.yaml docker-compose.yml 2>/dev/null; then
+    context+="- PostgreSQL database\n"
+  fi
+  if grep -q "minio\|s3" k8s/*.yaml docker-compose.yml .env* 2>/dev/null; then
+    context+="- MinIO/S3 storage\n"
+  fi
+  if grep -q "redis" k8s/*.yaml docker-compose.yml 2>/dev/null; then
+    context+="- Redis cache\n"
+  fi
+  if grep -q "keycloak" k8s/*.yaml docker-compose.yml .env* 2>/dev/null; then
+    context+="- Keycloak auth\n"
+  fi
+
+  echo -e "$context"
+}
+
+# Generate the architecture diagram
+generate_diagram() {
+  local repo_context
+  repo_context=$(gather_repo_context)
+
+  local prompt
+  prompt=$(cat << EOF
+Analyze this repository and generate a DOMAIN-FOCUSED architecture diagram.
+
+REPOSITORY CONTEXT:
+$repo_context
+
+CRITICAL INSTRUCTIONS:
+1. Focus on BUSINESS DOMAIN components, not generic tech stack
+2. Use domain terminology from CLAUDE.md (e.g., "Kanban Board", "Procurement", "Vendors")
+3. Show actual features/modules, not just "React SPA" or "FastAPI Server"
+4. Identify the core domain entities and how they relate
+
+CONSTRAINTS:
+- Maximum 12 nodes total
+- Maximum 4 subgraphs (organize by domain area, not just frontend/backend)
+- Node labels: Use domain terms (e.g., "Inventory Mgmt", "Order Processing")
+- Use short IDs: A[Label], B[Label]
+- Use flowchart TD (top-down)
+
+SUBGRAPH SUGGESTIONS (adapt to actual domain):
+- User-facing features (what users interact with)
+- Core business logic (domain operations)
+- Data/integrations (storage, external APIs)
+
+WHAT TO SHOW:
+- Key domain modules and their relationships
+- Data flow between major components
+- External integrations (database, auth, storage)
+- User entry points
+
+WHAT NOT TO SHOW:
+- Generic tech labels like "React SPA", "FastAPI" (too generic)
+- Infrastructure details like "Kubernetes", "Helm" (not app architecture)
+- Build tools, test frameworks
+
+OUTPUT FORMAT:
+Return ONLY the mermaid code block. No explanations.
+
+\`\`\`mermaid
+flowchart TD
+    subgraph ui[User Interface]
+        ...
+    end
+    subgraph core[Core Domain]
+        ...
+    end
+    subgraph data[Data Layer]
+        ...
+    end
+    ...
+\`\`\`
+
+Generate the domain architecture diagram now:
+EOF
+)
+
+  if command -v claude &>/dev/null; then
+    claude --dangerously-skip-permissions --print "$prompt" 2>&1
+  else
+    echo "Error: Claude CLI not found" >&2
+    exit 1
+  fi
+}
+
+# Main execution
+main() {
+  cd "$PROJECT_ROOT"
+
+  # Check cache first
+  if check_cache && [ -f "$DEFAULT_OUTPUT" ]; then
+    log "Using cached repo architecture diagram"
+    cat "$DEFAULT_OUTPUT"
+
+    # Copy to output file if different
+    if [ "$OUTPUT_FILE" != "$DEFAULT_OUTPUT" ]; then
+      cp "$DEFAULT_OUTPUT" "$OUTPUT_FILE"
+    fi
+    exit 0
+  fi
+
+  log "Generating repository architecture diagram..."
+
+  local result
+  result=$(generate_diagram)
+
+  # Save to cache
+  echo "$result" > "$DEFAULT_OUTPUT"
+
+  # Copy to output file if different
+  if [ "$OUTPUT_FILE" != "$DEFAULT_OUTPUT" ]; then
+    echo "$result" > "$OUTPUT_FILE"
+  fi
+
+  log "Diagram saved to $OUTPUT_FILE"
+  echo "$result"
+}
+
+main "$@"

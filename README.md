@@ -212,6 +212,7 @@ Specialized agents implement tasks while maintaining progress updates and an aud
 - `/pm:prd-list` - List all PRDs
 - `/pm:prd-edit` - Edit existing PRD
 - `/pm:prd-status` - Show PRD implementation status
+- `/pm:flow-diagram` - Generate ASCII user flow diagram from interrogation session
 
 ### Epic Commands
 - `/pm:epic-decompose` - Break epic into task files
