@@ -267,8 +267,7 @@ main() {
 
                 local updated
                 updated=$(db_query "UPDATE issues
-                          SET status = 'prd_created',
-                              updated_at = NOW()
+                          SET status = 'prd_created'
                           WHERE session_name='${escaped_session}'
                             ${run_filter}
                             AND status='${STATUS_FILTER}'
