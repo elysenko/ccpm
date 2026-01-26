@@ -536,7 +536,7 @@ extract_diagram_entities() {
 
     # Extract table references from database notation [(table_name)]
     echo "$mermaid_content" | grep -oE '\[\([A-Za-z_]+\)\]' | \
-      sed 's/\[\(//g; s/\)\]//g' | sort -u
+      sed 's/\[[(]//g; s/[)]\]//g' | sort -u
 
     # Extract explicit table names from comments or labels
     echo "$mermaid_content" | grep -oE 'table:[[:space:]]*[A-Za-z_]+' | \
