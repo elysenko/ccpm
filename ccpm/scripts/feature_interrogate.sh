@@ -2255,15 +2255,17 @@ PROMPT_EOF
 
       # Verify and auto-regenerate if needed
       echo ""
-      log "Validating diagram..."
+      start_spinner "Validating diagram (syntax, schema, coverage)..."
       local arch_index="$PROJECT_ROOT/.claude/cache/architecture/index.yaml"
       if verify_and_regenerate \
           "$SESSION_DIR/flow-diagram-iter-$iteration.md" \
           "$arch_index" \
           "$requirements_context" \
           "$SESSION_DIR"; then
-        log "Diagram passed all validation checks"
+        stop_spinner ""
+        log_success "Diagram passed all validation checks"
       else
+        stop_spinner ""
         log_warn "Diagram has validation issues - showing for manual review"
       fi
     else
