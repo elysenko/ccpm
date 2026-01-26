@@ -631,7 +631,8 @@ check_entity_against_index() {
 }
 
 # Verify diagram covers the original request (semantic check using LLM)
-# Uses adversarial framing to counter LLM agreeableness bias
+# Two-phase approach: extract elements first, then verify coverage
+# This prevents hallucination by grounding verification in actual extracted content
 # Usage: verify_request_coverage "$diagram_content" "$original_request"
 # Returns: 0 if coverage complete, 1 with issues if problems found
 verify_request_coverage() {
@@ -643,25 +644,62 @@ verify_request_coverage() {
     return 0
   fi
 
-  local prompt="You are a critical code reviewer. Your job is to find problems.
+  # Phase 1: Extract elements from diagram (programmatic - no hallucination possible)
+  local extracted_elements=""
 
-ORIGINAL FEATURE REQUEST:
+  # Extract node IDs (e.g., NOTIF, ORGAPI, etc.)
+  local nodes
+  nodes=$(echo "$diagram" | grep -oE '^\s*[A-Z_][A-Z0-9_]*\[' | sed 's/\[$//' | sed 's/^\s*//' | sort -u | tr '\n' ', ' | sed 's/, $//')
+  [ -n "$nodes" ] && extracted_elements+="COMPONENTS/NODES: $nodes\n"
+
+  # Extract API endpoints
+  local apis
+  apis=$(echo "$diagram" | grep -oE '/api/v1/[a-z_/{}\-]+' | sort -u | tr '\n' ', ' | sed 's/, $//')
+  [ -n "$apis" ] && extracted_elements+="API ENDPOINTS: $apis\n"
+
+  # Extract labeled elements (node labels in quotes)
+  local labels
+  labels=$(echo "$diagram" | grep -oE '\["[^"]+"\]' | sed 's/\["//g; s/"\]//g; s/\[NEW\] //g' | sort -u | tr '\n' ', ' | sed 's/, $//')
+  [ -n "$labels" ] && extracted_elements+="LABELED ELEMENTS: $labels\n"
+
+  # Extract database notation [(table)]
+  local tables
+  tables=$(echo "$diagram" | grep -oE '\[\([a-z_]+' | sed 's/\[(//' | sort -u | tr '\n' ', ' | sed 's/, $//')
+  [ -n "$tables" ] && extracted_elements+="TABLES/ENTITIES: $tables\n"
+
+  # Extract subgraph names
+  local subgraphs
+  subgraphs=$(echo "$diagram" | grep -oE 'subgraph\s+[a-z_]+' | sed 's/subgraph\s*//' | sort -u | tr '\n' ', ' | sed 's/, $//')
+  [ -n "$subgraphs" ] && extracted_elements+="LAYERS: $subgraphs\n"
+
+  # Extract connection labels (what flows between components)
+  local flows
+  flows=$(echo "$diagram" | grep -oE '\|"[^"]+"\|' | sed 's/|"//g; s/"|//g' | sort -u | tr '\n' ', ' | sed 's/, $//')
+  [ -n "$flows" ] && extracted_elements+="DATA FLOWS: $flows\n"
+
+  # Phase 2: Ask LLM to verify if extracted elements cover requirements
+  # Key change: LLM verifies a LIST, doesn't parse the diagram itself
+  local prompt="You are verifying diagram coverage.
+
+IMPORTANT: The elements below were EXTRACTED from the diagram - they definitely exist.
+Do NOT claim something is missing if it appears in the extracted elements list.
+
+## EXTRACTED ELEMENTS (these ARE in the diagram):
+$(echo -e "$extracted_elements")
+
+## FEATURE REQUIREMENTS:
 $original_request
 
-GENERATED MERMAID DIAGRAM:
-$diagram
+## TASK:
+Check if the extracted elements adequately cover the feature requirements.
 
-TASK: List any ways the diagram FAILS to address the feature request.
-Be adversarial - actively look for missing pieces.
+ONLY flag something as missing if:
+1. It is explicitly required in the feature request AND
+2. It does NOT appear (or have an equivalent) in the extracted elements above
 
-If the diagram fully addresses all aspects of the request, respond with exactly:
-COVERAGE_COMPLETE
+If coverage is adequate, respond exactly: COVERAGE_COMPLETE
 
-Otherwise, list specific issues:
-1. Missing user flows mentioned in request
-2. Missing data operations implied by request
-3. Wrong or missing tables/endpoints for the feature domain
-4. Missing layer connections (UI→API→DB)"
+If there are genuine gaps, list ONLY items that are truly missing from the extracted list above."
 
   local response
   response=$(claude --dangerously-skip-permissions --print "$prompt" 2>&1) || {
