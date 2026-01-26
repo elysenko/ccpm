@@ -440,6 +440,372 @@ load_architecture_context() {
   fi
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Diagram Verification Functions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Pre-validate Mermaid syntax with fast regex checks (catches ~80% of issues)
+# Usage: prevalidate_mermaid "$mermaid_code"
+# Returns: 0 if valid, 1 with error messages if invalid
+prevalidate_mermaid() {
+  local code="$1"
+  local errors=()
+
+  # Check for diagram type declaration
+  if ! echo "$code" | head -1 | grep -qE "^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitGraph)"; then
+    errors+=("Missing diagram type declaration (e.g., flowchart TD)")
+  fi
+
+  # Check for reserved word 'end' used as node ID (common mistake)
+  # Match 'end' as a standalone node, not inside subgraph 'end' statements
+  # Filter out valid 'end' statements first, then check for 'end' used as node
+  local filtered_code
+  filtered_code=$(echo "$code" | grep -vE "^[[:space:]]*end[[:space:]]*$")
+  if echo "$filtered_code" | grep -qE '(^|[[:space:]]|>|])end([[:space:]]|\[|\(|$)'; then
+    errors+=("Reserved word 'end' used as node ID - use 'End' or 'done' instead")
+  fi
+
+  # Check subgraph balance
+  local subgraph_count
+  local end_count
+  subgraph_count=$(echo "$code" | grep -c "subgraph " 2>/dev/null | tr -d '[:space:]' || echo "0")
+  end_count=$(echo "$code" | grep -cE "^[[:space:]]*end[[:space:]]*$" 2>/dev/null | tr -d '[:space:]' || echo "0")
+  # Default to 0 if empty
+  [ -z "$subgraph_count" ] && subgraph_count=0
+  [ -z "$end_count" ] && end_count=0
+  if [ "$subgraph_count" -gt 0 ] && [ "$subgraph_count" -ne "$end_count" ]; then
+    errors+=("Unbalanced subgraphs: $subgraph_count 'subgraph' vs $end_count 'end' statements")
+  fi
+
+  # Check bracket balance
+  local open_brackets
+  local close_brackets
+  open_brackets=$(echo "$code" | tr -cd '[' | wc -c | tr -d ' ')
+  close_brackets=$(echo "$code" | tr -cd ']' | wc -c | tr -d ' ')
+  if [ "$open_brackets" -ne "$close_brackets" ]; then
+    errors+=("Unbalanced brackets: $open_brackets '[' vs $close_brackets ']'")
+  fi
+
+  # Check parenthesis balance
+  local open_parens
+  local close_parens
+  open_parens=$(echo "$code" | tr -cd '(' | wc -c | tr -d ' ')
+  close_parens=$(echo "$code" | tr -cd ')' | wc -c | tr -d ' ')
+  if [ "$open_parens" -ne "$close_parens" ]; then
+    errors+=("Unbalanced parentheses: $open_parens '(' vs $close_parens ')'")
+  fi
+
+  # Check for common arrow syntax errors
+  if echo "$code" | grep -qE "->-|-->->|<--<|>-->"; then
+    errors+=("Invalid arrow syntax detected (e.g., ->-, -->->)")
+  fi
+
+  # Check for unclosed quotes in labels
+  local quote_count
+  quote_count=$(echo "$code" | tr -cd '"' | wc -c | tr -d ' ')
+  if [ $((quote_count % 2)) -ne 0 ]; then
+    errors+=("Unclosed double quote in diagram")
+  fi
+
+  # Return results
+  if [ ${#errors[@]} -gt 0 ]; then
+    printf '%s\n' "${errors[@]}"
+    return 1
+  fi
+  return 0
+}
+
+# Extract entity names (node IDs, table references) from a diagram file
+# Usage: extract_diagram_entities "$diagram_file"
+# Output: One entity per line
+extract_diagram_entities() {
+  local file="$1"
+
+  # Extract mermaid content first
+  local mermaid_content
+  mermaid_content=$(awk '/^```mermaid$/,/^```$/' "$file" 2>/dev/null | grep -v '^```' || cat "$file")
+
+  {
+    # Extract node IDs (words followed by [ or ( or {)
+    echo "$mermaid_content" | grep -oE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[\[\(\{]' | \
+      sed 's/[[:space:]]*//g; s/[\[\(\{]$//' | sort -u
+
+    # Extract CRUD references
+    echo "$mermaid_content" | grep -oE 'CRUD:[[:space:]]*[A-Za-z_]+' | \
+      sed 's/CRUD:[[:space:]]*//' | sort -u
+
+    # Extract table references from database notation [(table_name)]
+    echo "$mermaid_content" | grep -oE '\[\([A-Za-z_]+\)\]' | \
+      sed 's/\[\(//g; s/\)\]//g' | sort -u
+
+    # Extract explicit table names from comments or labels
+    echo "$mermaid_content" | grep -oE 'table:[[:space:]]*[A-Za-z_]+' | \
+      sed 's/table:[[:space:]]*//' | sort -u
+  } | sort -u | grep -v '^$'
+}
+
+# Normalize entity name for matching
+# Usage: normalize_name "EntityName"
+# Output: normalized lowercase name without underscores
+# NOTE: Removed trailing 's' removal - causes overstemming (address→addres, status→statu)
+normalize_name() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/_//g'
+}
+
+# Check if query is a subsequence of candidate (case-insensitive)
+# Used for fuzzy matching abbreviations like "inv" matching "inventory_items"
+# Usage: is_subsequence_match "query" "candidate"
+# Returns: 0 if match, 1 if no match
+is_subsequence_match() {
+  local query="$1"
+  local candidate="$2"
+  query=$(echo "$query" | tr '[:upper:]' '[:lower:]')
+  candidate=$(echo "$candidate" | tr '[:upper:]' '[:lower:]')
+
+  local q_len=${#query}
+  local q_idx=0
+
+  for (( i=0; i<${#candidate}; i++ )); do
+    if [[ "${candidate:$i:1}" == "${query:$q_idx:1}" ]]; then
+      ((q_idx++))
+      [[ $q_idx -eq $q_len ]] && return 0
+    fi
+  done
+  return 1
+}
+
+# Check if an entity exists in the architecture index
+# Uses subsequence matching for abbreviation support (e.g., "inv" matches "inventory_items")
+# Usage: check_entity_against_index "entity_name" "index_file"
+# Output: "EXISTING" or "NEW"
+check_entity_against_index() {
+  local entity="$1"
+  local index_file="$2"
+
+  if [ ! -f "$index_file" ]; then
+    echo "NEW"
+    return
+  fi
+
+  # Fast path: Try exact match first (case-insensitive word boundary)
+  if grep -qi "\b$entity\b" "$index_file"; then
+    echo "EXISTING"
+    return
+  fi
+
+  # Extract all known entity names from the index file
+  local known_entities
+  known_entities=$(grep -oE '[a-z_][a-z0-9_]*' "$index_file" 2>/dev/null | sort -u)
+
+  # Try subsequence match against known entities
+  # This handles abbreviations like "inv" -> "inventory_items"
+  # and pluralization like "items" -> "inventory_items"
+  while IFS= read -r known_entity; do
+    [ -z "$known_entity" ] && continue
+    # Skip very short entries (likely noise)
+    [ ${#known_entity} -lt 3 ] && continue
+
+    # Check if entity is a subsequence of known_entity (abbreviation match)
+    if is_subsequence_match "$entity" "$known_entity"; then
+      echo "EXISTING"
+      return
+    fi
+
+    # Check if known_entity is a subsequence of entity (reverse match)
+    if is_subsequence_match "$known_entity" "$entity"; then
+      echo "EXISTING"
+      return
+    fi
+
+    # Check normalized versions (handles underscores and case)
+    local entity_norm known_norm
+    entity_norm=$(normalize_name "$entity")
+    known_norm=$(normalize_name "$known_entity")
+    if [ "$entity_norm" = "$known_norm" ]; then
+      echo "EXISTING"
+      return
+    fi
+  done <<< "$known_entities"
+
+  echo "NEW"
+}
+
+# Verify diagram covers the original request (semantic check using LLM)
+# Uses adversarial framing to counter LLM agreeableness bias
+# Usage: verify_request_coverage "$diagram_content" "$original_request"
+# Returns: 0 if coverage complete, 1 with issues if problems found
+verify_request_coverage() {
+  local diagram="$1"
+  local original_request="$2"
+
+  if ! command -v claude &> /dev/null; then
+    # Skip semantic check if Claude not available
+    return 0
+  fi
+
+  local prompt="You are a critical code reviewer. Your job is to find problems.
+
+ORIGINAL FEATURE REQUEST:
+$original_request
+
+GENERATED MERMAID DIAGRAM:
+$diagram
+
+TASK: List any ways the diagram FAILS to address the feature request.
+Be adversarial - actively look for missing pieces.
+
+If the diagram fully addresses all aspects of the request, respond with exactly:
+COVERAGE_COMPLETE
+
+Otherwise, list specific issues:
+1. Missing user flows mentioned in request
+2. Missing data operations implied by request
+3. Wrong or missing tables/endpoints for the feature domain
+4. Missing layer connections (UI→API→DB)"
+
+  local response
+  response=$(claude --dangerously-skip-permissions --print "$prompt" 2>&1) || {
+    # If Claude fails, skip this check
+    return 0
+  }
+
+  if echo "$response" | grep -q "COVERAGE_COMPLETE"; then
+    return 0
+  else
+    echo "$response"
+    return 1
+  fi
+}
+
+# Main verification function with auto-regeneration loop
+# Usage: verify_and_regenerate "$diagram_file" "$index_file" "$original_request" "$session_dir"
+# Returns: 0 if valid (possibly after fixes), 1 if still invalid after max retries
+verify_and_regenerate() {
+  local diagram_file="$1"
+  local index_file="$2"
+  local original_request="$3"
+  local session_dir="$4"
+  local max_retries=3
+  local retry=0
+
+  while [ $retry -lt $max_retries ]; do
+    local errors=""
+    local new_entities=()
+
+    # Extract mermaid content
+    local mermaid_content
+    mermaid_content=$(awk '/^```mermaid$/,/^```$/' "$diagram_file" 2>/dev/null | grep -v '^```' || echo "")
+
+    if [ -z "$mermaid_content" ]; then
+      log_warn "No mermaid content found in diagram file"
+      return 1
+    fi
+
+    # Step 1: Syntax pre-validation (fast)
+    local syntax_errors
+    if ! syntax_errors=$(prevalidate_mermaid "$mermaid_content" 2>&1); then
+      errors="SYNTAX ERRORS:\n$syntax_errors\n\n"
+    fi
+
+    # Step 2: Schema alignment check - collect NEW entities
+    if [ -f "$index_file" ]; then
+      while IFS= read -r entity; do
+        [ -z "$entity" ] && continue
+        local status
+        status=$(check_entity_against_index "$entity" "$index_file")
+        if [ "$status" = "NEW" ]; then
+          new_entities+=("$entity")
+        fi
+      done < <(extract_diagram_entities "$diagram_file")
+    fi
+
+    # Step 3: Semantic coverage check (only if syntax passes to save API calls)
+    if [ -z "$errors" ]; then
+      local coverage_errors
+      if ! coverage_errors=$(verify_request_coverage "$mermaid_content" "$original_request" 2>&1); then
+        if [ -n "$coverage_errors" ]; then
+          errors="COVERAGE ISSUES:\n$coverage_errors\n\n"
+        fi
+      fi
+    fi
+
+    # All checks passed
+    if [ -z "$errors" ]; then
+      # Annotate NEW entities with green styling if any were found
+      if [ ${#new_entities[@]} -gt 0 ]; then
+        log "Annotating ${#new_entities[@]} new entities in diagram"
+
+        # Add classDef and class statements for new entities
+        local annotation=""
+        annotation+="\n    %% NEW ENTITIES (proposed additions to architecture)\n"
+        annotation+="    classDef newEntity fill:#e6ffe6,stroke:#00aa00,stroke-width:2px\n"
+        for e in "${new_entities[@]}"; do
+          annotation+="    class $e newEntity\n"
+        done
+
+        # Insert before the closing ``` if present
+        if grep -q '```$' "$diagram_file"; then
+          sed -i "s/\`\`\`$/${annotation}\`\`\`/" "$diagram_file"
+        else
+          echo -e "$annotation" >> "$diagram_file"
+        fi
+
+        # Save new entities list for reference
+        printf '%s\n' "${new_entities[@]}" > "$session_dir/new-entities.txt"
+        log "New entities saved to new-entities.txt: ${new_entities[*]}"
+      fi
+
+      log_success "Diagram validation passed"
+      return 0
+    fi
+
+    # Issues found - attempt regeneration
+    retry=$((retry + 1))
+    if [ $retry -ge $max_retries ]; then
+      break
+    fi
+
+    log_warn "Issues found (attempt $retry/$max_retries). Regenerating..."
+
+    # Save the issues for debugging
+    echo -e "Validation attempt $retry:\n$errors" >> "$session_dir/validation-log.txt"
+
+    # Regenerate with specific feedback about errors
+    if command -v claude &> /dev/null; then
+      local fix_prompt="Fix these issues in the Mermaid diagram:
+
+CURRENT DIAGRAM:
+$mermaid_content
+
+ISSUES FOUND:
+$(echo -e "$errors")
+
+ORIGINAL FEATURE REQUEST:
+$original_request
+
+Generate a corrected Mermaid flowchart that fixes ALL the issues above.
+Output ONLY the corrected diagram in a mermaid code block."
+
+      # Save current diagram as backup
+      cp "$diagram_file" "$diagram_file.backup-$retry"
+
+      # Regenerate
+      claude --dangerously-skip-permissions --print "$fix_prompt" 2>&1 > "$diagram_file" || {
+        log_error "Regeneration failed, restoring backup"
+        cp "$diagram_file.backup-$retry" "$diagram_file"
+      }
+    else
+      log_warn "Claude CLI not available for auto-fix"
+      break
+    fi
+  done
+
+  # Max retries reached
+  log_warn "Max retries ($max_retries) reached. Manual review recommended."
+  echo -e "Final validation errors:\n$errors" >> "$session_dir/validation-log.txt"
+  return 1
+}
+
 # Session variables
 SESSION_NAME=""
 SESSION_DIR=""
@@ -1132,12 +1498,42 @@ research_feature() {
 
   local feature_to_research="${REFINED_DESCRIPTION:-$FEATURE_DESCRIPTION}"
 
-  # Construct focused research query
-  local research_query="For implementing '$feature_to_research':
-1. USER FLOWS: What are the typical user journeys and interaction patterns?
-2. OPEN SOURCE TOOLS: What libraries, frameworks, or tools are available?
-3. ARCHITECTURE: What patterns work best for this type of feature?
-4. PITFALLS: What common mistakes should we avoid?"
+  # Load context from previous steps
+  local tech_stack=""
+  local entities=""
+
+  if [ -f "$SESSION_DIR/repo-analysis.md" ]; then
+    tech_stack=$(grep -A8 -i "tech stack\|technology\|stack\|framework" "$SESSION_DIR/repo-analysis.md" 2>/dev/null | head -10)
+  fi
+
+  if [ -f "$SESSION_DIR/domain-context.yaml" ]; then
+    entities=$(grep -A15 "entities:" "$SESSION_DIR/domain-context.yaml" 2>/dev/null | head -15)
+  fi
+
+  # Build context-aware research query
+  local research_query="For implementing '$feature_to_research'"
+
+  if [ -n "$tech_stack" ]; then
+    research_query="$research_query in a codebase using:
+$tech_stack"
+  fi
+
+  if [ -n "$entities" ]; then
+    research_query="$research_query
+
+Working with these domain entities:
+$entities"
+  fi
+
+  research_query="$research_query
+
+Research:
+1. USER FLOWS: Typical user journeys for this feature
+2. LIBRARIES: Specific tools/packages compatible with this tech stack
+3. PATTERNS: Architecture patterns that fit the existing codebase
+4. PITFALLS: Common mistakes to avoid
+
+Focus on practical, production-ready approaches. Skip generic advice."
 
   if command -v claude &> /dev/null; then
     # Start spinner while research runs
@@ -1232,18 +1628,25 @@ flow_diagram_loop() {
     if [ "$saved_iteration" -gt 0 ] 2>/dev/null; then
       # Check if this iteration was already generated but not confirmed
       if [ -f "$SESSION_DIR/flow-diagram-iter-$saved_iteration.md" ]; then
-        iteration=$((saved_iteration - 1))  # Will be incremented to saved_iteration in loop
-        resume_pending=true
         echo ""
-        echo -e "  ${YELLOW}${BOLD}Resuming - you have an unconfirmed diagram (iteration $saved_iteration)${NC}"
-        echo -e "  ${CYAN}View it: http://ubuntu.desmana-truck.ts.net:32082/$SESSION_NAME/flow-diagram-iter-$saved_iteration.html${NC}"
+        echo -e "  ${YELLOW}${BOLD}Found unconfirmed diagram (iteration $saved_iteration)${NC}"
 
         # Show previous feedback if any
         if [ -f "$SESSION_DIR/flow-feedback.md" ]; then
           echo -e "  ${DIM}Previous feedback:${NC}"
           tail -5 "$SESSION_DIR/flow-feedback.md" | sed 's/^/     /'
         fi
+
+        echo -e "  ${CYAN}Regenerating diagram with current context...${NC}"
         echo ""
+
+        # Remove old diagram files to force fresh regeneration
+        rm -f "$SESSION_DIR/flow-diagram-iter-"*.md 2>/dev/null
+        rm -f "$SESSION_DIR/flow-diagram-iter-"*.html 2>/dev/null
+
+        # Reset iteration counter (will start at 1 in the loop)
+        iteration=0
+        echo "1" > "$SESSION_DIR/flow-iteration.txt"
       fi
     fi
   fi
@@ -1652,6 +2055,20 @@ PROMPT_EOF
         log_error "Flow diagram generation had issues"
       }
       rm -f "$context_file"
+
+      # Verify and auto-regenerate if needed
+      echo ""
+      log "Validating diagram..."
+      local arch_index="$PROJECT_ROOT/.claude/cache/architecture/index.yaml"
+      if verify_and_regenerate \
+          "$SESSION_DIR/flow-diagram-iter-$iteration.md" \
+          "$arch_index" \
+          "$requirements_context" \
+          "$SESSION_DIR"; then
+        log "Diagram passed all validation checks"
+      else
+        log_warn "Diagram has validation issues - showing for manual review"
+      fi
     else
       log_error "Claude CLI not found"
       break
