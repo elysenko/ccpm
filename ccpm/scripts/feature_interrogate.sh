@@ -810,19 +810,25 @@ verify_and_regenerate() {
 
     # Regenerate with specific feedback about errors
     if command -v claude &> /dev/null; then
-      local fix_prompt="Fix these issues in the Mermaid diagram:
+      local fix_prompt="MODIFY this Mermaid diagram to fix ONLY the specific issues listed.
 
-CURRENT DIAGRAM:
+CRITICAL RULES:
+1. PRESERVE all existing nodes, connections, and subgraphs - do NOT remove anything
+2. ONLY ADD elements that are explicitly missing per the issues below
+3. ONLY MODIFY elements that are explicitly incorrect per the issues below
+4. Keep the same node IDs, styling, and structure
+
+CURRENT DIAGRAM (preserve this structure):
 $mermaid_content
 
-ISSUES FOUND:
+ISSUES TO FIX (address ONLY these):
 $(echo -e "$errors")
 
-ORIGINAL FEATURE REQUEST:
+CONTEXT:
 $original_request
 
-Generate a corrected Mermaid flowchart that fixes ALL the issues above.
-Output ONLY the corrected diagram in a mermaid code block."
+Output the MODIFIED diagram (not a new one) in a mermaid code block.
+The output should have ALL original elements PLUS any additions/fixes."
 
       # Save current diagram as backup
       cp "$diagram_file" "$diagram_file.backup-$retry"
