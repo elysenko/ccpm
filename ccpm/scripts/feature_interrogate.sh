@@ -806,6 +806,165 @@ Output ONLY the corrected diagram in a mermaid code block."
   return 1
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Diagram Caching Functions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Cache a diagram to persistent storage for historical record
+# Usage: cache_diagram "source_file" "session_name" "diagram_type" "iteration"
+# diagram_type: flow, user-journey, sequence, state, suite
+# Returns: 0 on success, 1 on failure
+cache_diagram() {
+  local source_file="$1"
+  local session_name="$2"
+  local diagram_type="${3:-flow}"
+  local iteration="${4:-1}"
+
+  # Validate source exists
+  if [ ! -f "$source_file" ]; then
+    return 1
+  fi
+
+  # Create cache directory structure
+  local cache_base="$PROJECT_ROOT/.claude/cache/diagrams"
+  local cache_dir="$cache_base/$session_name"
+  mkdir -p "$cache_dir"
+
+  # Generate timestamp for unique filename
+  local timestamp
+  timestamp=$(date -u +"%Y%m%d-%H%M%S")
+
+  # Determine file extension
+  local ext="${source_file##*.}"
+
+  # Create cached filename: {type}-iter{N}-{timestamp}.{ext}
+  local cached_filename="${diagram_type}-iter${iteration}-${timestamp}.${ext}"
+  local cached_path="$cache_dir/$cached_filename"
+
+  # Copy the diagram
+  cp "$source_file" "$cached_path"
+
+  # Create/update metadata file for this session
+  local meta_file="$cache_dir/metadata.yaml"
+
+  # Append to metadata (create if doesn't exist)
+  if [ ! -f "$meta_file" ]; then
+    cat > "$meta_file" << EOF
+session: $session_name
+created: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+diagrams: []
+EOF
+  fi
+
+  # Append diagram entry to metadata
+  cat >> "$meta_file" << EOF
+
+- file: $cached_filename
+  type: $diagram_type
+  iteration: $iteration
+  cached_at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  source: $(basename "$source_file")
+  size_bytes: $(wc -c < "$source_file" | tr -d ' ')
+EOF
+
+  # Also maintain a global index of all cached diagrams
+  local global_index="$cache_base/index.log"
+  echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") | $session_name | $diagram_type | iter$iteration | $cached_filename" >> "$global_index"
+
+  # Symlink to "latest" for each type within session
+  local latest_link="$cache_dir/${diagram_type}-latest.${ext}"
+  ln -sf "$cached_filename" "$latest_link" 2>/dev/null || true
+
+  return 0
+}
+
+# Cache all diagrams from a session directory
+# Usage: cache_session_diagrams "session_dir" "session_name"
+cache_session_diagrams() {
+  local session_dir="$1"
+  local session_name="$2"
+  local cached_count=0
+
+  # Cache flow diagram iterations
+  for f in "$session_dir"/flow-diagram-iter-*.md; do
+    [ -f "$f" ] || continue
+    local iter
+    iter=$(echo "$f" | grep -oE 'iter-[0-9]+' | grep -oE '[0-9]+')
+    if cache_diagram "$f" "$session_name" "flow" "$iter"; then
+      ((cached_count++))
+    fi
+  done
+
+  # Cache HTML versions too
+  for f in "$session_dir"/flow-diagram-iter-*.html; do
+    [ -f "$f" ] || continue
+    local iter
+    iter=$(echo "$f" | grep -oE 'iter-[0-9]+' | grep -oE '[0-9]+')
+    cache_diagram "$f" "$session_name" "flow-html" "$iter" || true
+  done
+
+  # Cache confirmed flow diagram
+  if [ -f "$session_dir/flow-diagram.md" ]; then
+    cache_diagram "$session_dir/flow-diagram.md" "$session_name" "flow-confirmed" "final"
+  fi
+
+  # Cache supplementary diagrams
+  for dtype in user-journey sequence state; do
+    if [ -f "$session_dir/${dtype}-diagram.md" ]; then
+      cache_diagram "$session_dir/${dtype}-diagram.md" "$session_name" "$dtype" "1"
+    fi
+  done
+
+  # Cache the combined suite HTML
+  if [ -f "$session_dir/feature-diagrams.html" ]; then
+    cache_diagram "$session_dir/feature-diagrams.html" "$session_name" "suite-html" "1"
+  fi
+
+  echo "$cached_count"
+}
+
+# List cached diagrams for a session or all sessions
+# Usage: list_cached_diagrams [session_name]
+list_cached_diagrams() {
+  local session_name="${1:-}"
+  local cache_base="$PROJECT_ROOT/.claude/cache/diagrams"
+
+  if [ ! -d "$cache_base" ]; then
+    echo "No cached diagrams found"
+    return 0
+  fi
+
+  if [ -n "$session_name" ]; then
+    # List diagrams for specific session
+    local cache_dir="$cache_base/$session_name"
+    if [ -d "$cache_dir" ]; then
+      echo "Cached diagrams for '$session_name':"
+      ls -la "$cache_dir" | grep -v "^total\|^d\|metadata\|index" | awk '{print "  " $NF " (" $5 " bytes)"}'
+    else
+      echo "No cached diagrams for session '$session_name'"
+    fi
+  else
+    # List all sessions with diagram counts
+    echo "Cached diagram sessions:"
+    for d in "$cache_base"/*/; do
+      [ -d "$d" ] || continue
+      local sname
+      sname=$(basename "$d")
+      local count
+      count=$(find "$d" -maxdepth 1 -type f \( -name "*.md" -o -name "*.html" \) | wc -l | tr -d ' ')
+      echo "  $sname: $count diagrams"
+    done
+
+    # Show global stats
+    if [ -f "$cache_base/index.log" ]; then
+      local total
+      total=$(wc -l < "$cache_base/index.log" | tr -d ' ')
+      echo ""
+      echo "Total cached: $total diagrams"
+    fi
+  fi
+}
+
 # Session variables
 SESSION_NAME=""
 SESSION_DIR=""
@@ -2083,6 +2242,10 @@ PROMPT_EOF
       echo -e "  ${CYAN}${BOLD}Preview:${NC}"
       echo -e "  ${CYAN}http://ubuntu.desmana-truck.ts.net:32082/$SESSION_NAME/flow-diagram-iter-$iteration.html${NC}"
       echo -e "  ${DIM}(also at flow-diagram.html)${NC}"
+
+      # Cache diagrams for historical record (even if later deleted)
+      cache_diagram "$SESSION_DIR/flow-diagram-iter-$iteration.md" "$SESSION_NAME" "flow" "$iteration" || true
+      cache_diagram "$SESSION_DIR/flow-diagram-iter-$iteration.html" "$SESSION_NAME" "flow-html" "$iteration" || true
     fi
 
     # Save iteration number for resume functionality
@@ -2104,6 +2267,8 @@ PROMPT_EOF
         # Clear iteration tracker since flow is confirmed
         rm -f "$SESSION_DIR/flow-iteration.txt"
         echo -e "  ${GREEN}System flow confirmed${NC}"
+        # Cache the confirmed diagram
+        cache_diagram "$SESSION_DIR/flow-diagram.md" "$SESSION_NAME" "flow-confirmed" "final" || true
         ;;
       *)
         if [ -n "$response" ] && [ "$response" != "no" ]; then
@@ -2169,7 +2334,18 @@ PROMPT_EOF
 
           echo ""
           echo -e "  ${CYAN}Updated: http://ubuntu.desmana-truck.ts.net:32082/$SESSION_NAME/feature-diagrams.html${NC}"
+
+          # Cache the regenerated suite
+          cache_diagram "$SESSION_DIR/feature-diagrams.html" "$SESSION_NAME" "suite-html" "2" || true
         fi
+
+        # Cache supplementary diagrams after generation
+        for dtype in user-journey sequence state; do
+          [ -f "$SESSION_DIR/${dtype}-diagram.md" ] && \
+            cache_diagram "$SESSION_DIR/${dtype}-diagram.md" "$SESSION_NAME" "$dtype" "1" || true
+        done
+        [ -f "$SESSION_DIR/feature-diagrams.html" ] && \
+          cache_diagram "$SESSION_DIR/feature-diagrams.html" "$SESSION_NAME" "suite-html" "1" || true
       fi
     fi
 
@@ -2180,6 +2356,12 @@ Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 System Flow: yes
 Diagram Suite: $([ -f "$SESSION_DIR/feature-diagrams.html" ] && echo "yes" || echo "no")
 EOF
+
+    # Cache all session diagrams for permanent record
+    log "Caching diagrams..."
+    local cached_count
+    cached_count=$(cache_session_diagrams "$SESSION_DIR" "$SESSION_NAME")
+    echo -e "  ${DIM}Cached $cached_count diagrams to .claude/cache/diagrams/$SESSION_NAME/${NC}"
 
     complete_step 6 "Diagrams confirmed"
     dim_path "  System Flow: $SESSION_DIR/flow-diagram.md"
