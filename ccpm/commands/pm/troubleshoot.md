@@ -977,6 +977,56 @@ main() {
     log_error "RESULT: Not fixed"
     log "Review state.json for hypotheses and learnings"
   fi
+
+  # === AUTO-COMMIT CHANGES ===
+  commit_changes
+}
+
+# === AUTO-COMMIT FUNCTION ===
+commit_changes() {
+  log "Checking for changes to commit..."
+
+  # Check if we're in a git repo
+  if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    log_warn "Not in a git repository - skipping commit"
+    return 0
+  fi
+
+  # Check for changes to the target script
+  if [ -n "$(git status --porcelain "$TARGET_SCRIPT" 2>/dev/null)" ]; then
+    log "Changes detected in $TARGET_SCRIPT"
+
+    # Stage the target script
+    git add "$TARGET_SCRIPT"
+
+    # Generate commit message
+    local fixes_count=$(wc -l < "$SESSION_DIR/fixes-applied.log" 2>/dev/null || echo 0)
+    local iteration=$(jq -r '.current_iteration' "$STATE_FILE" 2>/dev/null || echo "?")
+    local result="failed"
+    [ -f "$SESSION_DIR/success_flag" ] && result="fixed"
+
+    local commit_msg="Troubleshoot: $result after $iteration iterations ($fixes_count fixes)
+
+Session: $SESSION_DIR
+Target: $TARGET_SCRIPT
+
+Hypotheses tested:
+$(jq -r '.hypotheses[] | "- \(.id): \(.description) [\(.status)]"' "$STATE_FILE" 2>/dev/null || echo "- Unable to parse hypotheses")
+
+Key learnings:
+$(jq -r '.attempted_fixes[-3:][] | "- \(.learning)"' "$STATE_FILE" 2>/dev/null | head -5 || echo "- Unable to parse learnings")
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+
+    # Commit with the message
+    if git commit -m "$commit_msg" 2>&1 | tee -a "$LOG_FILE"; then
+      log_success "Changes committed successfully"
+    else
+      log_warn "Commit failed or nothing to commit"
+    fi
+  else
+    log "No changes to commit for $TARGET_SCRIPT"
+  fi
 }
 
 main "$@"
