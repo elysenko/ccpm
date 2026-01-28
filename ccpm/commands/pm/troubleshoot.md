@@ -1050,11 +1050,64 @@ After selecting the template:
    - Elements present: grep for required patterns
    - Match reference: diff against known good output
 
-4. **Write and execute**:
+4. **Write the script**:
    ```bash
    chmod +x "$SCRIPT_FILE"
-   bash "$SCRIPT_FILE" 2>&1 | tee -a "$SESSION_DIR/execution.log"
    ```
+
+### Step 6.5: Launch and Monitor Script (MANDATORY)
+
+The agent MUST actively monitor the script execution:
+
+1. **Launch as background task** using Bash with `run_in_background: true`
+   ```bash
+   bash "$SCRIPT_FILE" > "$SESSION_DIR/execution.log" 2>&1 &
+   echo $! > "$SESSION_DIR/script.pid"
+   ```
+
+2. **Monitor output in real-time** - check output every 30-60 seconds
+   ```bash
+   # Read the latest output
+   tail -50 "$SESSION_DIR/execution.log"
+
+   # Check if script is still running
+   if [ -f "$SESSION_DIR/script.pid" ]; then
+     kill -0 $(cat "$SESSION_DIR/script.pid") 2>/dev/null && echo "Running" || echo "Stopped"
+   fi
+   ```
+
+3. **Watch for these patterns and respond**:
+
+   | Pattern in Output | Meaning | Agent Action |
+   |-------------------|---------|--------------|
+   | `syntax error` or `parse error` | Script has bash bugs | Fix the generated script directly |
+   | `grep: invalid` or `jq: error` | Bad regex/parsing logic | Fix the parsing logic in script |
+   | Claude returns unexpected format | Prompt needs adjustment | Fix the prompt template in script |
+   | `Could not find OLD_STRING` | Fix target is wrong | Let script's reflection handle it |
+   | Target code errors | Expected behavior | Let script's fix mechanism handle |
+   | All evaluations return 0% | Script's evaluation is broken | Fix the evaluation logic |
+
+4. **Intervene when needed** - Don't wait for script to complete if it's clearly broken
+
+**Decision Tree for Intervention:**
+```
+Script output shows error
+  ├── Is error in the troubleshoot script itself?
+  │     → FIX THE SCRIPT using Edit tool, then restart
+  ├── Is error in parsing/extracting Claude responses?
+  │     → FIX THE PARSING LOGIC in script, then restart
+  ├── Is error in target code (the thing being diagnosed)?
+  │     → This is EXPECTED - let script handle it
+  ├── Is output format unparseable?
+  │     → Fix output format requirements in prompts
+  └── Is Claude returning wrong format?
+      → Fix prompt to be more explicit about output format
+```
+
+**The agent has FULL AUTHORITY to modify:**
+- The generated troubleshoot script (if it has bugs)
+- The target script (through troubleshoot script OR directly if urgent)
+- Any supporting files needed to make things work
 
 ### Step 7: Execute and Report
 
@@ -1106,19 +1159,390 @@ Next steps:
 7. **Bayesian updates** - Update hypothesis confidence based on evidence
 8. **Information gain** - Prefer diagnostic actions until confident
 
-## CRITICAL: Script Generation and Execution
+---
 
-The agent MUST:
-1. **Generate the script file** using the Write tool
-2. **Execute the script** using the Bash tool
-3. **NOT apply fixes directly** - only the generated script applies fixes
+## Scope of Changes
 
-The feedback loop script is the core mechanism. Do NOT:
-- Apply fixes directly during questioning
-- Skip script generation
-- Tell user to "test manually"
+The agent has authority to modify different files for different reasons:
 
-The script runs autonomously until terminated by its own criteria.
+| File Type | When to Modify | How to Modify |
+|-----------|----------------|---------------|
+| Generated troubleshoot script | Script has bugs (bad regex, syntax errors, broken parsing, logic issues) | Direct Edit - fix immediately |
+| Target script (being diagnosed) | Through troubleshoot process | Via script's fix mechanism (hypotheses → fix → reflect) |
+| Target script (urgent) | Script process is fundamentally broken AND issue is obvious | Direct Edit as last resort, then document |
+| Build/pipeline scripts | They have bugs preventing diagnosis | Direct Edit, document what was fixed |
+| Claude prompts in script | Claude returns wrong format | Direct Edit to improve prompt clarity |
+
+**Key distinctions:**
+
+1. **Script bugs vs Target bugs**
+   - Script bugs: Agent fixes directly (this is tooling maintenance)
+   - Target bugs: Script handles via structured process (this is the diagnosis)
+
+2. **Why this matters**
+   - If `grep -o '{.*}'` can't parse multi-line JSON → that's a SCRIPT bug → fix directly
+   - If the target code has wrong logic → that's a TARGET bug → let script handle
+
+3. **The troubleshoot process is for diagnosing UNKNOWNS**
+   - When the agent KNOWS the script has bad regex, that's not an unknown
+   - Fix it and move on
+
+---
+
+## Definition of Done
+
+This section addresses premature completion - when agents stop after partial success instead of achieving the full objective.
+
+### Understanding the Script's Full Scope
+
+BEFORE monitoring begins, the agent MUST understand:
+1. **What is the script trying to accomplish?** (Read the script's header comments, help text, or main logic)
+2. **What does "complete" look like?** (All steps done? All tests passing? All targets processed?)
+3. **What is the original user goal?** (Not just "run this script" but "what outcome do they want?")
+
+### Completion Criteria
+
+The troubleshooting session is NOT complete until:
+
+| Scenario | Done When |
+|----------|-----------|
+| Script has multiple steps | ALL steps complete successfully |
+| Script processes multiple files | ALL files processed |
+| Script has a stated goal | Goal is achieved |
+| Script runs in a loop | Loop terminates with success |
+| User said "run until complete" | Script's full purpose is fulfilled |
+
+### Anti-Pattern: Premature Success Declaration
+
+**DO NOT** stop just because:
+- One iteration passed (but there are more to go)
+- The bug fix was verified (but original goal not achieved)
+- The script didn't crash (but it didn't finish either)
+- One step succeeded (but 4 more steps remain)
+
+**Example of WRONG behavior:**
+```
+User: "Run build-pipeline.sh which builds steps 4, 5, 7, 8, 9"
+Agent: *fixes bug* *runs --step 4* *step 4 passes*
+Agent: "Done! Step 4 completed successfully!"  ← WRONG! 4 more steps remain!
+```
+
+**Example of CORRECT behavior:**
+```
+User: "Run build-pipeline.sh which builds steps 4, 5, 7, 8, 9"
+Agent: *fixes bug* *runs with --resume or no flags*
+Agent: *monitors until steps 4, 5, 7, 8, 9 ALL complete*
+Agent: "Done! All 5 steps completed: 4 ✓ 5 ✓ 7 ✓ 8 ✓ 9 ✓"
+```
+
+### Resume with FULL Scope
+
+After fixing a script bug:
+1. **Re-run the script with its ORIGINAL intended scope**
+2. **Do NOT limit scope just to verify the fix**
+3. **Continue monitoring until the FULL objective is achieved**
+
+**Wrong:** `--step 4` (just verifying the fix works)
+**Right:** `--resume` or no flags (continuing the full mission)
+
+### Detecting Full Scope
+
+When the troubleshoot session starts, the agent should identify:
+
+```markdown
+## Session Scope
+- Target script: {script path}
+- Full objective: {what user actually wants accomplished}
+- Success indicators:
+  - [ ] {indicator 1 - e.g., "All 5 steps complete"}
+  - [ ] {indicator 2 - e.g., "No errors in final output"}
+  - [ ] {indicator 3 - e.g., "Success message displayed"}
+```
+
+The session is complete when ALL success indicators are checked off, not just when the script doesn't crash.
+
+### Scope Tracking During Monitoring
+
+When actively monitoring, track progress against the full scope:
+
+```markdown
+## Progress Tracking
+Original scope: Steps 4, 5, 7, 8, 9
+
+Current status:
+- Step 4: ✓ Complete
+- Step 5: ⏳ In progress
+- Step 7: ⬜ Not started
+- Step 8: ⬜ Not started
+- Step 9: ⬜ Not started
+
+Session complete: NO (2/5 done)
+```
+
+Only report completion when ALL items show ✓.
+
+---
+
+## Prompt Quality Requirements (Claude Syntax Rules)
+
+All Claude prompts in the generated troubleshoot script MUST follow these rules for reliable, parseable output.
+
+### 1. Use XML Tags for Structure
+
+Claude was trained with XML tags, making them highly effective for structure. Use semantically meaningful names:
+
+```xml
+<role>Expert persona</role>
+<task>What to do</task>
+<context>Background information</context>
+<instructions>Step-by-step guidance</instructions>
+<constraints>Rules and limitations</constraints>
+<example>Demonstration</example>
+<output_format>Expected response structure</output_format>
+```
+
+### 2. Be Explicit About Output Format
+
+Vague requests get vague results. Be extremely specific:
+
+**BAD - causes parsing failures:**
+```
+Provide your analysis.
+```
+
+**GOOD - parseable output:**
+```xml
+<output_format>
+Respond with ONLY a JSON object. No markdown code blocks, no explanation, just valid JSON:
+{
+  "analysis": "one sentence explaining the root cause",
+  "fix": {
+    "file": "path/to/file",
+    "old_string": "exact text to find",
+    "new_string": "replacement text"
+  }
+}
+</output_format>
+```
+
+### 3. Tell Claude What TO Do (Not What NOT To Do)
+
+Positive instructions outperform negative ones:
+
+**Less Effective:**
+```
+Don't include explanations.
+Don't use markdown.
+```
+
+**More Effective:**
+```
+Output ONLY the JSON object.
+Start directly with the opening brace.
+End with the closing brace.
+```
+
+### 4. Explain WHY for Constraints
+
+Context helps Claude follow rules more reliably:
+
+**Less Effective:**
+```
+OLD_STRING must be exact.
+```
+
+**More Effective:**
+```
+OLD_STRING must match EXACTLY what exists in the file, including whitespace
+and line breaks, because the fix is applied using string replacement and
+even one character difference will cause the fix to fail.
+```
+
+### 5. Include Examples for Complex Formats
+
+For novel or complex output formats, include 2-3 examples:
+
+```xml
+<examples>
+<example>
+<input>TypeError: Cannot read property 'length' of undefined</input>
+<output>
+{
+  "analysis": "Variable is undefined when accessed",
+  "fix": {
+    "file": "src/utils.js",
+    "old_string": "return items.length",
+    "new_string": "return items?.length ?? 0"
+  }
+}
+</output>
+</example>
+</examples>
+```
+
+### 6. Use Role Prompting for Domain Accuracy
+
+```xml
+<role>
+You are a systematic troubleshooter using hypothesis-driven diagnosis.
+You analyze errors methodically and provide precise, minimal fixes.
+You never add unnecessary changes or improvements beyond what's required.
+</role>
+```
+
+### Common Prompt Issues That Cause Parsing Failures
+
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| Vague output format | Claude adds explanation text | Add explicit `<output_format>` with "ONLY output JSON, no other text" |
+| No examples | Claude guesses format | Add 1-2 concrete examples of exact expected output |
+| Multiple formats accepted | Inconsistent output | Specify ONE exact format, reject alternatives |
+| Negative instructions | Claude focuses on what not to do | Use positive instructions instead |
+| No explanation of WHY | Claude breaks rules when they seem unimportant | Explain why each constraint matters |
+
+### Standard Prompt Template for Troubleshoot Scripts
+
+Use this template structure for all Claude calls in generated scripts:
+
+```xml
+<role>
+You are a systematic troubleshooter analyzing [problem type].
+You provide precise, minimal fixes with exact string matching.
+</role>
+
+<task>
+[Clear, specific objective - one sentence]
+</task>
+
+<context>
+Problem: [description]
+File: [path]
+Current error: [error message or symptom]
+Previous attempts: [what has been tried]
+</context>
+
+<current_state>
+[State JSON or relevant data]
+</current_state>
+
+<instructions>
+1. Analyze the current error/symptom
+2. Update hypothesis confidence based on evidence
+3. Propose ONE specific action (diagnostic or fix)
+4. If proposing a fix, provide exact OLD_STRING and NEW_STRING
+</instructions>
+
+<constraints>
+- OLD_STRING must match EXACTLY including all whitespace (because string replacement fails otherwise)
+- Propose only ONE action per response (because we test hypotheses one at a time)
+- Do not include markdown code blocks in JSON output (because they break JSON parsing)
+- Start your response directly with the opening brace (because any prefix text breaks parsing)
+</constraints>
+
+<output_format>
+Respond with ONLY this JSON object, no other text:
+{
+  "hypothesis_updates": [
+    {"id": "H1", "confidence_change": "+10", "reason": "evidence supports this"}
+  ],
+  "action": {
+    "type": "FIX",
+    "target_hypothesis": "H1",
+    "description": "what we're doing and why",
+    "expected_if_correct": "what happens if hypothesis is right",
+    "expected_if_wrong": "what happens if hypothesis is wrong"
+  },
+  "fix": {
+    "file": "path/to/file.ext",
+    "old_string": "exact text to find including\\nnewlines",
+    "new_string": "replacement text"
+  }
+}
+</output_format>
+```
+
+---
+
+## CRITICAL: Execution Model
+
+### What the Agent MUST Do
+
+1. **Generate the troubleshoot script** using the Write tool
+2. **Execute as background task** - use `run_in_background: true` in Bash tool
+3. **Actively monitor output** - read execution log every 30-60 seconds
+4. **Identify failure points** - distinguish between:
+   - Target code bugs (expected - script will fix)
+   - Script bugs (unexpected - agent must fix directly)
+   - Infrastructure issues (permissions, missing tools, etc.)
+5. **Fix script bugs directly** - if the troubleshoot script has bad logic, bad regex, broken heredocs, broken parsing, etc., the agent fixes them immediately using Edit tool
+6. **Resume/re-run after fixes** - after fixing script bugs, re-run the script
+
+### What the Agent Must NOT Do
+
+- **DO NOT** apply fixes to target code WITHOUT using the structured troubleshoot process (the script is the mechanism for applying fixes)
+- **DO NOT** give up when the script fails due to script bugs - FIX THE SCRIPT
+- **DO NOT** tell user to "test manually" - the script handles testing
+- **DO NOT** just wait passively for script to complete without monitoring
+- **DO NOT** assume the script is correct - if it produces broken output, fix it
+
+### Decision Tree for Script Problems
+
+```
+Script execution shows problem
+  │
+  ├── ERROR: bash syntax error
+  │     └── Agent: Fix script syntax, re-run
+  │
+  ├── ERROR: grep/sed/jq parsing fails
+  │     └── Agent: Fix parsing logic in script, re-run
+  │
+  ├── ERROR: Claude returns unparseable response
+  │     └── Agent: Fix prompt in script to be more explicit, re-run
+  │
+  ├── ERROR: JSON extraction fails (e.g., grep -o '{.*}' on multiline)
+  │     └── Agent: Replace with proper JSON extraction, re-run
+  │
+  ├── All evaluations show 0%
+  │     └── Agent: The evaluation logic is broken - fix it, re-run
+  │
+  ├── ERROR: in target code (expected)
+  │     └── Script handles this via its fix mechanism
+  │
+  └── INFO: Script running normally
+        └── Continue monitoring
+```
+
+### The Script is a TOOL
+
+**Key principle**: The troubleshoot script is a TOOL the agent creates. If the tool is broken, the agent fixes the tool.
+
+The constraint is that target code fixes should go through the script's structured process (hypotheses, reflection, learning). But when the SCRIPT ITSELF has bugs (wrong regex, bad parsing, broken prompts), the agent MUST fix those directly - that's not bypassing the process, that's fixing the tooling.
+
+### Monitoring Pattern
+
+```bash
+# Launch in background
+bash "$SCRIPT_FILE" > "$SESSION_DIR/execution.log" 2>&1 &
+SCRIPT_PID=$!
+echo "$SCRIPT_PID" > "$SESSION_DIR/script.pid"
+
+# Check periodically
+while kill -0 $SCRIPT_PID 2>/dev/null; do
+  sleep 30
+
+  # Look for script bugs (not target code bugs)
+  if grep -q "syntax error\|parse error\|jq: error\|grep: invalid" "$SESSION_DIR/execution.log"; then
+    echo "Script has bugs - agent should fix"
+    # Agent reads log, identifies issue, fixes script with Edit tool
+    break
+  fi
+
+  # Show recent output
+  tail -20 "$SESSION_DIR/execution.log"
+done
+```
+
+Or launch with Task tool for better background handling.
 
 ---
 
@@ -1137,7 +1561,7 @@ The script runs autonomously until terminated by its own criteria.
 4. Read target script
    │
    ▼
-5. Generate script with:
+5. Generate troubleshoot script with:
    │  - Initial hypotheses
    │  - State management
    │  - Anti-repetition check
@@ -1145,13 +1569,34 @@ The script runs autonomously until terminated by its own criteria.
    │  - Reflection prompts
    │
    ▼
-6. Execute script (MANDATORY)
+6. Launch script as background task (MANDATORY)
+   │
+   ▼
+6.5. ACTIVELY MONITOR (MANDATORY) ←── KEY CHANGE
+   │  - Check output every 30-60 seconds
+   │  - Watch for script bugs vs target bugs
+   │  - FIX SCRIPT BUGS DIRECTLY if found
+   │  - Let script handle target bugs
+   │  - Re-run after fixing script bugs
+   │  - TRACK PROGRESS AGAINST FULL SCOPE ←── NEW
+   │
+   ▼
+7. Script runs autonomously
    │  - Loops with ANALYZE → DECIDE → ACT → REFLECT
    │  - Updates state.json each iteration
    │  - Terminates on success OR max iterations OR stuck
    │
    ▼
-7. Report results with learnings
+8. CHECK DEFINITION OF DONE ←── NEW
+   │  - Did ALL steps/targets complete? (not just one)
+   │  - Was the ORIGINAL user objective achieved?
+   │  - If NO: continue monitoring or re-run with full scope
+   │  - If YES: proceed to report
+   │
+   ▼
+9. Report results with learnings
+   │  - Show completion status for EACH step/target
+   │  - Confirm full objective was achieved
 ```
 
 ---
