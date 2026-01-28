@@ -300,6 +300,158 @@ dim_path() {
   echo -e "${DIM}$1${NC}"
 }
 
+# Normalize diagram output to ensure consistent format
+# Strips any explanatory prose and extracts only the expected sections
+# ROBUST: Handles LLM output that starts with preamble text before the required format
+# Usage: normalize_diagram_output <input_file> <output_file>
+normalize_diagram_output() {
+  local input_file="$1"
+  local output_file="$2"
+
+  if [ ! -f "$input_file" ]; then
+    log_error "Input file not found: $input_file"
+    return 1
+  fi
+
+  # STEP 1: Check if ENDPOINT TABLE MAPPING exists anywhere in the file (not just at start)
+  local mapping_line
+  mapping_line=$(grep -n "^ENDPOINT TABLE MAPPING:" "$input_file" 2>/dev/null | head -1 | cut -d: -f1)
+
+  if [ -n "$mapping_line" ]; then
+    # Found mapping header - extract from that line onwards
+    # This handles the case where LLM adds preamble text before the required format
+    tail -n +"$mapping_line" "$input_file" | awk '
+      BEGIN { in_mapping = 1; in_mermaid = 0 }
+
+      # First line should be the ENDPOINT TABLE MAPPING header
+      NR == 1 {
+        print
+        next
+      }
+
+      # If we find mermaid block, switch to mermaid mode
+      /^```mermaid/ {
+        in_mapping = 0
+        in_mermaid = 1
+        print
+        next
+      }
+
+      # End of mermaid block - stop processing
+      in_mermaid && /^```$/ {
+        print
+        exit 0
+      }
+
+      # Print content in mapping section (lines starting with -)
+      in_mapping && /^-/ {
+        print
+        next
+      }
+
+      # Empty line in mapping section continues it
+      in_mapping && /^$/ {
+        print
+        next
+      }
+
+      # Any other line in mapping section ends it
+      in_mapping && !/^-/ && !/^$/ {
+        # Check if this is the start of mermaid block
+        if (/^```mermaid/) {
+          in_mapping = 0
+          in_mermaid = 1
+          print
+        }
+        next
+      }
+
+      # Print content inside mermaid block
+      in_mermaid {
+        print
+        next
+      }
+    ' > "$output_file"
+
+    # Verify the output has both mapping and mermaid content
+    if grep -q '^```mermaid' "$output_file" 2>/dev/null; then
+      log "Output normalized: found ENDPOINT TABLE MAPPING at line $mapping_line"
+      return 0
+    fi
+  fi
+
+  # STEP 2: Fallback - try to find mapping header with different spacing/formatting
+  # Some LLMs output "ENDPOINT TABLE MAPPING:" with leading spaces or without colon
+  mapping_line=$(grep -niE "^[[:space:]]*ENDPOINT[[:space:]]+TABLE[[:space:]]+MAPPING" "$input_file" 2>/dev/null | head -1 | cut -d: -f1)
+
+  if [ -n "$mapping_line" ]; then
+    log_warn "Found mapping header with non-standard formatting at line $mapping_line"
+    # Create compliant output starting from that line
+    echo "ENDPOINT TABLE MAPPING:" > "$output_file"
+    # Skip the malformed header line and extract rest
+    tail -n +"$((mapping_line + 1))" "$input_file" | awk '
+      BEGIN { in_mapping = 1; in_mermaid = 0 }
+      /^```mermaid/ { in_mapping = 0; in_mermaid = 1; print; next }
+      in_mermaid && /^```$/ { print; exit 0 }
+      in_mapping && /^[[:space:]]*-/ { print; next }
+      in_mapping && /^$/ { print; next }
+      in_mapping { if (/^```mermaid/) { in_mapping = 0; in_mermaid = 1; print } next }
+      in_mermaid { print; next }
+    ' >> "$output_file"
+
+    if grep -q '^```mermaid' "$output_file" 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  # STEP 3: Last resort - extract just the mermaid block and generate synthetic mapping
+  log_warn "Output normalization: ENDPOINT TABLE MAPPING not found, extracting mermaid block only"
+
+  # Extract just the mermaid block (handles various edge cases)
+  # Use awk -v to pass patterns containing backticks
+  awk -v ms='^```mermaid$' -v me='^```$' '
+    $0 ~ ms { in_block = 1; print; next }
+    in_block && $0 ~ me { print; exit 0 }
+    in_block { print }
+  ' "$input_file" > "$output_file.mermaid"
+
+  if [ -s "$output_file.mermaid" ]; then
+    # Create a minimal compliant output with synthetic mapping
+    # Extract endpoint info from the mermaid content itself
+    {
+      echo "ENDPOINT TABLE MAPPING:"
+      # Try to extract API endpoint info from the mermaid content
+      grep -oE '/api/v1/[a-z_/{}\-]+' "$output_file.mermaid" 2>/dev/null | sort -u | while read -r endpoint; do
+        echo "- $endpoint: PRIMARY=(extracted from diagram)"
+      done
+      # If no endpoints found, add placeholder
+      if ! grep -q '/api/v1/' "$output_file.mermaid" 2>/dev/null; then
+        echo "- (extracted from non-compliant output - endpoints not detected)"
+      fi
+      echo ""
+      cat "$output_file.mermaid"
+    } > "$output_file"
+    rm -f "$output_file.mermaid"
+    log_warn "Created synthetic mapping from mermaid content"
+    return 0
+  fi
+
+  # STEP 4: Complete failure - no mermaid block found
+  log_error "Output normalization failed: No mermaid block found"
+  # Keep raw output but mark it as failed
+  {
+    echo "ENDPOINT TABLE MAPPING:"
+    echo "- ERROR: LLM output did not contain valid mermaid diagram"
+    echo ""
+    printf '%s\n' '```mermaid'
+    echo 'flowchart TD'
+    echo '    ERROR["LLM output parsing failed - check raw output file"]'
+    printf '%s\n' '```'
+  } > "$output_file"
+  rm -f "$output_file.mermaid" 2>/dev/null
+  return 1
+}
+
 # Generate HTML wrapper for mermaid diagram
 # Usage: generate_html_diagram <markdown_file> <output_html> <title>
 generate_html_diagram() {
@@ -536,12 +688,76 @@ extract_diagram_entities() {
 
     # Extract table references from database notation [(table_name)]
     echo "$mermaid_content" | grep -oE '\[\([A-Za-z_]+\)\]' | \
-      sed 's/\[[(]//g; s/[)]\]//g' | sort -u
+      tr -d '[]()' | sort -u
 
     # Extract explicit table names from comments or labels
     echo "$mermaid_content" | grep -oE 'table:[[:space:]]*[A-Za-z_]+' | \
       sed 's/table:[[:space:]]*//' | sort -u
   } | sort -u | grep -v '^$'
+}
+
+# Extract connections (edges) from a Mermaid diagram
+# Handles multiple edge syntaxes: -->, -.->,--, ==>, labeled arrows, etc.
+# Also handles node definitions with labels: A[text] --> B[text]
+# Usage: extract_diagram_connections "$mermaid_content"
+# Output: One connection per line in format: source|target|label
+extract_diagram_connections() {
+  local content="$1"
+  # Normalize CRLF to LF
+  content=$(echo "$content" | tr -d '\r')
+
+  echo "$content" | while IFS= read -r line; do
+    # Skip empty lines and comments
+    [[ -z "$line" ]] && continue
+    [[ "$line" =~ ^[[:space:]]*%% ]] && continue
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+
+    # Skip subgraph/end/classDef/class/style declarations
+    [[ "$line" =~ ^[[:space:]]*(subgraph|end|classDef|class|style|direction)[[:space:]] ]] && continue
+    [[ "$line" =~ ^[[:space:]]*(graph|flowchart)[[:space:]] ]] && continue
+
+    # Pre-process: strip node labels to simplify pattern matching
+    # Converts: A["Label"] --> B[(db)] to: A --> B
+    # Handles: [], (), {}, [[]], [()], etc.
+    # Note: Don't use 'local' here - we're in a subshell from the pipe
+    stripped_line="$line"
+    # Remove bracketed content after node IDs (multiple passes for nested)
+    stripped_line=$(echo "$stripped_line" | sed 's/\[\[[^]]*\]\]//g')  # [[text]]
+    stripped_line=$(echo "$stripped_line" | sed 's/\[([^)]*)\]//g')    # [(text)]
+    stripped_line=$(echo "$stripped_line" | sed 's/\[[^]]*\]//g')       # [text]
+    stripped_line=$(echo "$stripped_line" | sed 's/([^)]*)//g')         # (text)
+    stripped_line=$(echo "$stripped_line" | sed 's/{[^}]*}//g')         # {text}
+
+    # Handle labeled arrows: A -->|"text"| B or A -->|text| B
+    # Captures: source, arrow, label, target
+    if [[ "$stripped_line" =~ ([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*([-=.]+\>)[[:space:]]*\|\"?([^|\"]*?)\"?\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*) ]]; then
+      echo "${BASH_REMATCH[1]}|${BASH_REMATCH[4]}|${BASH_REMATCH[3]}"
+      continue
+    fi
+
+    # Handle labeled arrows with text on arrow: A -- text --> B or A -. text .-> B
+    if [[ "$stripped_line" =~ ([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*([-=.]+)[[:space:]]+([^-=.>]+)[[:space:]]+([-=.]*\>)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*) ]]; then
+      # Note: Don't use 'local' here - we're in a subshell from the pipe
+      label="${BASH_REMATCH[3]}"
+      label=$(echo "$label" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')  # trim
+      echo "${BASH_REMATCH[1]}|${BASH_REMATCH[5]}|$label"
+      continue
+    fi
+
+    # Handle unlabeled arrows: A --> B, A -.-> B, A ==> B, A -- B, A --- B
+    # Supports: -->, -.->,-.->, ==>, ---, --, <-->, <-.->
+    if [[ "$stripped_line" =~ ([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*(<?[-=.]+>?)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*) ]]; then
+      # Capture values before inner regex (which resets BASH_REMATCH)
+      src="${BASH_REMATCH[1]}"
+      arrow="${BASH_REMATCH[2]}"
+      tgt="${BASH_REMATCH[3]}"
+      # Check it's actually an arrow (has - or = or .)
+      if [[ "$arrow" =~ [-=.] ]]; then
+        echo "$src|$tgt|"
+      fi
+      continue
+    fi
+  done | sort -u
 }
 
 # Normalize entity name for matching
@@ -571,6 +787,872 @@ is_subsequence_match() {
       [[ $q_idx -eq $q_len ]] && return 0
     fi
   done
+  return 1
+}
+
+# Normalize a connection endpoint for fuzzy matching
+# Removes API prefixes, component suffixes, and normalizes case
+# Usage: normalize_connection_endpoint "OrganizationPage" -> "organization"
+# Usage: normalize_connection_endpoint "/api/v1/organizations" -> "organizations"
+normalize_connection_endpoint() {
+  local input="$1"
+  local normalized="$input"
+
+  # Remove API version prefixes
+  normalized="${normalized#/api/v1/}"
+  normalized="${normalized#/api/v2/}"
+  normalized="${normalized#/api/}"
+
+  # Remove common component suffixes
+  normalized="${normalized%Page}"
+  normalized="${normalized%Manager}"
+  normalized="${normalized%Editor}"
+  normalized="${normalized%Browser}"
+  normalized="${normalized%Tracker}"
+  normalized="${normalized%Dashboard}"
+  normalized="${normalized%Component}"
+  normalized="${normalized%Panel}"
+  normalized="${normalized%View}"
+  normalized="${normalized%API}"
+  normalized="${normalized%Service}"
+
+  # Normalize to lowercase, remove underscores/hyphens
+  normalized=$(echo "$normalized" | tr '[:upper:]' '[:lower:]' | tr -d '_-')
+
+  echo "$normalized"
+}
+
+# Check if two connection endpoints match (with fuzzy matching)
+# Handles different naming conventions between requirements and diagrams
+# Usage: connection_endpoints_match "OrganizationPage" "ORG" -> true
+# Returns: 0 if match, 1 if no match
+connection_endpoints_match() {
+  local expected="$1"
+  local actual="$2"
+
+  # Exact match (case-insensitive)
+  if [[ "${expected,,}" == "${actual,,}" ]]; then
+    return 0
+  fi
+
+  # Normalize both endpoints
+  local exp_norm
+  local act_norm
+  exp_norm=$(normalize_connection_endpoint "$expected")
+  act_norm=$(normalize_connection_endpoint "$actual")
+
+  # Exact match after normalization
+  [[ "$exp_norm" == "$act_norm" ]] && return 0
+
+  # Substring match (either direction)
+  [[ "$exp_norm" == *"$act_norm"* ]] && return 0
+  [[ "$act_norm" == *"$exp_norm"* ]] && return 0
+
+  # Subsequence match using existing function
+  is_subsequence_match "$exp_norm" "$act_norm" && return 0
+  is_subsequence_match "$act_norm" "$exp_norm" && return 0
+
+  # Handle plural/singular variations
+  local exp_singular="${exp_norm%s}"
+  local act_singular="${act_norm%s}"
+  [[ "$exp_singular" == "$act_norm" ]] && return 0
+  [[ "$exp_norm" == "$act_singular" ]] && return 0
+  [[ "$exp_singular" == "$act_singular" ]] && return 0
+
+  return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Checklist-Based Diagram Validation Functions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Extract required elements from requirements into a YAML checklist (LLM - once per session)
+# This provides a deterministic source of truth for validation instead of LLM judgment
+# Usage: extract_required_elements "$requirements_file" "$output_file"
+# Returns: 0 on success, 1 on failure
+extract_required_elements() {
+  local requirements_file="$1"
+  local output_file="$2"
+
+  if [ ! -f "$requirements_file" ]; then
+    log_warn "Requirements file not found: $requirements_file"
+    return 1
+  fi
+
+  if ! command -v claude &> /dev/null; then
+    log_warn "Claude CLI not available for checklist extraction"
+    return 1
+  fi
+
+  local prompt="Extract REQUIRED elements from this specification.
+
+OUTPUT FORMAT (YAML only - no other text):
+tables:
+  - table_name_1
+  - table_name_2
+endpoints:
+  - /api/v1/resource1
+  - /api/v1/resource2
+components:
+  - ComponentName1
+  - ComponentName2
+connections:
+  - source: ComponentName1
+    target: /api/v1/resource1
+    type: calls
+  - source: /api/v1/resource1
+    target: table_name_1
+    type: reads
+
+RULES:
+- tables: Main database tables only (NOT junction tables unless explicitly mentioned)
+- endpoints: Main resource paths only (NOT sub-routes like /{id}, /request, /confirm)
+- components: Distinct page/component names only (frontend UI elements)
+- connections: Data flow between elements (REQUIRED for architecture validation)
+
+CONNECTION TYPES:
+- calls: Frontend component calls API endpoint
+- reads: API endpoint reads from database table
+- writes: API endpoint writes to database table
+- creates: API endpoint creates records in table
+- deletes: API endpoint deletes from table
+- triggers: One component triggers another (e.g., webhook, event)
+
+IMPORTANT:
+- Extract ONLY what is explicitly required in the spec
+- Do NOT infer or add related elements
+- Resource-level only (e.g., /api/v1/organizations, NOT /api/v1/organizations/{id})
+- If a category has no items, use empty list: []
+- Connections MUST show the data flow path: Component -> API -> Database
+
+EXAMPLE (for reference):
+tables:
+  - organizations
+endpoints:
+  - /api/v1/organizations
+components:
+  - OrganizationPage
+connections:
+  - source: OrganizationPage
+    target: /api/v1/organizations
+    type: calls
+  - source: /api/v1/organizations
+    target: organizations
+    type: reads
+
+SPECIFICATION:
+$(cat "$requirements_file")
+
+Output ONLY the YAML - no explanations, no markdown code blocks."
+
+  local response
+  response=$(claude --dangerously-skip-permissions --print "$prompt" 2>&1) || {
+    log_error "Failed to extract required elements"
+    return 1
+  }
+
+  # Clean the response - remove any markdown code blocks if present
+  response=$(echo "$response" | sed '/^```/d' | sed '/^yaml$/d')
+
+  # Validate it looks like YAML
+  if ! echo "$response" | grep -qE '^(tables|endpoints|components):'; then
+    log_error "Invalid response format - expected YAML with tables/endpoints/components"
+    echo "Response was: $response"
+    return 1
+  fi
+
+  # Save the checklist
+  echo "$response" > "$output_file"
+  log "Required elements checklist saved to: $output_file"
+  return 0
+}
+
+# Second extraction pass with conservative prompt (explicit mentions only)
+# Used for dual-LLM verification to catch hallucinations
+# Usage: extract_required_elements_conservative "$requirements_file" "$output_file"
+extract_required_elements_conservative() {
+  local requirements_file="$1"
+  local output_file="$2"
+
+  if [ ! -f "$requirements_file" ]; then
+    return 1
+  fi
+
+  if ! command -v claude &> /dev/null; then
+    return 1
+  fi
+
+  local prompt="Extract ONLY EXPLICITLY MENTIONED elements from this specification.
+
+OUTPUT FORMAT (YAML only - no other text):
+tables:
+  - name: table_name
+    evidence: \"quoted text from spec that mentions this\"
+endpoints:
+  - name: /api/v1/resource
+    evidence: \"quoted text from spec that mentions this\"
+components:
+  - name: ComponentName
+    evidence: \"quoted text from spec that mentions this\"
+connections:
+  - source: ComponentName
+    target: /api/v1/resource
+    type: calls
+
+STRICT RULES:
+- ONLY include items that are EXPLICITLY NAMED or DESCRIBED in the specification
+- Every item MUST have evidence: a direct quote from the spec that justifies inclusion
+- Do NOT infer tables from endpoint names (unless spec explicitly says 'store in X table')
+- Do NOT assume components exist (unless spec says 'add to X page' or 'create X component')
+- If unsure whether something is required, DO NOT include it
+- When in doubt, leave it out
+
+This is the CONSERVATIVE pass - we want high precision, not high recall.
+
+SPECIFICATION:
+$(cat "$requirements_file")
+
+Output ONLY the YAML - no explanations, no markdown code blocks."
+
+  local response
+  response=$(claude --dangerously-skip-permissions --print "$prompt" 2>&1) || {
+    return 1
+  }
+
+  # Clean the response
+  response=$(echo "$response" | sed '/^```/d' | sed '/^yaml$/d')
+
+  # Validate format
+  if ! echo "$response" | grep -qE '^(tables|endpoints|components):'; then
+    return 1
+  fi
+
+  echo "$response" > "$output_file"
+  return 0
+}
+
+# Compare two checklists and produce merged result with confidence scores
+# Items in both = high confidence, items in only one = low confidence (flagged)
+# Usage: compare_checklists "$checklist_a" "$checklist_b" "$output_file"
+compare_checklists() {
+  local checklist_a="$1"
+  local checklist_b="$2"
+  local output_file="$3"
+
+  local high_confidence=()
+  local low_confidence=()
+
+  # Extract tables from both
+  local tables_a tables_b
+  tables_a=$(grep -A 100 '^tables:' "$checklist_a" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^\s*-\s*(name:)?' | sed 's/.*name:[[:space:]]*//' | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '"' | tr -d "'" | grep -v '^$' || echo "")
+  tables_b=$(grep -A 100 '^tables:' "$checklist_b" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^\s*-\s*(name:)?' | sed 's/.*name:[[:space:]]*//' | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '"' | tr -d "'" | grep -v '^$' || echo "")
+
+  # Find consensus and discrepancies for tables
+  while IFS= read -r table; do
+    [ -z "$table" ] && continue
+    local normalized
+    normalized=$(echo "$table" | tr '[:upper:]' '[:lower:]' | tr '_' ' ')
+    if echo "$tables_b" | tr '[:upper:]' '[:lower:]' | tr '_' ' ' | grep -qi "$normalized"; then
+      high_confidence+=("TABLE:$table:BOTH")
+    else
+      low_confidence+=("TABLE:$table:ONLY_LIBERAL")
+    fi
+  done <<< "$tables_a"
+
+  # Check for items only in conservative (high trust)
+  while IFS= read -r table; do
+    [ -z "$table" ] && continue
+    local normalized
+    normalized=$(echo "$table" | tr '[:upper:]' '[:lower:]' | tr '_' ' ')
+    if ! echo "$tables_a" | tr '[:upper:]' '[:lower:]' | tr '_' ' ' | grep -qi "$normalized"; then
+      high_confidence+=("TABLE:$table:ONLY_CONSERVATIVE")
+    fi
+  done <<< "$tables_b"
+
+  # Extract endpoints from both
+  local endpoints_a endpoints_b
+  endpoints_a=$(grep -A 100 '^endpoints:' "$checklist_a" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^\s*-\s*(name:)?' | sed 's/.*name:[[:space:]]*//' | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '"' | tr -d "'" | grep -v '^$' || echo "")
+  endpoints_b=$(grep -A 100 '^endpoints:' "$checklist_b" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^\s*-\s*(name:)?' | sed 's/.*name:[[:space:]]*//' | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '"' | tr -d "'" | grep -v '^$' || echo "")
+
+  while IFS= read -r endpoint; do
+    [ -z "$endpoint" ] && continue
+    # Extract resource name for comparison
+    local resource
+    resource=$(echo "$endpoint" | sed 's|.*/||' | sed 's/{.*}//')
+    if echo "$endpoints_b" | grep -qi "$resource"; then
+      high_confidence+=("ENDPOINT:$endpoint:BOTH")
+    else
+      low_confidence+=("ENDPOINT:$endpoint:ONLY_LIBERAL")
+    fi
+  done <<< "$endpoints_a"
+
+  while IFS= read -r endpoint; do
+    [ -z "$endpoint" ] && continue
+    local resource
+    resource=$(echo "$endpoint" | sed 's|.*/||' | sed 's/{.*}//')
+    if ! echo "$endpoints_a" | grep -qi "$resource"; then
+      high_confidence+=("ENDPOINT:$endpoint:ONLY_CONSERVATIVE")
+    fi
+  done <<< "$endpoints_b"
+
+  # Extract components from both
+  local components_a components_b
+  components_a=$(grep -A 100 '^components:' "$checklist_a" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^\s*-\s*(name:)?' | sed 's/.*name:[[:space:]]*//' | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '"' | tr -d "'" | grep -v '^$' || echo "")
+  components_b=$(grep -A 100 '^components:' "$checklist_b" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^\s*-\s*(name:)?' | sed 's/.*name:[[:space:]]*//' | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '"' | tr -d "'" | grep -v '^$' || echo "")
+
+  while IFS= read -r component; do
+    [ -z "$component" ] && continue
+    local base
+    base=$(echo "$component" | sed 's/Page$//' | sed 's/Component$//' | tr '[:upper:]' '[:lower:]')
+    if echo "$components_b" | sed 's/Page$//' | sed 's/Component$//' | tr '[:upper:]' '[:lower:]' | grep -qi "$base"; then
+      high_confidence+=("COMPONENT:$component:BOTH")
+    else
+      low_confidence+=("COMPONENT:$component:ONLY_LIBERAL")
+    fi
+  done <<< "$components_a"
+
+  while IFS= read -r component; do
+    [ -z "$component" ] && continue
+    local base
+    base=$(echo "$component" | sed 's/Page$//' | sed 's/Component$//' | tr '[:upper:]' '[:lower:]')
+    if ! echo "$components_a" | sed 's/Page$//' | sed 's/Component$//' | tr '[:upper:]' '[:lower:]' | grep -qi "$base"; then
+      high_confidence+=("COMPONENT:$component:ONLY_CONSERVATIVE")
+    fi
+  done <<< "$components_b"
+
+  # Write comparison results
+  {
+    echo "# Checklist Comparison Results"
+    echo "# BOTH = High confidence (found by both passes)"
+    echo "# ONLY_CONSERVATIVE = High confidence (explicit evidence)"
+    echo "# ONLY_LIBERAL = Low confidence (may be hallucination)"
+    echo ""
+    echo "high_confidence:"
+    for item in "${high_confidence[@]}"; do
+      echo "  - $item"
+    done
+    echo ""
+    echo "low_confidence:"
+    for item in "${low_confidence[@]}"; do
+      echo "  - $item"
+    done
+  } > "$output_file"
+
+  # Return count of low confidence items
+  echo "${#low_confidence[@]}"
+}
+
+# Validate checklist entities against original requirements text
+# Checks if each entity can be grounded in the requirements
+# Usage: validate_checklist_against_requirements "$checklist_file" "$requirements_file" "$output_file"
+validate_checklist_against_requirements() {
+  local checklist_file="$1"
+  local requirements_file="$2"
+  local output_file="$3"
+
+  if [ ! -f "$checklist_file" ] || [ ! -f "$requirements_file" ]; then
+    return 1
+  fi
+
+  local requirements_text
+  requirements_text=$(cat "$requirements_file" | tr '[:upper:]' '[:lower:]')
+
+  local grounded=()
+  local ungrounded=()
+
+  # Check tables
+  while IFS= read -r table; do
+    [ -z "$table" ] && continue
+    table=$(echo "$table" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/.*name:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+    [ -z "$table" ] && continue
+
+    # Check if table name or its parts appear in requirements
+    local search_terms
+    search_terms=$(echo "$table" | tr '_' '\n' | tr '[:upper:]' '[:lower:]')
+    local found=false
+    while IFS= read -r term; do
+      [ -z "$term" ] && continue
+      [ ${#term} -lt 3 ] && continue
+      if echo "$requirements_text" | grep -qi "$term"; then
+        found=true
+        break
+      fi
+    done <<< "$search_terms"
+
+    if [ "$found" = true ]; then
+      grounded+=("TABLE:$table")
+    else
+      ungrounded+=("TABLE:$table:NOT_IN_REQUIREMENTS")
+    fi
+  done < <(grep -A 100 '^tables:' "$checklist_file" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^\s*-' | head -50)
+
+  # Check endpoints
+  while IFS= read -r endpoint; do
+    [ -z "$endpoint" ] && continue
+    endpoint=$(echo "$endpoint" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/.*name:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+    [ -z "$endpoint" ] && continue
+
+    # Extract resource name from endpoint
+    local resource
+    resource=$(echo "$endpoint" | sed 's|.*/||' | sed 's/{.*}//' | tr '_' ' ' | tr '-' ' ')
+
+    if echo "$requirements_text" | grep -qi "$resource"; then
+      grounded+=("ENDPOINT:$endpoint")
+    else
+      # Try singular
+      local singular
+      singular=$(echo "$resource" | sed 's/s$//')
+      if echo "$requirements_text" | grep -qi "$singular"; then
+        grounded+=("ENDPOINT:$endpoint")
+      else
+        ungrounded+=("ENDPOINT:$endpoint:NOT_IN_REQUIREMENTS")
+      fi
+    fi
+  done < <(grep -A 100 '^endpoints:' "$checklist_file" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^\s*-' | head -50)
+
+  # Check components
+  while IFS= read -r component; do
+    [ -z "$component" ] && continue
+    component=$(echo "$component" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/.*name:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+    [ -z "$component" ] && continue
+
+    # Extract base name without suffixes
+    local base
+    base=$(echo "$component" | \
+      sed 's/Page$//' | sed 's/Manager$//' | sed 's/Editor$//' | \
+      sed 's/Component$//' | sed 's/Modal$//' | sed 's/Dialog$//' | \
+      tr '[:upper:]' ' ' | tr -s ' ' | sed 's/^ //' | tr '[:upper:]' '[:lower:]')
+
+    local found=false
+    for word in $base; do
+      [ ${#word} -lt 3 ] && continue
+      if echo "$requirements_text" | grep -qi "$word"; then
+        found=true
+        break
+      fi
+    done
+
+    if [ "$found" = true ]; then
+      grounded+=("COMPONENT:$component")
+    else
+      ungrounded+=("COMPONENT:$component:NOT_IN_REQUIREMENTS")
+    fi
+  done < <(grep -A 100 '^components:' "$checklist_file" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^\s*-' | head -50)
+
+  # Write validation results
+  {
+    echo "# Requirements Grounding Validation"
+    echo "# Checks if checklist entities appear in original requirements"
+    echo ""
+    echo "grounded:"
+    for item in "${grounded[@]}"; do
+      echo "  - $item"
+    done
+    echo ""
+    echo "ungrounded:"
+    for item in "${ungrounded[@]}"; do
+      echo "  - $item"
+    done
+    echo ""
+    echo "summary:"
+    echo "  total: $((${#grounded[@]} + ${#ungrounded[@]}))"
+    echo "  grounded: ${#grounded[@]}"
+    echo "  ungrounded: ${#ungrounded[@]}"
+  } > "$output_file"
+
+  # Return count of ungrounded items
+  echo "${#ungrounded[@]}"
+}
+
+# Main verified extraction function - orchestrates dual-LLM + validation
+# Usage: extract_required_elements_verified "$requirements_file" "$output_file" "$session_dir"
+# Returns: 0 on success, creates verified checklist with confidence annotations
+extract_required_elements_verified() {
+  local requirements_file="$1"
+  local output_file="$2"
+  local session_dir="$3"
+
+  if [ ! -f "$requirements_file" ]; then
+    log_warn "Requirements file not found: $requirements_file"
+    return 1
+  fi
+
+  if ! command -v claude &> /dev/null; then
+    log_warn "Claude CLI not available for checklist extraction"
+    return 1
+  fi
+
+  local liberal_checklist="$session_dir/checklist-liberal.yaml"
+  local conservative_checklist="$session_dir/checklist-conservative.yaml"
+  local comparison_file="$session_dir/checklist-comparison.yaml"
+  local grounding_file="$session_dir/checklist-grounding.yaml"
+
+  # Phase 1: Liberal extraction (original prompt - captures more)
+  log "Phase 1: Liberal extraction pass..."
+  if ! extract_required_elements "$requirements_file" "$liberal_checklist"; then
+    log_warn "Liberal extraction failed, falling back to single-pass mode"
+    # Fall back to simple extraction
+    extract_required_elements "$requirements_file" "$output_file"
+    return $?
+  fi
+
+  # Phase 2: Conservative extraction (only explicit mentions)
+  log "Phase 2: Conservative extraction pass..."
+  if ! extract_required_elements_conservative "$requirements_file" "$conservative_checklist"; then
+    log_warn "Conservative extraction failed, using liberal-only mode"
+    cp "$liberal_checklist" "$output_file"
+    return 0
+  fi
+
+  # Phase 3: Compare checklists
+  log "Phase 3: Comparing extraction results..."
+  local low_confidence_count
+  low_confidence_count=$(compare_checklists "$liberal_checklist" "$conservative_checklist" "$comparison_file")
+  log "Comparison complete: $low_confidence_count items flagged as low confidence"
+
+  # Phase 4: Validate against requirements text
+  log "Phase 4: Validating against requirements text..."
+  local ungrounded_count
+  ungrounded_count=$(validate_checklist_against_requirements "$liberal_checklist" "$requirements_file" "$grounding_file")
+  log "Grounding check complete: $ungrounded_count items not found in requirements"
+
+  # Phase 5: Generate final verified checklist with annotations
+  log "Phase 5: Generating verified checklist..."
+  generate_verified_checklist "$liberal_checklist" "$comparison_file" "$grounding_file" "$output_file"
+
+  # Report summary
+  if [ "$low_confidence_count" -gt 0 ] || [ "$ungrounded_count" -gt 0 ]; then
+    log_warn "Checklist verification found potential issues:"
+    [ "$low_confidence_count" -gt 0 ] && log_warn "  - $low_confidence_count items only found by liberal pass (may be inferred)"
+    [ "$ungrounded_count" -gt 0 ] && log_warn "  - $ungrounded_count items not explicitly mentioned in requirements"
+    log "Review: $session_dir/checklist-comparison.yaml and $session_dir/checklist-grounding.yaml"
+  else
+    log_success "Checklist verified: all items confirmed by both passes and grounded in requirements"
+  fi
+
+  return 0
+}
+
+# Generate final checklist with confidence annotations
+# Merges liberal checklist with verification results
+# Usage: generate_verified_checklist "$liberal" "$comparison" "$grounding" "$output"
+generate_verified_checklist() {
+  local liberal_checklist="$1"
+  local comparison_file="$2"
+  local grounding_file="$3"
+  local output_file="$4"
+
+  # Read low-confidence items from comparison
+  local low_conf_items=""
+  if [ -f "$comparison_file" ]; then
+    low_conf_items=$(grep -A 100 '^low_confidence:' "$comparison_file" 2>/dev/null | sed '/^[a-z_]*:/,$d' | grep -v '^$' || echo "")
+  fi
+
+  # Read ungrounded items
+  local ungrounded_items=""
+  if [ -f "$grounding_file" ]; then
+    ungrounded_items=$(grep -A 100 '^ungrounded:' "$grounding_file" 2>/dev/null | sed '/^[a-z_]*:/,$d' | grep -v '^$' || echo "")
+  fi
+
+  # Start output with header
+  {
+    echo "# Verified Required Elements Checklist"
+    echo "# Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    echo "# Verification: dual-LLM + requirements grounding"
+    echo "#"
+    echo "# Confidence levels:"
+    echo "#   (no annotation) = High confidence (both passes + grounded)"
+    echo "#   [INFERRED] = Only found by liberal pass (may be implied, not explicit)"
+    echo "#   [UNGROUNDED] = Not found in requirements text (potential hallucination)"
+    echo ""
+  } > "$output_file"
+
+  # Process tables
+  echo "tables:" >> "$output_file"
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [[ "$line" =~ ^tables: ]] && continue
+    [[ ! "$line" =~ ^[[:space:]]*- ]] && [[ "$line" =~ ^[a-z]+: ]] && break
+
+    local table_name
+    table_name=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/.*name:[[:space:]]*//' | tr -d '"' | tr -d "'" | head -c 100)
+    [ -z "$table_name" ] && continue
+
+    local annotation=""
+    if echo "$low_conf_items" | grep -qi "TABLE:$table_name:ONLY_LIBERAL"; then
+      annotation=" # [INFERRED]"
+    fi
+    if echo "$ungrounded_items" | grep -qi "TABLE:$table_name"; then
+      annotation=" # [UNGROUNDED]"
+    fi
+
+    echo "  - name: $table_name$annotation" >> "$output_file"
+  done < <(grep -A 100 '^tables:' "$liberal_checklist" 2>/dev/null | head -60)
+
+  # Process endpoints
+  echo "endpoints:" >> "$output_file"
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [[ "$line" =~ ^endpoints: ]] && continue
+    [[ ! "$line" =~ ^[[:space:]]*- ]] && [[ "$line" =~ ^[a-z]+: ]] && break
+
+    local endpoint_name
+    endpoint_name=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/.*name:[[:space:]]*//' | tr -d '"' | tr -d "'" | head -c 100)
+    [ -z "$endpoint_name" ] && continue
+
+    local annotation=""
+    local resource
+    resource=$(echo "$endpoint_name" | sed 's|.*/||' | sed 's/{.*}//')
+    if echo "$low_conf_items" | grep -qi "ENDPOINT:.*$resource.*:ONLY_LIBERAL"; then
+      annotation=" # [INFERRED]"
+    fi
+    if echo "$ungrounded_items" | grep -qi "ENDPOINT:.*$resource"; then
+      annotation=" # [UNGROUNDED]"
+    fi
+
+    echo "  - name: $endpoint_name$annotation" >> "$output_file"
+  done < <(grep -A 100 '^endpoints:' "$liberal_checklist" 2>/dev/null | head -60)
+
+  # Process components
+  echo "components:" >> "$output_file"
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [[ "$line" =~ ^components: ]] && continue
+    [[ ! "$line" =~ ^[[:space:]]*- ]] && [[ "$line" =~ ^[a-z]+: ]] && break
+
+    local component_name
+    component_name=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/.*name:[[:space:]]*//' | tr -d '"' | tr -d "'" | head -c 100)
+    [ -z "$component_name" ] && continue
+
+    local annotation=""
+    local base
+    base=$(echo "$component_name" | sed 's/Page$//' | sed 's/Component$//')
+    if echo "$low_conf_items" | grep -qi "COMPONENT:.*$base.*:ONLY_LIBERAL"; then
+      annotation=" # [INFERRED]"
+    fi
+    if echo "$ungrounded_items" | grep -qi "COMPONENT:.*$base"; then
+      annotation=" # [UNGROUNDED]"
+    fi
+
+    echo "  - name: $component_name$annotation" >> "$output_file"
+  done < <(grep -A 100 '^components:' "$liberal_checklist" 2>/dev/null | head -60)
+
+  # Copy connections section as-is (connections are harder to verify programmatically)
+  echo "connections:" >> "$output_file"
+  grep -A 200 '^connections:' "$liberal_checklist" 2>/dev/null | tail -n +2 | while IFS= read -r line; do
+    [[ "$line" =~ ^[a-z]+:[[:space:]]*$ ]] && [[ ! "$line" =~ ^[[:space:]] ]] && break
+    echo "$line" >> "$output_file"
+  done
+
+  return 0
+}
+
+# Validate extracted diagram elements against the required elements checklist
+# Uses fuzzy matching at resource level (not sub-routes)
+# Usage: validate_against_checklist "$checklist_file" "$extracted_elements"
+# Returns: 0 if all required elements found, 1 with missing items if gaps
+validate_against_checklist() {
+  local checklist_file="$1"
+  local extracted_elements="$2"
+  local missing=()
+
+  if [ ! -f "$checklist_file" ]; then
+    log_warn "Checklist file not found: $checklist_file"
+    return 0  # Skip validation if no checklist
+  fi
+
+  # Normalize extracted elements for comparison
+  local extracted_normalized
+  extracted_normalized=$(echo "$extracted_elements" | tr '[:upper:]' '[:lower:]' | tr '_' ' ' | tr '-' ' ')
+
+  # Check tables (fuzzy - handles underscores, plurals, case)
+  while IFS= read -r table; do
+    [ -z "$table" ] && continue
+    table=$(echo "$table" | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '[:space:]')
+    [ -z "$table" ] && continue
+
+    local normalized
+    normalized=$(echo "$table" | tr '[:upper:]' '[:lower:]' | tr '_' ' ')
+
+    # Try exact match first, then fuzzy
+    if ! echo "$extracted_normalized" | grep -qi "$normalized"; then
+      # Try without common suffixes
+      local base
+      base=$(echo "$normalized" | sed 's/s$//')
+      if ! echo "$extracted_normalized" | grep -qi "$base"; then
+        missing+=("TABLE: $table")
+      fi
+    fi
+  done < <(grep -A 100 '^tables:' "$checklist_file" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^[[:space:]]*-' | head -50)
+
+  # Check endpoints (resource level - extract base resource name)
+  while IFS= read -r endpoint; do
+    [ -z "$endpoint" ] && continue
+    endpoint=$(echo "$endpoint" | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '[:space:]')
+    [ -z "$endpoint" ] && continue
+
+    # Extract resource name from endpoint (last path segment, without parameters)
+    local resource
+    resource=$(echo "$endpoint" | sed 's|.*/||' | sed 's/{.*}//' | tr '_' ' ' | tr '-' ' ' | tr '[:upper:]' '[:lower:]')
+    [ -z "$resource" ] && continue
+
+    if ! echo "$extracted_normalized" | grep -qi "$resource"; then
+      # Try singular form
+      local singular
+      singular=$(echo "$resource" | sed 's/s$//')
+      if ! echo "$extracted_normalized" | grep -qi "$singular"; then
+        missing+=("ENDPOINT: $endpoint")
+      fi
+    fi
+  done < <(grep -A 100 '^endpoints:' "$checklist_file" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^[[:space:]]*-' | head -50)
+
+  # Check components (fuzzy - strip common suffixes)
+  while IFS= read -r component; do
+    [ -z "$component" ] && continue
+    component=$(echo "$component" | sed 's/^[[:space:]]*-[[:space:]]*//' | tr -d '[:space:]')
+    [ -z "$component" ] && continue
+
+    # Strip common suffixes and convert to search-friendly format
+    local base
+    base=$(echo "$component" | \
+      sed 's/Page$//' | sed 's/Manager$//' | sed 's/Editor$//' | \
+      sed 's/Browser$//' | sed 's/Tracker$//' | sed 's/Dashboard$//' | \
+      sed 's/Component$//' | sed 's/Panel$//' | sed 's/View$//' | \
+      tr '[:upper:]' '[:lower:]' | tr '_' ' ' | tr '-' ' ')
+
+    if ! echo "$extracted_normalized" | grep -qi "$base"; then
+      missing+=("COMPONENT: $component")
+    fi
+  done < <(grep -A 100 '^components:' "$checklist_file" 2>/dev/null | sed '/^[a-z]*:/,$d' | grep -E '^[[:space:]]*-' | head -50)
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    echo "COVERAGE_COMPLETE"
+    return 0
+  else
+    echo "Missing required elements:"
+    printf '%s\n' "${missing[@]}"
+    return 1
+  fi
+}
+
+# Validate diagram connections against required connections from checklist
+# Ensures proper data flow: Component -> API -> Database (not Component -> Database directly)
+# Usage: validate_diagram_connections "$mermaid_content" "$session_dir"
+# Returns: 0 if all connections valid, 1 with missing connections if gaps found
+validate_diagram_connections() {
+  local mermaid_content="$1"
+  local session_dir="$2"
+  local checklist_file="$session_dir/required-elements.yaml"
+  local missing_connections=()
+  local wrong_connections=()
+
+  # Skip if no checklist or no connections section
+  if [ ! -f "$checklist_file" ]; then
+    echo "CONNECTIONS_VALID"
+    return 0
+  fi
+
+  # Check if checklist has connections section
+  if ! grep -q '^connections:' "$checklist_file"; then
+    echo "CONNECTIONS_VALID"
+    return 0
+  fi
+
+  # Extract actual connections from diagram
+  local actual_connections
+  actual_connections=$(extract_diagram_connections "$mermaid_content")
+
+  # Parse expected connections from checklist YAML
+  # Format in YAML:
+  # connections:
+  #   - source: ComponentName
+  #     target: /api/v1/resource
+  #     type: calls
+  local in_connections=false
+  local current_source=""
+  local current_target=""
+  local current_type=""
+
+  while IFS= read -r line; do
+    # Start of connections section
+    if [[ "$line" =~ ^connections: ]]; then
+      in_connections=true
+      continue
+    fi
+
+    # End of connections section (another top-level key)
+    if [[ "$in_connections" == true ]] && [[ "$line" =~ ^[a-z]+:[[:space:]]*$ ]] && [[ ! "$line" =~ ^[[:space:]] ]]; then
+      in_connections=false
+      continue
+    fi
+
+    # Skip if not in connections section
+    [[ "$in_connections" != true ]] && continue
+
+    # New connection entry (starts with -)
+    if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*source: ]]; then
+      # Process previous connection if exists
+      if [[ -n "$current_source" ]] && [[ -n "$current_target" ]]; then
+        if ! find_matching_connection "$current_source" "$current_target" "$actual_connections"; then
+          missing_connections+=("$current_source -> $current_target ($current_type)")
+        fi
+      fi
+      # Start new connection
+      current_source=$(echo "$line" | sed 's/.*source:[[:space:]]*//' | tr -d '"' | tr -d "'")
+      current_target=""
+      current_type=""
+      continue
+    fi
+
+    # Parse target
+    if [[ "$line" =~ ^[[:space:]]+target: ]]; then
+      current_target=$(echo "$line" | sed 's/.*target:[[:space:]]*//' | tr -d '"' | tr -d "'")
+      continue
+    fi
+
+    # Parse type
+    if [[ "$line" =~ ^[[:space:]]+type: ]]; then
+      current_type=$(echo "$line" | sed 's/.*type:[[:space:]]*//' | tr -d '"' | tr -d "'")
+      continue
+    fi
+  done < "$checklist_file"
+
+  # Process last connection
+  if [[ -n "$current_source" ]] && [[ -n "$current_target" ]]; then
+    if ! find_matching_connection "$current_source" "$current_target" "$actual_connections"; then
+      missing_connections+=("$current_source -> $current_target ($current_type)")
+    fi
+  fi
+
+  # Report results
+  if [ ${#missing_connections[@]} -eq 0 ]; then
+    echo "CONNECTIONS_VALID"
+    return 0
+  else
+    echo "Missing required connections:"
+    printf '  - %s\n' "${missing_connections[@]}"
+    return 1
+  fi
+}
+
+# Helper: Find if a connection exists in actual connections (with fuzzy matching)
+# Usage: find_matching_connection "source" "target" "$actual_connections"
+# Returns: 0 if found, 1 if not found
+find_matching_connection() {
+  local expected_source="$1"
+  local expected_target="$2"
+  local actual_connections="$3"
+
+  while IFS='|' read -r actual_source actual_target actual_label; do
+    [[ -z "$actual_source" ]] && continue
+
+    # Check if both endpoints match (using fuzzy matching)
+    if connection_endpoints_match "$expected_source" "$actual_source" && \
+       connection_endpoints_match "$expected_target" "$actual_target"; then
+      return 0
+    fi
+  done <<< "$actual_connections"
+
   return 1
 }
 
@@ -630,99 +1712,76 @@ check_entity_against_index() {
   echo "NEW"
 }
 
-# Verify diagram covers the original request (semantic check using LLM)
-# Two-phase approach: extract elements first, then verify coverage
-# This prevents hallucination by grounding verification in actual extracted content
-# Usage: verify_request_coverage "$diagram_content" "$original_request"
-# Returns: 0 if coverage complete, 1 with issues if problems found
+# Verify diagram covers the original request using checklist-based validation
+# Two-phase approach:
+#   1. Extract checklist from requirements ONCE per session (LLM)
+#   2. Validate diagram elements against checklist (programmatic - deterministic)
+# This prevents infinite loops caused by LLM judgment on "adequate" coverage
+# Usage: verify_request_coverage "$diagram_content" "$session_dir"
+# Returns: 0 if coverage complete, 1 with missing items if gaps found
 verify_request_coverage() {
   local diagram="$1"
-  local original_request="$2"
+  local session_dir="$2"
 
-  if ! command -v claude &> /dev/null; then
-    # Skip semantic check if Claude not available
-    return 0
+  local requirements_file="$session_dir/refined-requirements.md"
+  local checklist_file="$session_dir/required-elements.yaml"
+
+  # Fallback to feature description if refined requirements don't exist
+  if [ ! -f "$requirements_file" ]; then
+    requirements_file="$session_dir/raw-request.md"
   fi
 
-  # Phase 1: Extract elements from diagram (programmatic - no hallucination possible)
-  local extracted_elements=""
+  # Generate checklist once per session using verified extraction
+  if [ ! -f "$checklist_file" ]; then
+    log "Generating verified checklist (dual-LLM + requirements grounding)..."
+    if ! extract_required_elements_verified "$requirements_file" "$checklist_file" "$session_dir"; then
+      log_warn "Verified extraction failed, falling back to simple extraction..."
+      if ! extract_required_elements "$requirements_file" "$checklist_file"; then
+        log_warn "Could not generate checklist, skipping coverage check"
+        return 0
+      fi
+    fi
+    log "Checklist saved: $(wc -l < "$checklist_file") lines"
+  fi
+
+  # Extract elements from diagram (programmatic - no hallucination)
+  local extracted=""
 
   # Extract node IDs (e.g., NOTIF, ORGAPI, etc.)
-  local nodes
-  nodes=$(echo "$diagram" | grep -oE '^\s*[A-Z_][A-Z0-9_]*\[' | sed 's/\[$//' | sed 's/^\s*//' | sort -u | tr '\n' ', ' | sed 's/, $//')
-  [ -n "$nodes" ] && extracted_elements+="COMPONENTS/NODES: $nodes\n"
+  extracted+=$(echo "$diagram" | grep -oE '^\s*[A-Z_][A-Z0-9_]*\[' | sed 's/\[$//' | sed 's/^\s*//')
+  extracted+=$'\n'
 
   # Extract API endpoints
-  local apis
-  apis=$(echo "$diagram" | grep -oE '/api/v1/[a-z_/{}\-]+' | sort -u | tr '\n' ', ' | sed 's/, $//')
-  [ -n "$apis" ] && extracted_elements+="API ENDPOINTS: $apis\n"
+  extracted+=$(echo "$diagram" | grep -oE '/api/v1/[a-z_/{}\-]+')
+  extracted+=$'\n'
 
   # Extract labeled elements (node labels in quotes)
-  local labels
-  labels=$(echo "$diagram" | grep -oE '\["[^"]+"\]' | sed 's/\["//g; s/"\]//g; s/\[NEW\] //g' | sort -u | tr '\n' ', ' | sed 's/, $//')
-  [ -n "$labels" ] && extracted_elements+="LABELED ELEMENTS: $labels\n"
+  extracted+=$(echo "$diagram" | grep -oE '\["[^"]+"\]' | sed 's/\["//g; s/"\]//g; s/\[NEW\] //g')
+  extracted+=$'\n'
 
   # Extract database notation [(table)]
-  local tables
-  tables=$(echo "$diagram" | grep -oE '\[\([a-z_]+' | sed 's/\[(//' | sort -u | tr '\n' ', ' | sed 's/, $//')
-  [ -n "$tables" ] && extracted_elements+="TABLES/ENTITIES: $tables\n"
+  extracted+=$(echo "$diagram" | grep -oE '\[\([a-z_]+' | sed 's/\[(//')
+  extracted+=$'\n'
 
   # Extract subgraph names
-  local subgraphs
-  subgraphs=$(echo "$diagram" | grep -oE 'subgraph\s+[a-z_]+' | sed 's/subgraph\s*//' | sort -u | tr '\n' ', ' | sed 's/, $//')
-  [ -n "$subgraphs" ] && extracted_elements+="LAYERS: $subgraphs\n"
+  extracted+=$(echo "$diagram" | grep -oE 'subgraph\s+[a-z_]+' | sed 's/subgraph\s*//')
+  extracted+=$'\n'
 
   # Extract connection labels (what flows between components)
-  local flows
-  flows=$(echo "$diagram" | grep -oE '\|"[^"]+"\|' | sed 's/|"//g; s/"|//g' | sort -u | tr '\n' ', ' | sed 's/, $//')
-  [ -n "$flows" ] && extracted_elements+="DATA FLOWS: $flows\n"
+  extracted+=$(echo "$diagram" | grep -oE '\|"[^"]+"\|' | sed 's/|"//g; s/"|//g')
 
-  # Phase 2: Ask LLM to verify if extracted elements cover requirements
-  # Key change: LLM verifies a LIST, doesn't parse the diagram itself
-  local prompt="You are verifying diagram coverage.
-
-IMPORTANT: The elements below were EXTRACTED from the diagram - they definitely exist.
-Do NOT claim something is missing if it appears in the extracted elements list.
-
-## EXTRACTED ELEMENTS (these ARE in the diagram):
-$(echo -e "$extracted_elements")
-
-## FEATURE REQUIREMENTS:
-$original_request
-
-## TASK:
-Check if the extracted elements adequately cover the feature requirements.
-
-ONLY flag something as missing if:
-1. It is explicitly required in the feature request AND
-2. It does NOT appear (or have an equivalent) in the extracted elements above
-
-If coverage is adequate, respond exactly: COVERAGE_COMPLETE
-
-If there are genuine gaps, list ONLY items that are truly missing from the extracted list above."
-
-  local response
-  response=$(claude --dangerously-skip-permissions --print "$prompt" 2>&1) || {
-    # If Claude fails, skip this check
-    return 0
-  }
-
-  if echo "$response" | grep -q "COVERAGE_COMPLETE"; then
-    return 0
-  else
-    echo "$response"
-    return 1
-  fi
+  # Validate against checklist (deterministic - no LLM judgment)
+  validate_against_checklist "$checklist_file" "$extracted"
 }
 
 # Main verification function with auto-regeneration loop
-# Usage: verify_and_regenerate "$diagram_file" "$index_file" "$original_request" "$session_dir"
+# Uses checklist-based validation for deterministic coverage checking
+# Usage: verify_and_regenerate "$diagram_file" "$index_file" "$session_dir"
 # Returns: 0 if valid (possibly after fixes), 1 if still invalid after max retries
 verify_and_regenerate() {
   local diagram_file="$1"
   local index_file="$2"
-  local original_request="$3"
-  local session_dir="$4"
+  local session_dir="$3"
   local max_retries=3
   local retry=0
 
@@ -757,12 +1816,24 @@ verify_and_regenerate() {
       done < <(extract_diagram_entities "$diagram_file")
     fi
 
-    # Step 3: Semantic coverage check (only if syntax passes to save API calls)
+    # Step 3: Coverage check using checklist-based validation (deterministic)
+    # Uses session_dir to find/generate the required-elements.yaml checklist
     if [ -z "$errors" ]; then
       local coverage_errors
-      if ! coverage_errors=$(verify_request_coverage "$mermaid_content" "$original_request" 2>&1); then
-        if [ -n "$coverage_errors" ]; then
+      if ! coverage_errors=$(verify_request_coverage "$mermaid_content" "$session_dir" 2>&1); then
+        if [ -n "$coverage_errors" ] && [ "$coverage_errors" != "COVERAGE_COMPLETE" ]; then
           errors="COVERAGE ISSUES:\n$coverage_errors\n\n"
+        fi
+      fi
+    fi
+
+    # Step 3.5: Connection validation - verify proper data flow paths
+    # Catches wrong wiring like Component -> Database (bypassing API)
+    if [ -z "$errors" ]; then
+      local conn_errors
+      if ! conn_errors=$(validate_diagram_connections "$mermaid_content" "$session_dir" 2>&1); then
+        if [ -n "$conn_errors" ] && [ "$conn_errors" != "CONNECTIONS_VALID" ]; then
+          errors+="CONNECTION ISSUES:\n$conn_errors\n\n"
         fi
       fi
     fi
@@ -810,34 +1881,72 @@ verify_and_regenerate() {
 
     # Regenerate with specific feedback about errors
     if command -v claude &> /dev/null; then
-      local fix_prompt="Fix the issues in this Mermaid diagram.
+      # Load requirements context from session
+      local requirements_context=""
+      if [ -f "$session_dir/refined-requirements.md" ]; then
+        requirements_context=$(cat "$session_dir/refined-requirements.md")
+      elif [ -f "$session_dir/raw-request.md" ]; then
+        requirements_context=$(cat "$session_dir/raw-request.md")
+      fi
 
-CURRENT DIAGRAM:
+      # IMPORTANT: Fix prompt uses exact same format requirements as main prompt
+      # The output format section is placed FIRST to maximize compliance
+      local fix_prompt_file
+      fix_prompt_file=$(mktemp)
+      cat > "$fix_prompt_file" << FIX_PROMPT_EOF
+ENDPOINT TABLE MAPPING:
+- [YOUR FIRST ENDPOINT]: PRIMARY=[table], SECONDARY=[tables or none]
+
+Complete the mapping above and add the diagram below. Follow this EXACT format.
+
+===REQUIRED OUTPUT FORMAT===
+Line 1: ENDPOINT TABLE MAPPING:
+Lines 2-N: - /api/v1/path: PRIMARY=tablename, SECONDARY=other_tables
+Blank line
+$(printf '%s' '```mermaid')
+[Your corrected diagram]
+$(printf '%s' '```')
+
+NO OTHER TEXT. No explanations. No commentary. Start your response with the mapping.
+===END FORMAT===
+
+CURRENT DIAGRAM TO FIX:
 $mermaid_content
 
-VERIFIED ISSUES TO FIX:
+ISSUES TO FIX:
 $(echo -e "$errors")
 
 FEATURE CONTEXT:
-$original_request
+$requirements_context
 
-INSTRUCTIONS:
-- Add elements that are missing
-- Fix elements that are incorrect
-- Remove elements that are wrong (if the issues say so)
-- Keep elements that are already correct
-- Maintain consistent styling (classDef, subgraphs)
+RULES:
+- Add missing elements from COVERAGE ISSUES
+- Fix incorrect elements
+- Keep correct elements unchanged
+- Use T_ prefix for tables, _API suffix for endpoints
+- Use 2-3 letter frontend component IDs
 
-Output the corrected diagram in a mermaid code block."
+OUTPUT NOW (start with 'ENDPOINT TABLE MAPPING:'):
+FIX_PROMPT_EOF
+      local fix_prompt
+      fix_prompt=$(cat "$fix_prompt_file")
+      rm -f "$fix_prompt_file"
 
       # Save current diagram as backup
       cp "$diagram_file" "$diagram_file.backup-$retry"
 
-      # Regenerate
-      claude --dangerously-skip-permissions --print "$fix_prompt" 2>&1 > "$diagram_file" || {
+      # Regenerate to a temp file first
+      local raw_output="$diagram_file.raw-$retry"
+      claude --dangerously-skip-permissions --print "$fix_prompt" 2>&1 > "$raw_output" || {
         log_error "Regeneration failed, restoring backup"
         cp "$diagram_file.backup-$retry" "$diagram_file"
+        rm -f "$raw_output"
+        continue
       }
+
+      # Normalize the output to strip any non-conforming text
+      normalize_diagram_output "$raw_output" "$diagram_file"
+      rm -f "$raw_output"
     else
       log_warn "Claude CLI not available for auto-fix"
       break
@@ -2126,16 +3235,26 @@ $feedback_context
 </previous_feedback>
 
 <instructions>
-Create a flowchart TD (top-down) with three layers:
-- Frontend: Page/component that initiates the flow
-- Backend: API endpoints processing the request
-- Data: Database tables being read/written
+Create a flowchart TD (top-down) with EXACTLY this structure:
 
-Use exact component names from the architecture_index when they exist. The relationships section maps frontend components to their API dependencies and APIs to their table dependencies.
+LAYER 1 - Frontend (1-3 nodes only):
+- Main page component: {PREFIX}[PageName]
+- Optional modal/form: {PREFIX}_MODAL[ModalName] or {PREFIX}_FORM[FormName]
 
-When the feature requires elements not in the index, prefix them with [NEW] to indicate they need to be created (e.g., "[NEW] ReportsPage"). This helps distinguish existing infrastructure from proposed additions.
+LAYER 2 - Backend (1-3 nodes only):
+- Primary API endpoint: {PREFIX}_API["/api/v1/..."]
+- Optional secondary endpoints if distinct resources
 
-Keep the diagram focused: maximum 12 nodes across 3 subgraphs. Show data flow direction with descriptive edge labels.
+LAYER 3 - Data (1-3 tables only):
+- Primary table: T_{ABBREV}[(table_name)]
+- Foreign key tables only if explicitly referenced
+
+TOTAL: 3-9 nodes maximum. Each endpoint connects to exactly ONE primary table.
+
+Use exact component names from the architecture_index when they exist. Prefix new components with [NEW].
+
+CRITICAL: Do NOT add intermediate processing nodes (like "Validate", "Generate", "Store").
+Show only: Page -> API -> Table with labeled edges.
 </instructions>
 
 <data_layer_rules>
@@ -2207,66 +3326,191 @@ Mermaid syntax requirements for valid rendering:
 - Keep node IDs as simple alphanumeric identifiers
 </syntax_guidance>
 
+<deterministic_naming>
+CRITICAL: Use EXACTLY these naming conventions for consistent output:
+
+NODE ID RULES (follow precisely):
+- Frontend components: 2-3 uppercase letters (OM, RM, VE, MB, TD, ST)
+- Backend endpoints: Same prefix + "_API" suffix (ORG_API, REL_API, VIS_API, MKT_API, TRF_API, SOLD_API)
+- Database tables: "T_" prefix + abbreviated name (T_ORG, T_UO, T_TR, T_IV, T_IT, T_INV)
+
+SUBGRAPH RULES (follow precisely):
+- Use singular form: "Frontend" not "Frontends"
+- Exactly 3 subgraphs: frontend, backend, data
+- No nested subgraphs inside data layer
+- Format: subgraph name[Label]
+
+EDGE LABEL RULES (follow precisely):
+- Always quote API paths: ["/api/v1/path"]
+- FK references use column name: |item_id| not |belongs to|
+- CRUD labels: |"CRUD: tablename"|
+- Action labels: |"GET"| |"POST"| |"reads"| |"writes"|
+
+QUOTING RULES:
+- API paths always quoted: ["/api/v1/organizations"]
+- Labels with special chars quoted: ["[NEW] ComponentName"]
+- Table names in database notation: [(tablename)]
+</deterministic_naming>
+
 <example>
-A well-structured system flow diagram with labeled Backend→Data connections:
+A well-structured system flow diagram using EXACT naming conventions:
 \`\`\`mermaid
 flowchart TD
     subgraph frontend[Frontend]
-        A[InventoryPage]
-        B["[NEW] BulkImportModal"]
+        IP[InventoryPage]
+        BI["[NEW] BulkImportModal"]
     end
     subgraph backend[Backend]
-        C["/api/v1/inventory/items"]
-        D["[NEW] /api/v1/inventory/bulk-import"]
+        INV_API["/api/v1/inventory/items"]
+        BULK_API["[NEW] /api/v1/inventory/bulk-import"]
     end
     subgraph data[Data Layer]
-        E[(inventory_items)]
-        F[(inventory_categories)]
-        G["[NEW] import_batches"]
+        T_INV[(inventory_items)]
+        T_CAT[(inventory_categories)]
+        T_BATCH["[NEW] (import_batches)"]
     end
-    A -->|"GET items"| C
-    B -->|"POST bulk data"| D
-    C -->|"CRUD: inventory_items"| E
-    C -->|"JOIN: categories"| F
-    D -->|"CRUD: import_batches"| G
-    D -->|"writes"| E
+    IP -->|"GET"| INV_API
+    BI -->|"POST"| BULK_API
+    INV_API -->|"CRUD: inventory_items"| T_INV
+    INV_API -->|"JOIN: category_id"| T_CAT
+    BULK_API -->|"CRUD: import_batches"| T_BATCH
+    BULK_API -->|"writes"| T_INV
 
     classDef newNode fill:#e1f5fe,stroke:#01579b
-    class B,D,G newNode
+    class BI,BULK_API,T_BATCH newNode
 \`\`\`
 
-Reasoning shown:
-- /api/v1/inventory/items: PRIMARY=inventory_items (resource noun), SECONDARY=inventory_categories (joined for display)
-- /api/v1/inventory/bulk-import: PRIMARY=import_batches (tracks the batch), SECONDARY=inventory_items (where items are written)
+Notice the EXACT naming pattern:
+- Frontend: 2-letter IDs (IP, BI)
+- Backend: PREFIX_API suffix (INV_API, BULK_API)
+- Database: T_ prefix (T_INV, T_CAT, T_BATCH)
+- All paths quoted, all edge labels quoted
 </example>
 
+<frontend_subgraph_schema>
+MANDATORY: Frontend subgraph components MUST follow this EXACT pattern:
+
+For any page with a form that stores state:
+1. PAGE node: {PREFIX}[PageName] - The main page component
+2. FORM node: {PREFIX}_FORM[{PageName} Form] - The form component (use "Form" suffix)
+3. STATE node: {PREFIX}_STATE[Auth State|Form State|etc] - State storage (use "State" suffix)
+
+EXACT LABELS (use these verbatim):
+- Login forms: LP_FORM[Login Form], LP_STATE[Auth State]
+- Search forms: {X}_FORM[Search Form], {X}_STATE[Search State]
+- Edit forms: {X}_FORM[Edit Form], {X}_STATE[Form State]
+
+DO NOT use alternative labels like:
+- "Credentials Form" (use "Login Form")
+- "Token Storage" (use "Auth State")
+- "Input Form" (use the specific type + "Form")
+</frontend_subgraph_schema>
+
+<edge_label_schema>
+MANDATORY: Edge labels MUST use these EXACT formats:
+
+HTTP REQUEST LABELS (choose one, use verbatim):
+- |"POST email, password"| - for login/auth (comma-separated params)
+- |"POST {resource}"| - for creation
+- |"GET"| - for retrieval
+- |"PUT {resource}"| - for update
+- |"DELETE"| - for deletion
+
+DATABASE RESULT LABELS (use verbatim):
+- |"user record"| - for user lookups
+- |"item record"| - for item lookups
+- |"{entity} record"| - pattern for other entities
+
+PROCESSING LABELS (use verbatim):
+- |"bcrypt verify"| - for password verification
+- |"access_token, token_type"| - for JWT response
+- |"store token"| - for token storage
+
+DO NOT use alternatives like:
+- "POST email/password" (use "POST email, password")
+- "valid credentials" (use "bcrypt verify")
+- "access_token" alone (use "access_token, token_type")
+</edge_label_schema>
+
+<flow_pattern_schema>
+MANDATORY: Success-only flows (do not show error paths):
+
+For authentication flows, use this EXACT pattern:
+LP --> LP_FORM
+LP_FORM -->|"POST email, password"| AUTH_API
+AUTH_API -->|"SELECT by email"| T_USERS
+T_USERS -->|"user record"| PWD_VERIFY
+PWD_VERIFY -->|"bcrypt verify"| JWT_GEN
+JWT_GEN -->|"access_token, token_type"| LP_STATE
+LP_STATE -->|"store token"| LP
+
+DO NOT add error handling arrows like:
+- PWD_VERIFY -->|"invalid credentials"| LP_FORM
+- AUTH_API -->|"error"| LP_FORM
+
+Show the happy path only. Error handling is implementation detail.
+</flow_pattern_schema>
+
 <output_format>
-First, show your table reasoning, then the diagram:
+###OUTPUT_START###
+
+Your response MUST begin with EXACTLY this marker and format:
 
 ENDPOINT TABLE MAPPING:
-- {endpoint}: PRIMARY={table} ({reason}), SECONDARY={tables} ({reasons})
-- ...
+
+- /api/v1/{path}: PRIMARY={table} ({reason})
 
 \`\`\`mermaid
 flowchart TD
-    ...
+    subgraph frontend[Frontend]
+        ...
+    end
+    subgraph backend[Backend]
+        ...
+    end
+    subgraph data[Data Layer]
+        ...
+    end
+    ...connections...
 \`\`\`
+
+###OUTPUT_END###
+
+STRICT REQUIREMENTS:
+1. First line of response: "ENDPOINT TABLE MAPPING:"
+2. No text before "ENDPOINT TABLE MAPPING:"
+3. No text after the closing \`\`\`
+4. Use EXACT labels from frontend_subgraph_schema
+5. Use EXACT labels from edge_label_schema
+6. Follow EXACT flow pattern from flow_pattern_schema
 </output_format>
+
+<final_reminder>
+BEFORE YOU RESPOND, verify:
+[ ] Response starts with "ENDPOINT TABLE MAPPING:" (nothing before it)
+[ ] Frontend uses: {X}[Page], {X}_FORM[...Form], {X}_STATE[...State]
+[ ] Edge labels match the edge_label_schema EXACTLY
+[ ] Flow shows happy path only (no error arrows)
+[ ] Response ends with closing \`\`\` (nothing after it)
+</final_reminder>
 PROMPT_EOF
 
-      claude --dangerously-skip-permissions --print "$(cat "$context_file")" 2>&1 | tee "$SESSION_DIR/flow-diagram-iter-$iteration.md" || {
+      claude --dangerously-skip-permissions --print "$(cat "$context_file")" 2>&1 | tee "$SESSION_DIR/flow-diagram-iter-$iteration.raw.md" || {
         log_error "Flow diagram generation had issues"
       }
       rm -f "$context_file"
 
-      # Verify and auto-regenerate if needed
+      # Normalize output: extract only ENDPOINT TABLE MAPPING section and mermaid block
+      # This strips any explanatory prose that the LLM might have added
+      normalize_diagram_output "$SESSION_DIR/flow-diagram-iter-$iteration.raw.md" "$SESSION_DIR/flow-diagram-iter-$iteration.md"
+
+      # Verify and auto-regenerate if needed (uses checklist-based validation)
       echo ""
       start_spinner "Validating diagram (syntax, schema, coverage)..."
       local arch_index="$PROJECT_ROOT/.claude/cache/architecture/index.yaml"
       if verify_and_regenerate \
           "$SESSION_DIR/flow-diagram-iter-$iteration.md" \
           "$arch_index" \
-          "$requirements_context" \
           "$SESSION_DIR"; then
         stop_spinner ""
         log_success "Diagram passed all validation checks"
