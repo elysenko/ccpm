@@ -2281,21 +2281,21 @@ prompt_step_resume() {
   echo ""
   echo -e "  ${YELLOW}Found existing $description${NC}"
   echo ""
-  echo "  [C] Continue with existing progress"
-  echo "  [R] Restart this step from scratch"
+  echo "  [R] Resume with existing progress"
+  echo "  [D] Delete and restart from scratch"
   echo ""
-  printf "  Choice [C/r]: "
+  printf "  Choice [R/d]: "
   read -r choice
 
-  if [[ "$choice" =~ ^[Rr]$ ]]; then
-    # Restart: delete existing files
+  if [[ "$choice" =~ ^[Dd]$ ]]; then
+    # Delete: remove existing files and restart
     for f in "${existing_files[@]}"; do
       rm -f "$f"
     done
-    echo -e "  ${DIM}Cleared previous progress${NC}"
+    echo -e "  ${DIM}Deleted previous progress${NC}"
     return 1  # Signal: restart
   else
-    echo -e "  ${GREEN}Continuing with existing progress${NC}"
+    echo -e "  ${GREEN}Resuming with existing progress${NC}"
     return 0  # Signal: continue
   fi
 }
@@ -3164,53 +3164,38 @@ flow_diagram_loop() {
     log "Loaded architecture index with known components, endpoints, and tables"
   fi
 
-  # Data Layer Interrogation - gather info for consistent API→Table mapping
+  # Data Layer Interrogation - auto-analyze for consistent API→Table mapping
   local data_layer_context=""
   if [ ! -f "$SESSION_DIR/data-layer-answers.md" ]; then
     echo ""
-    echo -e "  ${CYAN}${BOLD}Data Layer Questions${NC} ${DIM}(helps ensure consistent diagrams)${NC}"
+    echo -e "  ${CYAN}${BOLD}Analyzing Data Layer${NC} ${DIM}(auto-inferring from requirements)${NC}"
     echo ""
 
+    local data_entities=""
+    local data_references=""
+    local data_operations=""
+    local data_access_pattern=""
+
     # Infer primary entities from requirements using Claude
-    local inferred_entities=""
     if command -v claude &> /dev/null; then
       log "Analyzing requirements for data entities..."
-      inferred_entities=$(claude --dangerously-skip-permissions --print "Based on this feature description, list the main data things (nouns) that will be stored/managed. Just list them comma-separated, no explanation:
+      data_entities=$(claude --dangerously-skip-permissions --print "Based on this feature description, list the main data things (nouns) that will be stored/managed. Just list them comma-separated, no explanation:
 
 Feature: $SESSION_NAME
 Requirements: $requirements_context
 
 Example output: listings, offers, pricing agreements" 2>/dev/null | tail -1 | tr -d '\r') || true
+      [ -n "$data_entities" ] && echo -e "  ${DIM}Entities:${NC} $data_entities"
     fi
 
-    # Question 1: Confirm inferred entities
-    if [ -n "$inferred_entities" ]; then
-      echo -e "  ${BOLD}1. This feature appears to manage: ${CYAN}$inferred_entities${NC}"
-      echo -e "     ${DIM}Press Enter to confirm, or type corrections${NC}"
-      echo -ne "     ${MAGENTA}Entities:${NC} "
-      read -e data_entities_input
-      if [ -z "$data_entities_input" ]; then
-        data_entities="$inferred_entities"
-      else
-        data_entities="$data_entities_input"
-      fi
-    else
-      echo -e "  ${BOLD}1. What main things does this feature store/manage?${NC}"
-      echo -e "     ${DIM}(e.g., \"listings, offers\" or \"orders, payments\")${NC}"
-      echo -ne "     ${MAGENTA}Entities:${NC} "
-      read -e data_entities
-    fi
-
-    # Question 2: Infer connections to existing data
-    local inferred_references=""
-    if command -v claude &> /dev/null; then
+    # Infer connections to existing data
+    if command -v claude &> /dev/null && [ -n "$data_entities" ]; then
       log "Analyzing for connections to existing data..."
-      # Extract just table names from architecture context for cleaner prompt
       local existing_tables=""
       existing_tables=$(echo "$architecture_context" | grep -oE "[a-z_]+:" | sed 's/://g' | sort -u | head -20 | tr '\n' ', ' | sed 's/,$//')
 
       if [ -n "$existing_tables" ]; then
-        inferred_references=$(claude --dangerously-skip-permissions --print "Which of these EXISTING tables would '$data_entities' need foreign keys to?
+        data_references=$(claude --dangerously-skip-permissions --print "Which of these EXISTING tables would '$data_entities' need foreign keys to?
 
 Existing tables: $existing_tables
 
@@ -3218,98 +3203,34 @@ Reply with ONLY a comma-separated list of table names, or 'none'.
 Example: vendors, inventory_items
 Example: none" 2>/dev/null | tail -1 | tr -d '\r') || true
       fi
+      [ -z "$data_references" ] && data_references="none"
+      echo -e "  ${DIM}References:${NC} $data_references"
     fi
 
-    # Question 2: Confirm inferred connections
-    echo ""
-    if [ -n "$inferred_references" ] && [ "$inferred_references" != "none" ]; then
-      echo -e "  ${BOLD}2. Which existing tables does this need to reference?${NC}"
-      echo -e "     ${DIM}Detected: ${CYAN}$inferred_references${NC}"
-      echo -e "     ${DIM}Press Enter to confirm, or type corrections (or 'none')${NC}"
-      echo -ne "     ${MAGENTA}References:${NC} "
-      read -e data_references_input
-      if [ -z "$data_references_input" ]; then
-        data_references="$inferred_references"
-      else
-        data_references="$data_references_input"
-      fi
-    elif [ "$inferred_references" = "none" ]; then
-      echo -e "  ${BOLD}2. This appears to be standalone ${DIM}(no connections to existing data)${NC}"
-      echo -e "     ${DIM}Press Enter to confirm, or list what it connects to${NC}"
-      echo -ne "     ${MAGENTA}Connects to:${NC} "
-      read -e data_references_input
-      if [ -z "$data_references_input" ]; then
-        data_references="none (standalone)"
-      else
-        data_references="$data_references_input"
-      fi
-    else
-      echo -e "  ${BOLD}2. Does this connect to existing data?${NC}"
-      echo -e "     ${DIM}(e.g., \"vendors, inventory\" or \"none\")${NC}"
-      echo -ne "     ${MAGENTA}Connects to:${NC} "
-      read -e data_references
-    fi
-
-    # Question 3: Infer operations from requirements
-    local inferred_operations=""
-    if command -v claude &> /dev/null; then
+    # Infer operations from requirements
+    if command -v claude &> /dev/null && [ -n "$data_entities" ]; then
       log "Analyzing for user operations..."
-      inferred_operations=$(claude --dangerously-skip-permissions --print "What operations can users perform on '$data_entities' based on these requirements?
+      data_operations=$(claude --dangerously-skip-permissions --print "What operations can users perform on '$data_entities' based on these requirements?
 
 Requirements: $requirements_context
 
 Reply with ONLY a comma-separated list from: create, view, edit, delete, search, export, import
 Example: create, view, edit, delete
 Example: view, search" 2>/dev/null | tail -1 | tr -d '\r') || true
+      [ -z "$data_operations" ] && data_operations="create, view, edit, delete"
+      echo -e "  ${DIM}Operations:${NC} $data_operations"
     fi
 
-    echo ""
-    if [ -n "$inferred_operations" ]; then
-      echo -e "  ${BOLD}3. What can users do with this data?${NC}"
-      echo -e "     ${DIM}Detected: ${CYAN}$inferred_operations${NC}"
-      echo -e "     ${DIM}Press Enter to confirm, or type corrections${NC}"
-      echo -ne "     ${MAGENTA}Actions:${NC} "
-      read -e data_operations_input
-      if [ -z "$data_operations_input" ]; then
-        data_operations="$inferred_operations"
-      else
-        data_operations="$data_operations_input"
-      fi
-    else
-      echo -e "  ${BOLD}3. What can users do with this data?${NC}"
-      echo -e "     ${DIM}(e.g., \"create, view, edit, delete\" or \"view only\")${NC}"
-      echo -ne "     ${MAGENTA}Actions:${NC} "
-      read -e data_operations
-    fi
-
-    # Question 4: Infer access patterns
-    local inferred_access=""
-    if command -v claude &> /dev/null && [ -n "$data_references" ] && [ "$data_references" != "none (standalone)" ] && [ "$data_references" != "none" ]; then
+    # Infer access patterns
+    if command -v claude &> /dev/null && [ -n "$data_references" ] && [ "$data_references" != "none" ]; then
       log "Analyzing access patterns..."
-      inferred_access=$(claude --dangerously-skip-permissions --print "When displaying '$data_entities', which related data from '$data_references' would typically be shown together?
+      data_access_pattern=$(claude --dangerously-skip-permissions --print "When displaying '$data_entities', which related data from '$data_references' would typically be shown together?
 
 Reply with a short phrase like: vendor name, category
 Or: none (displayed standalone)" 2>/dev/null | tail -1 | tr -d '\r' | cut -c1-60) || true
     fi
-
-    echo ""
-    if [ -n "$inferred_access" ]; then
-      echo -e "  ${BOLD}4. When viewing, what related info is shown together?${NC}"
-      echo -e "     ${DIM}Detected: ${CYAN}$inferred_access${NC}"
-      echo -e "     ${DIM}Press Enter to confirm, or type corrections${NC}"
-      echo -ne "     ${MAGENTA}Shows with:${NC} "
-      read -e data_access_input
-      if [ -z "$data_access_input" ]; then
-        data_access_pattern="$inferred_access"
-      else
-        data_access_pattern="$data_access_input"
-      fi
-    else
-      echo -e "  ${BOLD}4. When viewing, what related info is shown together?${NC}"
-      echo -e "     ${DIM}(e.g., \"vendor name\" or \"none\")${NC}"
-      echo -ne "     ${MAGENTA}Shows with:${NC} "
-      read -e data_access_pattern
-    fi
+    [ -z "$data_access_pattern" ] && data_access_pattern="none"
+    echo -e "  ${DIM}Access pattern:${NC} $data_access_pattern"
 
     # Save answers
     cat > "$SESSION_DIR/data-layer-answers.md" << ANSWERS_EOF
@@ -3329,7 +3250,7 @@ $data_access_pattern
 ANSWERS_EOF
 
     echo ""
-    log "Data layer context saved"
+    log "Data layer context auto-generated"
   fi
 
   # Load data layer answers into context
