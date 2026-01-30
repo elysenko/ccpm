@@ -183,7 +183,7 @@ Every generated script MUST maintain this state in `state.json`:
   "termination": {
     "max_iterations": 20,
     "max_time_seconds": 600,
-    "repetition_threshold": 3,
+    "repetition_threshold": 7,
     "progress_window": 3
   }
 }
@@ -554,7 +554,7 @@ init_state() {
   "termination": {
     "max_iterations": 20,
     "max_time_seconds": 600,
-    "repetition_threshold": 3,
+    "repetition_threshold": 7,
     "progress_window": 3
   }
 }

@@ -95,6 +95,67 @@ OUTPUT: Final status report
 
 ## Instructions
 
+### Pre-Phase: Detect Checklist Context
+
+**Before starting Phase 0, check if input is from `/pm:planner` integration.**
+
+```bash
+# Check if input file contains checklist context markers
+if [ -f "$ARGUMENTS" ]; then
+  if grep -q "Auto-generated from checklist_item" "$ARGUMENTS"; then
+    CHECKLIST_CONTEXT=true
+    CHECKLIST_ITEM_ID=$(grep "checklist_item.id" "$ARGUMENTS" | grep -oE '[0-9]+')
+    echo "📋 Detected checklist context (item_id=$CHECKLIST_ITEM_ID)"
+  fi
+fi
+```
+
+**If checklist context detected:**
+
+The input file contains pre-populated W-Framework data from `/pm:planner`. Use this to:
+
+1. **Skip redundant Phase 0 questions** - The following are already answered:
+   - What to build (title, description)
+   - Who benefits (who_affected)
+   - Success criteria (how_verified)
+   - Priority and INVEST scores
+
+2. **Extract pre-answered data:**
+```bash
+# Parse the context file for key fields
+FEATURE_TITLE=$(grep -A1 "^### Title" "$ARGUMENTS" | tail -1)
+FEATURE_DESC=$(sed -n '/^### Description/,/^###/p' "$ARGUMENTS" | sed '1d;$d')
+WHO_AFFECTED=$(sed -n '/^### Who is affected/,/^###/p' "$ARGUMENTS" | sed '1d;$d')
+WHAT_OUTCOME=$(sed -n '/^### What is the outcome/,/^###/p' "$ARGUMENTS" | sed '1d;$d')
+HOW_VERIFIED=$(sed -n '/^### How will we verify/,/^---/p' "$ARGUMENTS" | sed '1d;$d')
+ACCEPTANCE=$(sed -n '/^## Acceptance Criteria/,/^---/p' "$ARGUMENTS" | sed '1d;$d')
+```
+
+3. **Proceed with streamlined Phase 0:**
+   - Skip `/dr-refine` (requirements already refined by planner)
+   - Still run codebase search (Step 0.2)
+   - Still run web research (Step 0.3) but with focused query
+   - Use pre-populated data in synthesis
+
+4. **Link back to checklist on completion:**
+```bash
+# Update checklist_item with feature session
+if [ -n "$CHECKLIST_ITEM_ID" ]; then
+  PGPASSWORD=upj3RsNuqy kubectl exec -n cattle-erp postgresql-cattle-erp-0 -- \
+    psql -U postgres -d cattle_erp -c "
+  UPDATE checklist_item SET
+    feature_session = '$SESSION_NAME',
+    status = 'in_progress',
+    updated_at = NOW()
+  WHERE id = $CHECKLIST_ITEM_ID;
+  "
+fi
+```
+
+**If NO checklist context:** Proceed with standard Phase 0 flow below.
+
+---
+
 ### Phase 0: Requirements & Research
 
 **Before classifying complexity: clarify → search codebase → research web.**
