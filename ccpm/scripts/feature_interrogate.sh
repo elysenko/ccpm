@@ -7,8 +7,16 @@
 # Usage:
 #   ./feature_interrogate.sh [session-name]
 #
-# Pipeline:
-#   repo-research → user-input → dr-refine → dr-research → summary → flow-diagram-loop → db-sync
+# Pipeline (9 steps):
+#   1. repo-research     → Understand the repository structure
+#   2. user-input        → Get feature description from user
+#   3. context-research  → Deep research (/dr) to understand the domain (NEW)
+#   4. dr-refine         → Ask INFORMED clarifying questions (uses step 3 research)
+#   5. impl-research     → Research implementation patterns
+#   6. summary           → Save conversation summary
+#   7. flow-diagram      → Generate and verify flow diagrams
+#   8. db-sync           → Sync to database/scope documents
+#   9. data-schema       → Generate data models and migrations
 #
 # Output:
 #   .claude/RESEARCH/{session}/ - Research files
@@ -43,7 +51,6 @@ readonly MAGENTA='\033[0;35m'
 readonly WHITE='\033[1;37m'
 readonly BOLD='\033[1m'
 readonly DIM='\033[2m'
-readonly ITALIC='\033[3m'
 readonly NC='\033[0m'
 
 # Box drawing characters
@@ -53,20 +60,17 @@ readonly BOX_TL='┌'
 readonly BOX_TR='┐'
 readonly BOX_BL='└'
 readonly BOX_BR='┘'
-readonly BOX_T='┬'
-readonly BOX_B='┴'
 readonly BOX_L='├'
 readonly BOX_R='┤'
-readonly BOX_X='┼'
 
 # Step tracking
-TOTAL_STEPS=7
+TOTAL_STEPS=9
 CURRENT_STEP=0
 STEP_START_TIME=0
 SESSION_START_TIME=0
-declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Refinement" "Research" "Summary" "Flow Diagram" "Database Sync")
-declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending")
-declare -a STEP_DURATIONS=(0 0 0 0 0 0 0)
+declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema")
+declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
+declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0)
 
 # Spinner characters (braille pattern for smooth animation)
 readonly SPINNER_CHARS='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -163,17 +167,6 @@ draw_line() {
   local char="${2:-$BOX_H}"
   printf '%*s' "$width" '' | tr ' ' "$char"
   echo ""
-}
-
-# Draw a box around text
-draw_box() {
-  local text="$1"
-  local width="${2:-60}"
-  local padding=$(( (width - ${#text} - 2) / 2 ))
-
-  echo -e "${CYAN}${BOX_TL}$(printf '%*s' $((width-2)) '' | tr ' ' "$BOX_H")${BOX_TR}${NC}"
-  echo -e "${CYAN}${BOX_V}${NC}$(printf '%*s' $padding '')${BOLD}${WHITE}$text${NC}$(printf '%*s' $((width - padding - ${#text} - 2)) '')${CYAN}${BOX_V}${NC}"
-  echo -e "${CYAN}${BOX_BL}$(printf '%*s' $((width-2)) '' | tr ' ' "$BOX_H")${BOX_BR}${NC}"
 }
 
 # Show ASCII banner
@@ -563,14 +556,6 @@ HTMLEOF
 
   log "HTML diagram generated: $html_file"
   return 0
-}
-
-# Show keyboard hints
-show_hints() {
-  echo ""
-  echo -e "${DIM}─────────────────────────────────────────────────────────────${NC}"
-  echo -e "${DIM}  [Enter] submit • [Ctrl+C ×2] exit${NC}"
-  echo -e "${DIM}─────────────────────────────────────────────────────────────${NC}"
 }
 
 # Load architecture index for diagram vocabulary
@@ -2076,48 +2061,6 @@ cache_session_diagrams() {
   echo "$cached_count"
 }
 
-# List cached diagrams for a session or all sessions
-# Usage: list_cached_diagrams [session_name]
-list_cached_diagrams() {
-  local session_name="${1:-}"
-  local cache_base="$PROJECT_ROOT/.claude/cache/diagrams"
-
-  if [ ! -d "$cache_base" ]; then
-    echo "No cached diagrams found"
-    return 0
-  fi
-
-  if [ -n "$session_name" ]; then
-    # List diagrams for specific session
-    local cache_dir="$cache_base/$session_name"
-    if [ -d "$cache_dir" ]; then
-      echo "Cached diagrams for '$session_name':"
-      ls -la "$cache_dir" | grep -v "^total\|^d\|metadata\|index" | awk '{print "  " $NF " (" $5 " bytes)"}'
-    else
-      echo "No cached diagrams for session '$session_name'"
-    fi
-  else
-    # List all sessions with diagram counts
-    echo "Cached diagram sessions:"
-    for d in "$cache_base"/*/; do
-      [ -d "$d" ] || continue
-      local sname
-      sname=$(basename "$d")
-      local count
-      count=$(find "$d" -maxdepth 1 -type f \( -name "*.md" -o -name "*.html" \) | wc -l | tr -d ' ')
-      echo "  $sname: $count diagrams"
-    done
-
-    # Show global stats
-    if [ -f "$cache_base/index.log" ]; then
-      local total
-      total=$(wc -l < "$cache_base/index.log" | tr -d ' ')
-      echo ""
-      echo "Total cached: $total diagrams"
-    fi
-  fi
-}
-
 # Session variables
 SESSION_NAME=""
 SESSION_DIR=""
@@ -2202,7 +2145,7 @@ list_sessions() {
   for session in "${sessions[@]}"; do
     local session_dir="$research_dir/$session"
     local completed=0
-    local total=7
+    local total=8
 
     # Check each step's completion
     [ -f "$session_dir/repo-analysis.md" ] && completed=$((completed + 1))
@@ -2212,6 +2155,7 @@ list_sessions() {
     [ -f "$session_dir/summary.md" ] && completed=$((completed + 1))
     [ -f "$session_dir/flow-confirmed.txt" ] && completed=$((completed + 1))
     [ -f "$session_dir/scope-synced.txt" ] && completed=$((completed + 1))
+    [ -f "$session_dir/schema-complete.txt" ] && completed=$((completed + 1))
 
     # Progress bar
     local bar=""
@@ -2247,8 +2191,10 @@ detect_completed_steps() {
   local session_dir="$1"
 
   # Check steps in reverse order to find where to resume
-  if [ -f "$session_dir/scope-synced.txt" ]; then
-    echo 8  # All complete
+  if [ -f "$session_dir/schema-complete.txt" ]; then
+    echo 9  # All complete (8 steps done)
+  elif [ -f "$session_dir/scope-synced.txt" ]; then
+    echo 8  # Resume from step 8 (data schema)
   elif [ -f "$session_dir/flow-confirmed.txt" ]; then
     echo 7  # Resume from step 7 (db sync)
   elif [ -f "$session_dir/summary.md" ]; then
@@ -2276,6 +2222,11 @@ load_session_data() {
     FEATURE_DESCRIPTION=$(sed '1,/^---$/d; 1,/^---$/d' "$session_dir/feature-input.md" | sed 's/^# Initial Feature Request//' | sed '/^$/d' | head -20)
   fi
 
+  # Load preliminary research if it exists
+  if [ -f "$session_dir/preliminary-research.md" ]; then
+    PRELIMINARY_RESEARCH=$(sed '1,/^---$/d; 1,/^---$/d' "$session_dir/preliminary-research.md" | head -100)
+  fi
+
   # Load refined description if it exists
   if [ -f "$session_dir/refined-requirements.md" ]; then
     # Extract the "After Clarification" section
@@ -2299,18 +2250,54 @@ log_warn() {
   echo -e "  ${YELLOW}⚠${NC} $1"
 }
 
-log_step() {
-  echo ""
-  echo -e "${DIM}$(printf '%60s' '' | tr ' ' '─')${NC}"
-  echo -e "${CYAN}${BOLD}  $1${NC}"
-  echo -e "${DIM}$(printf '%60s' '' | tr ' ' '─')${NC}"
-  echo ""
-}
-
 log_separator() {
   echo ""
   echo -e "${DIM}  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─${NC}"
   echo ""
+}
+
+# Prompt user to continue or restart a step with existing files
+# Usage: prompt_step_resume step_num "description" file1 [file2 ...]
+# Returns: 0 = continue (files preserved), 1 = restart (files deleted)
+prompt_step_resume() {
+  local step_num="$1"
+  local description="$2"
+  shift 2
+  local files=("$@")
+
+  # Check if any of the files exist
+  local existing_files=()
+  for f in "${files[@]}"; do
+    if [ -f "$f" ]; then
+      existing_files+=("$f")
+    fi
+  done
+
+  # No existing files, nothing to prompt
+  if [ ${#existing_files[@]} -eq 0 ]; then
+    return 1  # Signal: start fresh
+  fi
+
+  echo ""
+  echo -e "  ${YELLOW}Found existing $description${NC}"
+  echo ""
+  echo "  [C] Continue with existing progress"
+  echo "  [R] Restart this step from scratch"
+  echo ""
+  printf "  Choice [C/r]: "
+  read -r choice
+
+  if [[ "$choice" =~ ^[Rr]$ ]]; then
+    # Restart: delete existing files
+    for f in "${existing_files[@]}"; do
+      rm -f "$f"
+    done
+    echo -e "  ${DIM}Cleared previous progress${NC}"
+    return 1  # Signal: restart
+  else
+    echo -e "  ${GREEN}Continuing with existing progress${NC}"
+    return 0  # Signal: continue
+  fi
 }
 
 # Initialize session directories
@@ -2481,32 +2468,101 @@ Provide an updated analysis incorporating these changes. Keep the same format bu
   generate_repo_architecture_diagram
 }
 
-# Step 2: Get feature description from user
+# Step 2: Get feature description from user (or use pre-context if available)
 get_feature_input() {
   show_step_header 2 "Feature Description" "input"
 
-  show_input_mode "What feature would you like to implement? (describe your idea - empty line to continue)"
+  # Check if pre-context.md exists (created by planner-tui.sh)
+  local pre_context="$SESSION_DIR/pre-context.md"
+  if [ -f "$pre_context" ]; then
+    echo -e "  ${GREEN}✓ Found pre-seeded context from planner${NC}"
+    echo ""
 
-  # Read multi-line input until empty line
-  local input=""
-  local line=""
-  local first_line=true
+    # Extract the feature description from pre-context
+    # Look for content between "## Feature Description" and the next "##" section
+    local extracted=""
+    extracted=$(sed -n '/^## Feature Description/,/^## /p' "$pre_context" | sed '1d;$d' | sed '/^$/d')
 
-  while true; do
-    input_prompt
-    read -e line
-    if [ -z "$line" ] && [ -n "$input" ]; then
-      break
-    fi
-    if [ -n "$input" ]; then
-      input="$input
+    if [ -n "$extracted" ]; then
+      echo -e "  ${CYAN}Feature from planner:${NC}"
+      echo -e "  ${DIM}─────────────────────────────────────────────────────${NC}"
+      echo "$extracted" | sed 's/^/  /'
+      echo -e "  ${DIM}─────────────────────────────────────────────────────${NC}"
+      echo ""
+      echo -e "  ${YELLOW}Press Enter to use this, or type new description:${NC}"
+      echo ""
+
+      input_prompt
+      read -e line
+
+      if [ -z "$line" ]; then
+        # Use the extracted content
+        FEATURE_DESCRIPTION="$extracted"
+      else
+        # User wants to provide their own - read multi-line
+        local input="$line"
+        while true; do
+          input_prompt
+          read -e line
+          if [ -z "$line" ] && [ -n "$input" ]; then
+            break
+          fi
+          if [ -n "$input" ]; then
+            input="$input
 $line"
+          else
+            input="$line"
+          fi
+        done
+        FEATURE_DESCRIPTION="$input"
+      fi
     else
-      input="$line"
-    fi
-  done
+      # Couldn't extract, fall through to manual input
+      echo -e "  ${YELLOW}Pre-context found but couldn't extract description${NC}"
+      show_input_mode "What feature would you like to implement? (describe your idea - empty line to continue)"
 
-  FEATURE_DESCRIPTION="$input"
+      local input=""
+      local line=""
+      while true; do
+        input_prompt
+        read -e line
+        if [ -z "$line" ] && [ -n "$input" ]; then
+          break
+        fi
+        if [ -n "$input" ]; then
+          input="$input
+$line"
+        else
+          input="$line"
+        fi
+      done
+      FEATURE_DESCRIPTION="$input"
+    fi
+  else
+    # No pre-context, get manual input
+    show_input_mode "What feature would you like to implement? (describe your idea - empty line to continue)"
+
+    # Read multi-line input until empty line
+    local input=""
+    local line=""
+    local first_line=true
+
+    while true; do
+      input_prompt
+      read -e line
+      if [ -z "$line" ] && [ -n "$input" ]; then
+        break
+      fi
+      if [ -n "$input" ]; then
+        input="$input
+$line"
+      else
+        input="$line"
+      fi
+    done
+
+    FEATURE_DESCRIPTION="$input"
+  fi
 
   # Save initial input
   cat > "$SESSION_DIR/feature-input.md" << EOF
@@ -2525,9 +2581,85 @@ EOF
   dim_path "  Saved: $SESSION_DIR/feature-input.md"
 }
 
-# Step 3: Refine requirements
+# Step 3: Preliminary research on user's feature description
+# This helps Claude understand what the user is talking about BEFORE asking clarifying questions
+preliminary_research() {
+  show_step_header 3 "Context Research" "research"
+
+  log "Running deep research to understand the feature domain..."
+  echo ""
+  echo -e "  ${DIM}This research will help inform better clarifying questions.${NC}"
+  echo ""
+
+  if ! command -v claude &> /dev/null; then
+    log_error "Claude CLI not found - skipping preliminary research"
+    PRELIMINARY_RESEARCH=""
+    echo "Preliminary research skipped - Claude CLI not available" > "$SESSION_DIR/preliminary-research.md"
+    complete_step 3 "Skipped (no Claude CLI)"
+    return
+  fi
+
+  # Build a focused research query based on the feature description
+  local research_query="Research the following feature concept to understand the domain, terminology, and implementation patterns:
+
+FEATURE REQUEST:
+$FEATURE_DESCRIPTION
+
+RESEARCH GOALS:
+1. **Domain Understanding**: What domain/industry is this feature from? What are the key concepts and terminology?
+2. **Similar Implementations**: How do other systems typically implement this type of feature?
+3. **Technical Components**: What are the typical components needed (APIs, data models, UI elements)?
+4. **Best Practices**: What are common patterns and anti-patterns for this type of feature?
+5. **Integration Points**: How does this typically integrate with existing systems?
+
+FOCUS: Provide practical context that would help ask better clarifying questions about implementation specifics."
+
+  # Start spinner while research runs
+  start_spinner "Researching feature domain and patterns..."
+
+  local research_output
+  research_output=$(claude --dangerously-skip-permissions --print "/dr $research_query" 2>&1) || {
+    stop_spinner ""
+    log_error "Preliminary research had issues"
+    research_output="Research incomplete - see partial output"
+  }
+
+  stop_spinner ""
+
+  # Store for use in refine_requirements
+  PRELIMINARY_RESEARCH="$research_output"
+
+  # Save to file
+  cat > "$SESSION_DIR/preliminary-research.md" << EOF
+---
+name: $SESSION_NAME-preliminary-research
+created: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+type: preliminary-research
+---
+
+# Preliminary Research
+
+## Original Feature Request
+$FEATURE_DESCRIPTION
+
+## Research Findings
+$research_output
+EOF
+
+  complete_step 3 "Context research complete"
+  dim_path "  Saved: $SESSION_DIR/preliminary-research.md"
+
+  # Show brief excerpt
+  echo ""
+  echo -e "  ${DIM}Research highlights:${NC}"
+  echo "$research_output" | head -15 | sed 's/^/  /' || true
+  echo -e "  ${DIM}...${NC}"
+  echo ""
+}
+
+# Step 4: Refine requirements (now uses preliminary research)
 refine_requirements() {
-  show_step_header 3 "Refining Requirements" "input"
+  show_step_header 4 "Refining Requirements" "input"
 
   log "Claude will ask clarifying questions in a multi-turn conversation..."
 
@@ -2544,14 +2676,46 @@ When asking clarifying questions, consider how the feature fits into this existi
 "
     fi
 
+    # Add preliminary research context (from Step 3)
+    local research_context=""
+    if [ -n "${PRELIMINARY_RESEARCH:-}" ]; then
+      research_context="
+
+PRELIMINARY RESEARCH (from Step 3 - domain context):
+$(echo "$PRELIMINARY_RESEARCH" | head -100)
+
+Use this research to ask INFORMED, SPECIFIC questions. You now understand the domain - ask about implementation details, edge cases, and specific requirements rather than basic clarifying questions.
+"
+    elif [ -f "$SESSION_DIR/preliminary-research.md" ]; then
+      research_context="
+
+PRELIMINARY RESEARCH (from Step 3 - domain context):
+$(sed '1,/^---$/d; 1,/^---$/d' "$SESSION_DIR/preliminary-research.md" | head -100)
+
+Use this research to ask INFORMED, SPECIFIC questions. You now understand the domain - ask about implementation details, edge cases, and specific requirements rather than basic clarifying questions.
+"
+    fi
+
     # Initialize conversation loop variables
     local conversation_round=0
-    local max_rounds=10
+    local max_rounds=25  # High enough to never hit; user exits anytime with empty line
     local conversation_history=""
     local full_session=""
 
-    # Initialize refinement session file with header
-    cat > "$SESSION_DIR/refinement-session.md" << EOF
+    # Check for existing refinement session - prompt continue/restart
+    if prompt_step_resume 4 "refinement session" "$SESSION_DIR/refinement-session.md"; then
+      # Continue: load conversation history from existing file
+      conversation_history=$(sed -n '/^## Conversation/,$p' "$SESSION_DIR/refinement-session.md" | tail -n +2)
+
+      # Count existing rounds to resume from correct number
+      local existing_rounds=$(grep -c "^### Round" "$SESSION_DIR/refinement-session.md" 2>/dev/null || echo "0")
+      conversation_round=$((existing_rounds / 2))  # Each round has Claude + User entries
+
+      echo -e "  ${DIM}Loaded $conversation_round rounds from previous session${NC}"
+      echo ""
+    else
+      # Restart: create fresh refinement session file
+      cat > "$SESSION_DIR/refinement-session.md" << EOF
 ---
 name: $SESSION_NAME-refinement
 created: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -2566,6 +2730,7 @@ $FEATURE_DESCRIPTION
 ## Conversation
 
 EOF
+    fi
 
     echo ""
 
@@ -2582,16 +2747,23 @@ EOF
       refine_context_file=$(mktemp)
 
       if [ -z "$conversation_history" ]; then
-        # First round - initial context
+        # First round - initial context WITH preliminary research
         cat > "$refine_context_file" << EOF
 Feature Request: $FEATURE_DESCRIPTION
 $arch_context
-Please ask clarifying questions to refine this feature request. Consider:
-- How it integrates with the existing architecture
-- What components already exist that can be leveraged
-- What new components would need to be created
+$research_context
 
-Ask 2-3 focused questions to better understand the requirements.
+Based on the research above, you now understand the domain and common patterns for this type of feature.
+
+Ask SPECIFIC, INFORMED clarifying questions that focus on:
+- Implementation details unique to THIS user's needs
+- Edge cases and error handling preferences
+- Integration specifics with THEIR existing system
+- Performance/scale requirements
+- UI/UX preferences
+
+Do NOT ask basic "what do you mean by X" questions - the research has given you context.
+Ask 2-3 targeted questions to nail down implementation specifics.
 EOF
       else
         # Subsequent rounds - include conversation history
@@ -2615,8 +2787,12 @@ EOF
       fi
 
       # Run Claude and capture output
+      # Note: Using --print with direct prompt, NOT /dr-refine skill
+      # (skills using AskUserQuestion don't work in captured output mode)
       local claude_response
-      claude_response=$(claude --dangerously-skip-permissions "/dr-refine $(cat "$refine_context_file")" 2>&1) || {
+      claude_response=$(claude --dangerously-skip-permissions --print "$(cat "$refine_context_file")
+
+Output 2-3 specific clarifying questions to gather requirements. Format each as a numbered question. Be direct and practical." 2>&1) || {
         log_error "Refinement session had issues"
       }
 
@@ -2666,7 +2842,7 @@ $REFINED_DESCRIPTION
 See refinement-session.md for the complete Q&A transcript.
 AUTOEOF
 
-        complete_step 3 "Requirements refined (auto-completed after $conversation_round rounds)"
+        complete_step 4 "Requirements refined (auto-completed after $conversation_round rounds)"
         dim_path "  Saved: $SESSION_DIR/refined-requirements.md"
         dim_path "  Saved: $SESSION_DIR/refinement-session.md"
 
@@ -2781,14 +2957,14 @@ $REFINED_DESCRIPTION
 See refinement-session.md for the complete Q&A transcript.
 EOF
 
-    complete_step 3 "Requirements refined ($conversation_round rounds)"
+    complete_step 4 "Requirements refined ($conversation_round rounds)"
     dim_path "  Saved: $SESSION_DIR/refined-requirements.md"
     dim_path "  Saved: $SESSION_DIR/refinement-session.md"
   else
     log_error "Claude CLI not found - skipping refinement"
     REFINED_DESCRIPTION="$FEATURE_DESCRIPTION"
     echo "$FEATURE_DESCRIPTION" > "$SESSION_DIR/refined-requirements.md"
-    complete_step 3 "Skipped (no Claude CLI)"
+    complete_step 4 "Skipped (no Claude CLI)"
   fi
 
   # Extract domain context for improved diagram generation
@@ -2804,9 +2980,9 @@ EOF
   fi
 }
 
-# Step 4: Deep research
+# Step 5: Deep research (implementation patterns)
 research_feature() {
-  show_step_header 4 "Researching Implementation" "research"
+  show_step_header 5 "Researching Implementation" "research"
 
   local feature_to_research="${REFINED_DESCRIPTION:-$FEATURE_DESCRIPTION}"
 
@@ -2858,7 +3034,7 @@ Focus on practical, production-ready approaches. Skip generic advice."
     }
 
     stop_spinner ""
-    complete_step 4 "Research complete"
+    complete_step 5 "Research complete"
     dim_path "  Saved: $SESSION_DIR/research-output.md"
 
     # Show brief excerpt
@@ -2869,13 +3045,13 @@ Focus on practical, production-ready approaches. Skip generic advice."
   else
     log_error "Claude CLI not found - skipping research"
     echo "Research skipped - Claude CLI not available" > "$SESSION_DIR/research-output.md"
-    complete_step 4 "Skipped (no Claude CLI)"
+    complete_step 5 "Skipped (no Claude CLI)"
   fi
 }
 
 # Step 5: Save conversation summary
 save_summary() {
-  show_step_header 5 "Saving Conversation Summary" "sync"
+  show_step_header 6 "Saving Conversation Summary" "sync"
 
   local current_date
   current_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -2919,13 +3095,13 @@ See: flow-diagram.md (if confirmed)
 - flow-confirmed.txt - Confirmation marker
 EOF
 
-  complete_step 5 "Summary saved"
+  complete_step 6 "Summary saved"
   dim_path "  Saved: $SESSION_DIR/summary.md"
 }
 
 # Step 6: Flow diagram verification loop (two-phase: system flow first, then supplementary)
 flow_diagram_loop() {
-  show_step_header 6 "Flow Diagram Verification" "verify"
+  show_step_header 7 "Flow Diagram Verification" "verify"
 
   local confirmed=false
   local iteration=0
@@ -3653,18 +3829,18 @@ EOF
     cached_count=$(cache_session_diagrams "$SESSION_DIR" "$SESSION_NAME")
     echo -e "  ${DIM}Cached $cached_count diagrams to .claude/cache/diagrams/$SESSION_NAME/${NC}"
 
-    complete_step 6 "Diagrams confirmed"
+    complete_step 7 "Diagrams confirmed"
     dim_path "  System Flow: $SESSION_DIR/flow-diagram.md"
     dim_path "  Suite: $SESSION_DIR/feature-diagrams.html"
   else
     log_error "Max iterations ($max_iterations) reached"
-    complete_step 6 "Max iterations reached"
+    complete_step 7 "Max iterations reached"
   fi
 }
 
 # Step 7: Sync to database
 sync_to_database() {
-  show_step_header 7 "Syncing to Database" "sync"
+  show_step_header 8 "Syncing to Database" "sync"
 
   local current_date
   current_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -3762,10 +3938,315 @@ EOF
   fi
 
   if [ "$db_synced" = "true" ]; then
-    complete_step 7 "Database sync complete"
+    complete_step 8 "Database sync complete"
   else
-    complete_step 7 "Scope documents created (DB sync skipped)"
+    complete_step 8 "Scope documents created (DB sync skipped)"
   fi
+}
+
+# =============================================================================
+# Step 8: Data Schema Generation
+# Generates PostgreSQL migrations and SQLAlchemy models from feature research
+# =============================================================================
+
+generate_data_schema() {
+  show_step_header 9 "Generating Data Schema" "sync"
+
+  local max_attempts=3
+  local attempt=0
+  local passed=false
+  local accuracy_threshold=90
+
+  # Check prerequisites
+  if [ ! -f "$SESSION_DIR/refined-requirements.md" ]; then
+    log_error "Missing refined-requirements.md - run earlier steps first"
+    fail_step 9 "Missing prerequisites"
+    return 1
+  fi
+
+  # Gather context
+  log "Gathering schema context..."
+  local context_file="$SESSION_DIR/.schema-context.txt"
+  gather_schema_context_data "$context_file"
+
+  while [ $attempt -lt $max_attempts ] && [ "$passed" = "false" ]; do
+    ((attempt++))
+    log "Attempt $attempt/$max_attempts..."
+
+    # Phase 1: Generate domain model
+    log "Analyzing domain model..."
+    if ! generate_domain_model_file "$context_file"; then
+      log_error "Domain model generation failed"
+      continue
+    fi
+
+    # Phase 2: Generate migration DDL
+    log "Generating PostgreSQL migration..."
+    if ! generate_migration_ddl_file; then
+      log_error "Migration generation failed"
+      continue
+    fi
+
+    # Phase 3: Generate SQLAlchemy models
+    log "Generating SQLAlchemy models..."
+    if ! generate_sqlalchemy_models_file; then
+      log_error "SQLAlchemy model generation failed"
+      continue
+    fi
+
+    # Phase 4: Validate
+    log "Validating schema quality..."
+    local score
+    score=$(validate_schema_files)
+
+    # Save validation report
+    save_validation_report "$score" "$attempt" "$max_attempts" "$accuracy_threshold"
+
+    if [ "$score" -ge "$accuracy_threshold" ]; then
+      passed=true
+      echo -e "  ${GREEN}Score: $score% (threshold: $accuracy_threshold%)${NC}"
+    else
+      echo -e "  ${YELLOW}Score: $score% (below threshold: $accuracy_threshold%)${NC}"
+      if [ $attempt -lt $max_attempts ]; then
+        log "Regenerating with validation feedback..."
+      fi
+    fi
+  done
+
+  if [ "$passed" = "true" ]; then
+    # Mark completion
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$SESSION_DIR/schema-complete.txt"
+
+    complete_step 9 "Schema generated (score: $score%)"
+    dim_path "  Domain Model: $SESSION_DIR/domain-model.md"
+    dim_path "  Migration: $SESSION_DIR/schema-migration.sql"
+    dim_path "  Models: $SESSION_DIR/schema-sqlalchemy.py"
+  else
+    log_error "Schema generation failed after $max_attempts attempts"
+    fail_step 9 "Validation failed ($score% < $accuracy_threshold%)"
+    return 1
+  fi
+}
+
+# Gather context data for schema generation
+gather_schema_context_data() {
+  local context_file="$1"
+
+  # Read refined requirements (strip frontmatter if present)
+  local requirements=""
+  if [ -f "$SESSION_DIR/refined-requirements.md" ]; then
+    requirements=$(sed '1{/^---$/!q;};1,/^---$/d;1,/^---$/d' "$SESSION_DIR/refined-requirements.md" 2>/dev/null)
+    [ -z "$requirements" ] && requirements=$(cat "$SESSION_DIR/refined-requirements.md" 2>/dev/null)
+  fi
+
+  # Read flow diagram for entity hints
+  local flow_diagram=""
+  if [ -f "$SESSION_DIR/flow-diagram.md" ]; then
+    flow_diagram=$(cat "$SESSION_DIR/flow-diagram.md" 2>/dev/null | head -100)
+  fi
+
+  # Extract existing table names for FK validation
+  local existing_tables="users, vendors, customers, inventory_items, cattle"
+  if [ -d "backend/migrations" ]; then
+    local tables_from_migrations
+    tables_from_migrations=$(grep -h "CREATE TABLE" backend/migrations/*.sql 2>/dev/null | \
+      sed 's/.*CREATE TABLE IF NOT EXISTS \([a-z_]*\).*/\1/' | \
+      sort -u | tr '\n' ', ' | sed 's/,$//')
+    [ -n "$tables_from_migrations" ] && existing_tables="$tables_from_migrations"
+  fi
+
+  # Get research highlights
+  local research_entities=""
+  if [ -f "$SESSION_DIR/research-output.md" ]; then
+    research_entities=$(grep -i -E "entity|table|model|database|store|record|data" \
+      "$SESSION_DIR/research-output.md" 2>/dev/null | head -30)
+  fi
+
+  # Write context file using printf to avoid heredoc issues
+  {
+    printf "## Feature Requirements\n%s\n\n" "$requirements"
+    printf "## System Flow\n%s\n\n" "$flow_diagram"
+    printf "## Existing Database Tables (for FK references)\n%s\n\n" "$existing_tables"
+    printf "## Research Highlights\n%s\n\n" "$research_entities"
+    printf "## Domain Context\nThis is a Cattle ERP system with:\n"
+    printf "- Users (id, email, username) - authentication/authorization\n"
+    printf "- Vendors (id, name, contact_email) - suppliers\n"
+    printf "- Customers (id, name, contact_email) - buyers\n"
+    printf "- Cattle tracking, inventory, procurement workflows\n"
+    printf "- Kanban boards for order processing\n"
+  } > "$context_file"
+}
+
+# Generate domain model using Claude
+generate_domain_model_file() {
+  local context_file="$1"
+  local domain_model_file="$SESSION_DIR/domain-model.md"
+  local prompt_file="$SESSION_DIR/.domain-prompt.txt"
+
+  # Build prompt using printf
+  {
+    printf "You are a database architect analyzing feature requirements to extract domain entities.\n\n"
+    printf "<context>\n"
+    cat "$context_file"
+    printf "</context>\n\n"
+    printf "<task>\n"
+    printf "Analyze the requirements and extract:\n"
+    printf "1. **Entities** - Tables needed with their purpose\n"
+    printf "2. **Attributes** - Columns with types and constraints\n"
+    printf "3. **Relationships** - FKs with cardinality (1:1, 1:N, N:M)\n"
+    printf "4. **Indexes** - Which columns need indexing and why\n"
+    printf "</task>\n\n"
+    printf "<output_format>\n"
+    printf "# Domain Model: {Feature Name}\n\n"
+    printf "## Entities\n\n"
+    printf "### {EntityName}\n"
+    printf "- **Purpose**: {brief description}\n"
+    printf "- **Table Name**: {snake_case_plural}\n\n"
+    printf "| Column | Type | Constraints | Description |\n"
+    printf "|--------|------|-------------|-------------|\n"
+    printf "| id | UUID | PK, DEFAULT gen_random_uuid() | Primary key |\n\n"
+    printf "**Relationships:**\n"
+    printf "| Related Entity | Type | FK Column | ON DELETE |\n"
+    printf "</output_format>\n"
+  } > "$prompt_file"
+
+  # Call Claude
+  if command -v claude &>/dev/null; then
+    claude --dangerously-skip-permissions --print < "$prompt_file" > "$domain_model_file" 2>/dev/null
+    [ -s "$domain_model_file" ] && return 0
+  fi
+
+  # Fallback: create placeholder
+  printf "# Domain Model\n\nGeneration pending - run with claude CLI available.\n" > "$domain_model_file"
+  return 0
+}
+
+# Generate PostgreSQL migration DDL
+generate_migration_ddl_file() {
+  local migration_file="$SESSION_DIR/schema-migration.sql"
+  local domain_model="$SESSION_DIR/domain-model.md"
+  local prompt_file="$SESSION_DIR/.migration-prompt.txt"
+
+  # Build prompt
+  {
+    printf "You are a PostgreSQL database architect generating production-ready migrations.\n\n"
+    printf "CONVENTIONS:\n"
+    printf "- UUID PRIMARY KEY DEFAULT gen_random_uuid()\n"
+    printf "- TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP\n"
+    printf "- CREATE TABLE IF NOT EXISTS\n"
+    printf "- CREATE INDEX IF NOT EXISTS\n"
+    printf "- snake_case naming\n\n"
+    printf "<domain_model>\n"
+    cat "$domain_model" 2>/dev/null
+    printf "</domain_model>\n\n"
+    printf "Generate ONLY valid PostgreSQL SQL. No markdown. Start with: -- Migration\n"
+  } > "$prompt_file"
+
+  if command -v claude &>/dev/null; then
+    claude --dangerously-skip-permissions --print < "$prompt_file" > "$migration_file" 2>/dev/null
+    [ -s "$migration_file" ] && return 0
+  fi
+
+  # Fallback placeholder
+  printf "-- Migration: placeholder\n-- Run with claude CLI for full generation\n" > "$migration_file"
+  return 0
+}
+
+# Generate SQLAlchemy models
+generate_sqlalchemy_models_file() {
+  local model_file="$SESSION_DIR/schema-sqlalchemy.py"
+  local domain_model="$SESSION_DIR/domain-model.md"
+  local migration_file="$SESSION_DIR/schema-migration.sql"
+  local prompt_file="$SESSION_DIR/.models-prompt.txt"
+
+  # Build prompt
+  {
+    printf "Generate SQLAlchemy 2.0 models for FastAPI.\n\n"
+    printf "CONVENTIONS:\n"
+    printf "- Inherit from app.core.database.Base\n"
+    printf "- UUID primary keys with uuid.uuid4 default\n"
+    printf "- DateTime(timezone=True) for timestamps\n\n"
+    printf "<domain_model>\n"
+    cat "$domain_model" 2>/dev/null
+    printf "</domain_model>\n\n"
+    printf "<migration>\n"
+    cat "$migration_file" 2>/dev/null
+    printf "</migration>\n\n"
+    printf "Output ONLY valid Python code. Start with imports.\n"
+  } > "$prompt_file"
+
+  if command -v claude &>/dev/null; then
+    claude --dangerously-skip-permissions --print < "$prompt_file" > "$model_file" 2>/dev/null
+    [ -s "$model_file" ] && return 0
+  fi
+
+  # Fallback placeholder
+  printf "# SQLAlchemy models placeholder\n# Run with claude CLI for full generation\n" > "$model_file"
+  return 0
+}
+
+# Validate schema files and return score
+validate_schema_files() {
+  local migration_file="$SESSION_DIR/schema-migration.sql"
+  local total_checks=10
+  local passed_checks=0
+
+  # Check migration file exists and has content
+  if [ -s "$migration_file" ]; then
+    ((passed_checks++))
+
+    # Check for CREATE TABLE
+    grep -q "CREATE TABLE" "$migration_file" 2>/dev/null && ((passed_checks++))
+
+    # Check for IF NOT EXISTS
+    grep -q "IF NOT EXISTS" "$migration_file" 2>/dev/null && ((passed_checks++))
+
+    # Check for UUID PRIMARY KEY
+    grep -q "UUID PRIMARY KEY" "$migration_file" 2>/dev/null && ((passed_checks++))
+
+    # Check for timestamps
+    grep -q "created_at" "$migration_file" 2>/dev/null && ((passed_checks++))
+    grep -q "updated_at" "$migration_file" 2>/dev/null && ((passed_checks++))
+
+    # Check for TIMESTAMP WITH TIME ZONE
+    grep -q "TIMESTAMP WITH TIME ZONE" "$migration_file" 2>/dev/null && ((passed_checks++))
+
+    # Check for indexes
+    grep -q "CREATE INDEX" "$migration_file" 2>/dev/null && ((passed_checks++))
+
+    # Check for foreign keys
+    grep -q "REFERENCES" "$migration_file" 2>/dev/null && ((passed_checks++))
+
+    # Check for proper header
+    grep -q "^-- Migration" "$migration_file" 2>/dev/null && ((passed_checks++))
+  fi
+
+  echo $((passed_checks * 100 / total_checks))
+}
+
+# Save validation report
+save_validation_report() {
+  local score="$1"
+  local attempt="$2"
+  local max_attempts="$3"
+  local threshold="$4"
+  local current_date
+  current_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  local status="NEEDS REVISION"
+  [ "$score" -ge "$threshold" ] && status="PASSED"
+
+  {
+    printf "# Schema Validation Report\n\n"
+    printf "**Generated:** %s\n" "$current_date"
+    printf "**Attempt:** %s/%s\n" "$attempt" "$max_attempts"
+    printf "**Score:** %s%%\n" "$score"
+    printf "**Threshold:** %s%%\n" "$threshold"
+    printf "**Status:** %s\n\n" "$status"
+    printf "## Files Generated\n\n"
+    printf "- domain-model.md - Entity analysis\n"
+    printf "- schema-migration.sql - PostgreSQL DDL\n"
+    printf "- schema-sqlalchemy.py - Python models\n"
+  } > "$SESSION_DIR/schema-validation.md"
 }
 
 # Show final summary
@@ -3821,41 +4302,63 @@ COMPLETE
 # Main function
 main() {
   # Parse arguments
-  case "${1:-}" in
-    --help|-h)
-      show_help
-      ;;
-    --list|-l)
-      list_sessions
-      ;;
-    --resume|-r)
-      if [ -z "${2:-}" ]; then
-        echo "Error: --resume requires a session name"
-        echo "Usage: ./feature_interrogate.sh --resume <session-name>"
-        echo ""
-        echo "Available sessions:"
+  local start_from_step=""
+
+  while [[ $# -gt 0 ]]; do
+    case "${1:-}" in
+      --help|-h)
+        show_help
+        exit 0
+        ;;
+      --list|-l)
         list_sessions
-        exit 1
-      fi
-      SESSION_NAME="$2"
-      RESUME_MODE=true
-      # Verify session exists
-      if [ ! -d ".claude/RESEARCH/$SESSION_NAME" ]; then
-        echo "Error: Session '$SESSION_NAME' not found"
-        echo ""
-        echo "Available sessions:"
-        list_sessions
-        exit 1
-      fi
-      ;;
-    "")
-      # Generate default session name
-      SESSION_NAME="feature-$(date +%Y%m%d-%H%M%S)"
-      ;;
-    *)
-      SESSION_NAME="$1"
-      ;;
-  esac
+        exit 0
+        ;;
+      --start-from-step)
+        if [ -z "${2:-}" ]; then
+          echo "Error: --start-from-step requires a step number (1-9)"
+          exit 1
+        fi
+        start_from_step="$2"
+        shift 2
+        ;;
+      --resume|-r)
+        if [ -z "${2:-}" ]; then
+          echo "Error: --resume requires a session name"
+          echo "Usage: ./feature_interrogate.sh --resume <session-name>"
+          echo ""
+          echo "Available sessions:"
+          list_sessions
+          exit 1
+        fi
+        SESSION_NAME="$2"
+        RESUME_MODE=true
+        # Verify session exists
+        if [ ! -d ".claude/RESEARCH/$SESSION_NAME" ]; then
+          echo "Error: Session '$SESSION_NAME' not found"
+          echo ""
+          echo "Available sessions:"
+          list_sessions
+          exit 1
+        fi
+        shift 2
+        ;;
+      "")
+        # Generate default session name
+        SESSION_NAME="feature-$(date +%Y%m%d-%H%M%S)"
+        shift
+        ;;
+      *)
+        SESSION_NAME="$1"
+        shift
+        ;;
+    esac
+  done
+
+  # Default session name if not set
+  if [ -z "$SESSION_NAME" ]; then
+    SESSION_NAME="feature-$(date +%Y%m%d-%H%M%S)"
+  fi
 
   # Show banner
   show_banner
@@ -3868,10 +4371,23 @@ main() {
   init_session "$SESSION_NAME"
 
   # Handle resume mode
-  if [ "$RESUME_MODE" = true ]; then
+  if [ -n "$start_from_step" ]; then
+    # Explicit step provided via --start-from-step
+    RESUME_FROM_STEP="$start_from_step"
+    echo -e "  ${YELLOW}Starting from Step $RESUME_FROM_STEP${NC}"
+    echo ""
+
+    # Load existing session data
+    load_session_data "$SESSION_DIR"
+
+    # Mark earlier steps as skipped
+    for ((i=1; i<RESUME_FROM_STEP; i++)); do
+      STEP_STATUS[$((i-1))]="skipped"
+    done
+  elif [ "$RESUME_MODE" = true ]; then
     RESUME_FROM_STEP=$(detect_completed_steps "$SESSION_DIR")
 
-    if [ "$RESUME_FROM_STEP" -ge 8 ]; then
+    if [ "$RESUME_FROM_STEP" -ge 9 ]; then
       echo -e "  ${GREEN}Session already complete!${NC}"
       echo ""
       show_final_summary
@@ -3906,33 +4422,45 @@ main() {
   fi
 
   if [ "$RESUME_FROM_STEP" -le 3 ]; then
-    refine_requirements
+    preliminary_research
   else
-    echo -e "  ${DIM}Step 3: Refinement - skipped (already complete)${NC}"
+    echo -e "  ${DIM}Step 3: Context Research - skipped (already complete)${NC}"
   fi
 
   if [ "$RESUME_FROM_STEP" -le 4 ]; then
-    research_feature
+    refine_requirements
   else
-    echo -e "  ${DIM}Step 4: Research - skipped (already complete)${NC}"
+    echo -e "  ${DIM}Step 4: Refinement - skipped (already complete)${NC}"
   fi
 
   if [ "$RESUME_FROM_STEP" -le 5 ]; then
-    save_summary
+    research_feature
   else
-    echo -e "  ${DIM}Step 5: Summary - skipped (already complete)${NC}"
+    echo -e "  ${DIM}Step 5: Impl Research - skipped (already complete)${NC}"
   fi
 
   if [ "$RESUME_FROM_STEP" -le 6 ]; then
-    flow_diagram_loop
+    save_summary
   else
-    echo -e "  ${DIM}Step 6: Flow Diagram - skipped (already complete)${NC}"
+    echo -e "  ${DIM}Step 6: Summary - skipped (already complete)${NC}"
   fi
 
   if [ "$RESUME_FROM_STEP" -le 7 ]; then
+    flow_diagram_loop
+  else
+    echo -e "  ${DIM}Step 7: Flow Diagram - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 8 ]; then
     sync_to_database
   else
-    echo -e "  ${DIM}Step 7: Database Sync - skipped (already complete)${NC}"
+    echo -e "  ${DIM}Step 8: Database Sync - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 9 ]; then
+    generate_data_schema
+  else
+    echo -e "  ${DIM}Step 9: Data Schema - skipped (already complete)${NC}"
   fi
 
   show_final_summary
