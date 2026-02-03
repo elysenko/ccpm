@@ -100,6 +100,9 @@ ITEM_IDS=()
 VIEW_MODE="all"  # "all" or "session"
 SHOW_ARCHIVED=false  # Toggle to show archived tasks
 
+# Feature interrogate pipeline step count
+TOTAL_PIPELINE_STEPS=14
+
 # Get terminal size
 get_term_size() {
   TERM_LINES=$(tput lines)
@@ -492,22 +495,32 @@ select_menu() {
   local selected=0
   local count=${#options[@]}
 
+  # Hide cursor during menu display
+  printf '\033[?25l' > /dev/tty
+
   while true; do
-    clear_screen
-    printf "\n ${BOLD}${CYAN}%s${RESET}\n\n" "$title"
+    # Clear screen and move cursor to top-left
+    printf '\033[2J\033[H' > /dev/tty
+    # Also clear scrollback to prevent ghosting
+    printf '\033[3J' > /dev/tty
+
+    printf "\n ${BOLD}${CYAN}%s${RESET}\n\n" "$title" > /dev/tty
 
     for ((i=0; i<count; i++)); do
       if [ $i -eq $selected ]; then
-        printf " ${REVERSE} %s ${RESET}\n" "${options[$i]}"
+        printf " ${REVERSE} %s ${RESET}\n" "${options[$i]}" > /dev/tty
       else
-        printf "   %s\n" "${options[$i]}"
+        printf "   %s\n" "${options[$i]}" > /dev/tty
       fi
     done
 
-    printf "\n ${DIM}↑↓ to select, Enter to confirm, q to cancel${RESET}"
+    printf "\n ${DIM}↑↓ to select, Enter to confirm, q to cancel${RESET}" > /dev/tty
+    # Flush output
+    printf '' > /dev/tty
 
     local key
     key=$(read_key)
+
     case "$key" in
       UP|k)
         [ $selected -gt 0 ] && selected=$((selected - 1))
@@ -515,11 +528,13 @@ select_menu() {
       DOWN|j)
         [ $selected -lt $((count - 1)) ] && selected=$((selected + 1))
         ;;
-      ""|$'\n')
+      ENTER|""|$'\n'|$'\r')
+        printf '\033[?25h' > /dev/tty  # Show cursor
         echo "$selected"
         return 0
         ;;
       q|Q)
+        printf '\033[?25h' > /dev/tty  # Show cursor
         echo "-1"
         return 1
         ;;
@@ -1427,15 +1442,38 @@ action_view_task() {
     printf " Session: ${GREEN}%s${RESET}\n" "$feature_sess"
     [ -n "$feature_branch" ] && printf " Branch:  ${CYAN}%s${RESET}\n" "$feature_branch"
 
+    # Detect actual step from files (more accurate than database)
+    local research_dir=".claude/RESEARCH/${feature_sess}"
+    if [ -d "$research_dir" ]; then
+      feature_step=0
+      feature_step_name=""
+      [ -f "$research_dir/repo-analysis.md" ] && feature_step=1 && feature_step_name="Repo Analysis"
+      [ -f "$research_dir/feature-input.md" ] && feature_step=2 && feature_step_name="Feature Input"
+      [ -f "$research_dir/research-output.md" ] && feature_step=3 && feature_step_name="Context Research"
+      [ -f "$research_dir/refined-requirements.md" ] && feature_step=4 && feature_step_name="Refinement"
+      [ -f "$research_dir/implementation-research.md" ] && feature_step=5 && feature_step_name="Impl Research"
+      [ -f "$research_dir/conversation-summary.md" ] && feature_step=6 && feature_step_name="Summary"
+      [ -f "$research_dir/flow-diagram.md" ] && feature_step=7 && feature_step_name="Flow Diagram"
+      [ -f "$research_dir/scope-synced.txt" ] && feature_step=8 && feature_step_name="Database Sync"
+      [ -f "$research_dir/schema-complete.txt" ] && feature_step=9 && feature_step_name="Data Schema"
+      [ -f "$research_dir/migration-complete.txt" ] && feature_step=10 && feature_step_name="Run Migration"
+      [ -f "$research_dir/models-integrated.txt" ] && feature_step=11 && feature_step_name="Integrate Models"
+      [ -f "$research_dir/api-generated.txt" ] && feature_step=12 && feature_step_name="API Generation"
+      [ -f "$research_dir/journeys-generated.txt" ] && feature_step=13 && feature_step_name="Journey Generation"
+      [ -f "$research_dir/frontend-complete.txt" ] && feature_step=14 && feature_step_name="Frontend Gen"
+    fi
+
     # Show feature step if tracked
-    if [ -n "$feature_step" ] && [ "$feature_step" != "" ]; then
+    if [ -n "$feature_step" ] && [ "$feature_step" != "" ] && [ "$feature_step" != "0" ]; then
       local step_color="$WHITE"
-      case "$feature_step" in
-        1|2|3) step_color="$YELLOW" ;;    # Early stages
-        4|5|6) step_color="$CYAN" ;;      # Mid stages
-        7|8|9) step_color="$GREEN" ;;     # Late stages
-      esac
-      printf " Step:    ${step_color}%s/9${RESET}" "$feature_step"
+      if [ "$feature_step" -ge 7 ]; then
+        step_color="$GREEN"      # Late stages (7+)
+      elif [ "$feature_step" -ge 4 ]; then
+        step_color="$CYAN"       # Mid stages (4-6)
+      else
+        step_color="$YELLOW"     # Early stages (1-3)
+      fi
+      printf " Step:    ${step_color}%s/${TOTAL_PIPELINE_STEPS}${RESET}" "$feature_step"
       [ -n "$feature_step_name" ] && printf " - %s" "$feature_step_name"
       printf "\n"
     fi
@@ -1768,13 +1806,19 @@ view_action_feature_status() {
       local action
       IFS= read -rsn1 action 2>/dev/null || break
 
+      # Handle escape sequences - drain and ignore
+      if [[ "$action" == $'\x1b' ]]; then
+        read -rsn2 -t 0.1 _ 2>/dev/null || true
+        continue
+      fi
+
       case "$action" in
         y|Y)
           hide_cursor
           view_action_feature_interrogate_full "$item_id" "$title"
           return
           ;;
-        q|$'\x1b')
+        q)
           hide_cursor
           return
           ;;
@@ -1791,7 +1835,7 @@ view_action_feature_status() {
 
   local research_dir=".claude/RESEARCH/${feature_session}"
 
-  # Define the 9 steps with their file indicators
+  # Define pipeline steps with their file indicators (TOTAL_PIPELINE_STEPS)
   local -a step_names=(
     "Repo Analysis"
     "Feature Input"
@@ -1802,18 +1846,28 @@ view_action_feature_status() {
     "Flow Diagram"
     "Database Sync"
     "Data Schema"
+    "Run Migration"
+    "Integrate Models"
+    "API Generation"
+    "Journey Generation"
+    "Frontend Gen"
   )
 
   local -a step_files=(
     "repo-analysis.md"
     "feature-input.md"
     "pre-context.md"
-    "refined-prompt.md"
-    "impl-research.md"
-    "conversation-summary.md"
-    "flow-diagram.md"
-    "db-sync-complete.txt"
-    "data-schema.md"
+    "refined-requirements.md"
+    "research-output.md"
+    "summary.md"
+    "flow-confirmed.txt"
+    "scope-synced.txt"
+    "schema-complete.txt"
+    "migration-complete.txt"
+    "models-integrated.txt"
+    "api-generated.txt"
+    "journeys-generated.txt"
+    "frontend-complete.txt"
   )
 
   printf "${BOLD}Pipeline Progress:${RESET}\n"
@@ -1822,7 +1876,7 @@ view_action_feature_status() {
   local highest_complete=0
   local i
 
-  for i in {1..9}; do
+  for i in $(seq 1 $TOTAL_PIPELINE_STEPS); do
     local idx=$((i - 1))
     local name="${step_names[$idx]}"
     local file="${step_files[$idx]}"
@@ -1831,11 +1885,13 @@ view_action_feature_status() {
     local step_status=""
 
     # Check if this step's file exists
+    local is_complete=false
     if [ -f "$research_dir/$file" ]; then
       step_marker="✓"
       step_color="$GREEN"
       step_status="Complete"
       highest_complete=$i
+      is_complete=true
     elif [ "$i" -eq "$((highest_complete + 1))" ]; then
       step_marker="▶"
       step_color="$YELLOW"
@@ -1846,8 +1902,8 @@ view_action_feature_status() {
       step_status="Pending"
     fi
 
-    # Highlight current step from DB if available
-    if [ -n "$current_step" ] && [ "$current_step" = "$i" ]; then
+    # Highlight current step from DB if available (only if not already complete)
+    if [ "$is_complete" = "false" ] && [ -n "$current_step" ] && [ "$current_step" = "$i" ]; then
       step_marker="▶"
       step_color="$CYAN"
       step_status="Current"
@@ -1867,7 +1923,7 @@ view_action_feature_status() {
 
   # Overall status
   local overall_status
-  if [ "$highest_complete" -ge 9 ]; then
+  if [ "$highest_complete" -ge $TOTAL_PIPELINE_STEPS ]; then
     overall_status="${GREEN}Complete${RESET}"
   elif [ "$highest_complete" -ge 7 ]; then
     overall_status="${CYAN}Finalizing${RESET}"
@@ -1879,13 +1935,15 @@ view_action_feature_status() {
     overall_status="${DIM}Not Started${RESET}"
   fi
 
-  printf "\n ${BOLD}Overall:${RESET} %s (%d/9 steps complete)\n" "$overall_status" "$highest_complete"
+  printf "\n ${BOLD}Overall:${RESET} %s (%d/${TOTAL_PIPELINE_STEPS} steps complete)\n" "$overall_status" "$highest_complete"
   printf " ${BOLD}Files:${RESET}   %s\n" "$research_dir"
 
   printf "\n${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════════════════${RESET}\n"
 
-  if [ "$highest_complete" -lt 9 ] && [ "$task_status" != "completed" ]; then
-    printf "${BOLD}Actions:${RESET} ${CYAN}r${RESET} Resume Pipeline │ ${CYAN}t${RESET} Change Task Status │ ${CYAN}ESC/q${RESET} Back\n"
+  if [ "$highest_complete" -lt $TOTAL_PIPELINE_STEPS ] && [ "$task_status" != "completed" ]; then
+    printf "${BOLD}Actions:${RESET} ${CYAN}r${RESET} Resume │ ${CYAN}s${RESET} Select Step │ ${CYAN}t${RESET} Change Status │ ${CYAN}ESC/q${RESET} Back\n"
+  elif [ "$highest_complete" -gt 0 ]; then
+    printf "${BOLD}Actions:${RESET} ${CYAN}s${RESET} Re-run Step │ ${CYAN}t${RESET} Change Status │ ${CYAN}ESC/q${RESET} Back\n"
   else
     printf "${BOLD}Actions:${RESET} ${CYAN}t${RESET} Change Task Status │ ${CYAN}ESC/q${RESET} Back\n"
   fi
@@ -1896,20 +1954,33 @@ view_action_feature_status() {
     local action
     IFS= read -rsn1 action 2>/dev/null || break
 
+    # Handle escape key - drain any extra bytes and return
+    if [[ "$action" == $'\x1b' ]]; then
+      read -rsn2 -t 0.1 _ 2>/dev/null || true
+      hide_cursor
+      return
+    fi
+
     case "$action" in
       r)
-        if [ "$highest_complete" -lt 9 ] && [ "$task_status" != "completed" ]; then
+        if [ "$highest_complete" -lt $TOTAL_PIPELINE_STEPS ] && [ "$task_status" != "completed" ]; then
           hide_cursor
           view_action_resume_interrogate "$item_id" "$feature_session"
           return
         fi
+        ;;
+      s|S)
+        # Select step to run/re-run
+        hide_cursor
+        view_action_select_step "$item_id" "$feature_session" "$highest_complete"
+        return
         ;;
       t)
         hide_cursor
         view_action_status "$item_id"
         return
         ;;
-      q|$'\x1b')
+      q)
         hide_cursor
         return
         ;;
@@ -2105,14 +2176,15 @@ view_action_interrogate() {
 
   printf " ${BOLD}Task:${RESET} %s\n\n" "$title"
 
-  printf " ${DIM}This will launch the 8-phase feature discovery pipeline:${RESET}\n"
-  printf "   1. Repo Familiarization  5. Summary\n"
-  printf "   2. Feature Input         6. Flow Diagram Loop\n"
-  printf "   3. Requirement Refinement 7. Database Sync\n"
-  printf "   4. Deep Research         8. Schema Generation\n\n"
+  printf " ${DIM}This will launch the 10-phase feature discovery pipeline:${RESET}\n"
+  printf "   1. Repo Familiarization   6. Summary\n"
+  printf "   2. Feature Input          7. Flow Diagram Loop\n"
+  printf "   3. Requirement Refinement 8. Database Sync\n"
+  printf "   4. Deep Research          9. Schema Generation\n"
+  printf "   5. Impl Research         10. Run Migration\n\n"
 
   printf " ${BOLD}Options:${RESET}\n"
-  printf "   ${CYAN}f${RESET} - Full discovery (all 8 phases)\n"
+  printf "   ${CYAN}f${RESET} - Full discovery (all 10 phases)\n"
   printf "   ${CYAN}c${RESET} - Generate context file only (for /pm:feature)\n"
   printf "   ${CYAN}q${RESET} - Cancel\n\n"
 
@@ -2290,7 +2362,10 @@ EOF
   sleep 1
 
   # Check if feature_interrogate.sh exists
-  local interrogate_script="./.claude/ccpm/ccpm/scripts/feature_interrogate.sh"
+  local interrogate_script="./.claude/scripts/feature_interrogate.sh"
+  if [ ! -f "$interrogate_script" ]; then
+    interrogate_script="./.claude/ccpm/ccpm/scripts/feature_interrogate.sh"
+  fi
   if [ ! -f "$interrogate_script" ]; then
     interrogate_script="./feature_interrogate.sh"
   fi
@@ -2407,7 +2482,7 @@ sync_interrogate_results() {
 
   # Detect which step the interrogation reached based on files created
   # Steps: 1-Repo Analysis, 2-Feature Input, 3-Context Research, 4-Refinement,
-  #        5-Impl Research, 6-Summary, 7-Flow Diagram, 8-Database Sync, 9-Data Schema
+  #        5-Impl Research, 6-Summary, 7-Flow Diagram, 8-Database Sync, 9-Data Schema, 10-Run Migration
   local feature_step=1
   local feature_step_name="Repo Analysis"
 
@@ -2432,11 +2507,26 @@ sync_interrogate_results() {
   if [ -f "$flow_diagram" ]; then
     feature_step=7; feature_step_name="Flow Diagram"
   fi
-  if [ -d "$scope_dir" ] && [ -f "$scope_dir/00_scope_document.md" ]; then
+  if [ -f "$research_dir/scope-synced.txt" ]; then
     feature_step=8; feature_step_name="Database Sync"
   fi
-  if [ -f "$research_dir/entities.yaml" ] || [ -f "$research_dir/data-schema.md" ]; then
+  if [ -f "$research_dir/schema-complete.txt" ]; then
     feature_step=9; feature_step_name="Data Schema"
+  fi
+  if [ -f "$research_dir/migration-complete.txt" ]; then
+    feature_step=10; feature_step_name="Run Migration"
+  fi
+  if [ -f "$research_dir/models-integrated.txt" ]; then
+    feature_step=11; feature_step_name="Integrate Models"
+  fi
+  if [ -f "$research_dir/api-generated.txt" ]; then
+    feature_step=12; feature_step_name="API Generation"
+  fi
+  if [ -f "$research_dir/journeys-generated.txt" ]; then
+    feature_step=13; feature_step_name="Journey Generation"
+  fi
+  if [ -f "$research_dir/frontend-complete.txt" ]; then
+    feature_step=14; feature_step_name="Frontend Gen"
   fi
 
   # Count sub-step for refinement (round number)
@@ -2483,15 +2573,19 @@ sync_interrogate_results() {
     printf "  ${DIM}○ No required-elements.yaml found${RESET}\n"
   fi
 
-  # Store flow diagram reference
+  # Store flow diagram reference (only if not already present)
   if [ -f "$flow_diagram" ]; then
     printf "  ${GREEN}✓ Found flow-diagram.md${RESET}\n"
-    db_exec "
-      UPDATE checklist_item SET
-        notes = COALESCE(notes, '') || E'\n\n[Flow Diagram: $research_dir/flow-diagram.md]',
-        updated_at = NOW()
-      WHERE id = $item_id;
-    " > /dev/null
+    # Check if flow diagram link already exists in notes
+    local existing_notes=$(db_query "SELECT notes FROM checklist_item WHERE id = $item_id;")
+    if [[ "$existing_notes" != *"[Flow Diagram:"* ]]; then
+      db_exec "
+        UPDATE checklist_item SET
+          notes = COALESCE(notes, '') || E'\n\n[Flow Diagram: $research_dir/flow-diagram.md]',
+          updated_at = NOW()
+        WHERE id = $item_id;
+      " > /dev/null
+    fi
   fi
 
   # Link scope directory
@@ -2664,13 +2758,123 @@ check_interrogate_status() {
     return
   fi
 
-  if [ -f "$research_dir/flow-confirmed.txt" ]; then
+  # Check for final step completion - true end of pipeline
+  if [ -f "$research_dir/frontend-complete.txt" ]; then
     echo "complete"
   elif [ -f "$research_dir/pre-context.md" ]; then
     echo "in_progress"
   else
     echo "started"
   fi
+}
+
+# Select a step to run/re-run
+view_action_select_step() {
+  local item_id="$1"
+  local feature_session="$2"
+  local highest_complete="$3"
+
+  # Build step menu options
+  local -a step_names=(
+    "Step 1: Repo Analysis"
+    "Step 2: Feature Input"
+    "Step 3: Context Research"
+    "Step 4: Refinement"
+    "Step 5: Impl Research"
+    "Step 6: Summary"
+    "Step 7: Flow Diagram"
+    "Step 8: Database Sync"
+    "Step 9: Data Schema"
+    "Step 10: Run Migration"
+    "Step 11: Integrate Models"
+    "Step 12: API Generation"
+    "Step 13: Journey Generation"
+    "Step 14: Frontend Gen"
+  )
+
+  # Build menu with status indicators
+  local -a menu_options=()
+  local next_step=$((highest_complete + 1))
+
+  # First option: Continue from next step (if not complete)
+  if [ "$highest_complete" -lt $TOTAL_PIPELINE_STEPS ]; then
+    menu_options+=("▶ Continue from ${step_names[$highest_complete]} [default]")
+  fi
+
+  # Add completed steps (in reverse order for easy re-running)
+  for ((i=highest_complete; i>=1; i--)); do
+    menu_options+=("↻ Re-run ${step_names[$((i-1))]}")
+  done
+
+  # Add option to start from beginning
+  menu_options+=("⟳ Start over from Step 1")
+
+  hide_cursor
+  local step_idx=$(select_menu "Select Pipeline Step" "${menu_options[@]}")
+
+  if [ "$step_idx" = "-1" ]; then
+    return
+  fi
+
+  # Determine which step to run
+  local selected_step
+
+  if [ "$highest_complete" -lt $TOTAL_PIPELINE_STEPS ]; then
+    # First option is "continue"
+    if [ "$step_idx" = "0" ]; then
+      selected_step=$next_step
+    elif [ "$step_idx" = "$((${#menu_options[@]} - 1))" ]; then
+      # Last option is "start over"
+      selected_step=1
+    else
+      # Re-run a completed step (reverse index)
+      selected_step=$((highest_complete - step_idx + 1))
+    fi
+  else
+    # All complete - no "continue" option
+    if [ "$step_idx" = "$((${#menu_options[@]} - 1))" ]; then
+      selected_step=1
+    else
+      selected_step=$((highest_complete - step_idx))
+    fi
+  fi
+
+  show_cursor
+  clear_screen
+  printf "\n${BOLD}Running from Step %d: %s${RESET}\n\n" "$selected_step" "${step_names[$((selected_step-1))]}"
+
+  # Check if feature_interrogate.sh exists (try multiple paths)
+  local interrogate_script="./.claude/ccpm/ccpm/scripts/feature_interrogate.sh"
+  if [ ! -f "$interrogate_script" ]; then
+    interrogate_script="./.claude/scripts/feature_interrogate.sh"
+  fi
+  if [ ! -f "$interrogate_script" ]; then
+    interrogate_script="./feature_interrogate.sh"
+  fi
+  if [ ! -f "$interrogate_script" ]; then
+    printf "${RED}✗ feature_interrogate.sh not found${RESET}\n"
+    printf "${DIM}Press any key to continue...${RESET}"
+    read -rsn1
+    return
+  fi
+
+  # Export context
+  local research_dir=".claude/RESEARCH/${feature_session}"
+  export PLANNER_PRECONTEXT="$research_dir/pre-context.md"
+  export PLANNER_ITEM_ID="$item_id"
+
+  # Run from selected step
+  "$interrogate_script" "$feature_session" --start-from-step "$selected_step"
+
+  unset PLANNER_PRECONTEXT
+  unset PLANNER_ITEM_ID
+
+  # Sync results
+  sync_interrogate_results "$item_id" "$feature_session"
+
+  printf "\n${DIM}Press any key to continue...${RESET}"
+  read -rsn1
+  load_items
 }
 
 # Resume existing interrogate session
@@ -2722,7 +2926,10 @@ view_action_resume_interrogate() {
   printf "\n${BOLD}Resuming session: %s${RESET}\n\n" "$feature_session"
 
   # Check if feature_interrogate.sh exists
-  local interrogate_script="./.claude/ccpm/ccpm/scripts/feature_interrogate.sh"
+  local interrogate_script="./.claude/scripts/feature_interrogate.sh"
+  if [ ! -f "$interrogate_script" ]; then
+    interrogate_script="./.claude/ccpm/ccpm/scripts/feature_interrogate.sh"
+  fi
   if [ ! -f "$interrogate_script" ]; then
     interrogate_script="./feature_interrogate.sh"
   fi
@@ -2739,10 +2946,42 @@ view_action_resume_interrogate() {
   export PLANNER_ITEM_ID="$item_id"
 
   clear_screen
-  # Pass --start-from-step if we have a saved step > 1
-  if [ -n "$feature_step" ] && [ "$feature_step" -gt 1 ]; then
-    printf "${DIM}Resuming from step %s${RESET}\n" "$feature_step"
-    "$interrogate_script" "$feature_session" --start-from-step "$feature_step"
+  # Detect first incomplete step by checking marker files
+  local -a step_files=(
+    "repo-analysis.md"
+    "feature-input.md"
+    "pre-context.md"
+    "refined-requirements.md"
+    "research-output.md"
+    "summary.md"
+    "flow-confirmed.txt"
+    "scope-synced.txt"
+    "schema-complete.txt"
+    "migration-complete.txt"
+    "models-integrated.txt"
+    "api-generated.txt"
+    "journeys-generated.txt"
+    "frontend-complete.txt"
+  )
+
+  local next_step=1
+  for i in $(seq 1 $TOTAL_PIPELINE_STEPS); do
+    local idx=$((i - 1))
+    local file_path="$research_dir/${step_files[$idx]}"
+    if [ -f "$file_path" ]; then
+      next_step=$((i + 1))
+    else
+      break
+    fi
+  done
+  # Cap at max step
+  if [ "$next_step" -gt $TOTAL_PIPELINE_STEPS ]; then
+    next_step=$TOTAL_PIPELINE_STEPS
+  fi
+
+  if [ "$next_step" -gt 1 ]; then
+    printf "${DIM}Resuming from step %s${RESET}\n" "$next_step"
+    "$interrogate_script" "$feature_session" --start-from-step "$next_step"
   else
     "$interrogate_script" "$feature_session"
   fi

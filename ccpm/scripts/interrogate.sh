@@ -87,6 +87,8 @@ Pipeline Commands:
 Session Management:
   ./interrogate.sh --list                     List all sessions
   ./interrogate.sh --status [name]            Show session status
+  ./interrogate.sh --revert [name]            Revert to previous question (exact same text)
+  ./interrogate.sh --question-history <name>  Show question history for session
 
 Example - Run steps independently:
   ./interrogate.sh --services myapp           # Step 1: Setup infrastructure
@@ -879,6 +881,85 @@ show_pipeline_status() {
   fi
 }
 
+# Revert to previous question during interrogation
+revert_question() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    # Try to find the most recent ar session
+    if [ -d ".claude/ar" ]; then
+      name=$(ls -1t .claude/ar/ 2>/dev/null | head -1)
+    fi
+  fi
+
+  if [ -z "$name" ]; then
+    echo "❌ No session found"
+    echo "Usage: ./interrogate.sh --revert <session-name>"
+    exit 1
+  fi
+
+  local history_script="$SCRIPT_DIR/question-history.sh"
+  if [ ! -f "$history_script" ]; then
+    echo "❌ Question history script not found: $history_script"
+    exit 1
+  fi
+
+  source "$history_script"
+  qh_init "$name" > /dev/null
+
+  local count
+  count=$(qh_get_count)
+
+  if [ "$count" -lt 1 ]; then
+    echo "❌ No questions to revert (session: $name)"
+    exit 1
+  fi
+
+  echo "=== Revert Question: $name ==="
+  echo ""
+
+  # Get the previous question before removing the last one
+  local previous
+  previous=$(qh_revert 2>/dev/null)
+
+  if [ -z "$previous" ] || [ "$previous" = "{}" ]; then
+    echo "✓ Reverted to start of interrogation"
+    echo ""
+    echo "Re-run interrogation: ./interrogate.sh --discover $name"
+    exit 0
+  fi
+
+  echo "Reverted to previous question:"
+  echo ""
+  qh_format_for_display "$previous"
+  echo ""
+  echo "---"
+  echo "Questions remaining: $((count - 1))"
+  echo ""
+  echo "Continue interrogation: ./interrogate.sh --discover $name"
+}
+
+# Show question history for a session
+show_question_history() {
+  local name="$1"
+
+  if [ -z "$name" ]; then
+    echo "❌ Session name required"
+    echo "Usage: ./interrogate.sh --question-history <session-name>"
+    exit 1
+  fi
+
+  local history_script="$SCRIPT_DIR/question-history.sh"
+  if [ ! -f "$history_script" ]; then
+    echo "❌ Question history script not found"
+    exit 1
+  fi
+
+  source "$history_script"
+  qh_init "$name" > /dev/null
+  qh_show
+}
+
 # Handle arguments
 case "$1" in
   --help|-h)
@@ -891,6 +972,14 @@ case "$1" in
     ;;
   --status|-s)
     show_status "$2"
+    exit 0
+    ;;
+  --revert)
+    revert_question "$2"
+    exit 0
+    ;;
+  --question-history|--qh)
+    show_question_history "$2"
     exit 0
     ;;
   --discover|--interrogate-only|-i)
