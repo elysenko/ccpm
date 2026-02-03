@@ -49,6 +49,33 @@ ar_init_context_dir() {
 ## Original Request
 ${original_request:-[Not specified]}
 
+## Specification
+_Pending interrogation phase_
+
+### Goal
+_To be determined_
+
+### Scope
+_To be determined_
+
+### Inputs
+_To be determined_
+
+### Outputs
+_To be determined_
+
+### Happy Path
+_To be determined_
+
+### Error Handling
+_To be determined_
+
+### Constraints
+_To be determined_
+
+### Confidence
+0%
+
 ## Research Findings
 _Pending research phase_
 
@@ -153,6 +180,13 @@ ar_write_context() {
     sed -i "s/^Updated: .*/Updated: ${updated_at}/" "$context_file"
 
     case "$section" in
+        specification)
+            # Replace entire Specification section (multi-line content)
+            # First remove old specification content
+            sed -i '/^## Specification$/,/^## Research Findings$/{/^## Research Findings$/!d}' "$context_file"
+            # Then insert new content after the header
+            sed -i "/^## Specification$/a\\${content}\n" "$context_file"
+            ;;
         research)
             # Replace Research Findings section
             sed -i '/^## Research Findings$/,/^## /{/^## Research Findings$/!{/^## /!d}}' "$context_file"
@@ -210,6 +244,9 @@ ar_read_context_section() {
     fi
 
     case "$section" in
+        specification)
+            sed -n '/^## Specification$/,/^## Research Findings$/{/^## Specification$/d;/^## Research Findings$/d;p}' "$context_file"
+            ;;
         research)
             sed -n '/^## Research Findings$/,/^## /{/^## Research Findings$/d;/^## /d;p}' "$context_file"
             ;;
@@ -400,6 +437,13 @@ ar_get_context_summary() {
     summary+=$(sed -n '/^## Original Request$/,/^## /{/^## Original Request$/d;/^## /d;p}' "$context_file" | head -3)
     summary+="\n\n"
 
+    # Specification (key fields only)
+    local spec
+    spec=$(sed -n '/^## Specification$/,/^## Research Findings$/{/^## Specification$/d;/^## Research Findings$/d;p}' "$context_file")
+    if [ -n "$spec" ] && ! echo "$spec" | grep -q "_Pending interrogation phase_"; then
+        summary+="## Specification\n${spec}\n\n"
+    fi
+
     # Research (first 10 lines)
     local research
     research=$(sed -n '/^## Research Findings$/,/^## /{/^## Research Findings$/d;/^## /d;p}' "$context_file" | head -10)
@@ -460,5 +504,5 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo "  ar_get_context_summary <session> [max_lines]  - Get compressed summary"
     echo "  ar_cleanup_context <session>  - Remove context directory"
     echo ""
-    echo "Sections: research, codebase, gaps, decisions, focus"
+    echo "Sections: specification, research, codebase, gaps, decisions, focus"
 fi

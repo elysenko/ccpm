@@ -76,8 +76,23 @@ Phase 0: Initialize Session
 ├── Create DB session record
 └── Get original request from user
 
+Phase 0.5: Interrogation (REQUIRED)
+├── Check if detailed requirements provided (skip if >200 words + clear specs)
+├── Use 4-phase question hierarchy:
+│   ├── Context: Goal and scope questions
+│   ├── Behavior: Input, output, happy path
+│   ├── Edge Cases: Error handling, limits
+│   └── Verification: Summary confirmation
+├── Fill dialogue state slots:
+│   ├── goal, scope, input_spec, output_spec
+│   └── happy_path, error_handling, constraints
+├── Ask ONE question at a time (Golden Prompt pattern)
+├── Present verification summary when confidence >60%
+├── Write confirmed spec to context.md
+└── User must confirm "proceed" to continue
+
 Phase 1: Research & Gap Analysis
-├── Invoke /dr for technical requirements
+├── Invoke /dr for technical requirements (informed by spec)
 ├── Run multi-signal gap detection:
 │   ├── Linguistic analysis (ambiguity markers)
 │   ├── Slot-filling (required fields check)
@@ -158,7 +173,114 @@ Phase 4: Integration
 
 5. **Update progress**:
    ```bash
+   ar_write_progress "$SESSION_NAME" "in_progress" "interrogation" "" "" "0"
+   ```
+
+### Phase 0.5: Interrogation
+
+**Purpose:** Collect implementation-critical information before research/decomposition.
+
+1. **Check if interrogation is needed**:
+   ```python
+   # Skip interrogation if:
+   # - Feature description > 200 words with clear specs
+   # - User said "just start" or "use your judgment"
+   # - Direct codebase pattern match exists
+
+   word_count = len(FEATURE_DESCRIPTION.split())
+   has_clear_specs = contains_specs(FEATURE_DESCRIPTION)  # input/output/happy path
+
+   if word_count > 200 and has_clear_specs:
+       skip_interrogation = True
+   ```
+
+2. **Spawn interrogator agent** with XML context:
+   ```xml
+   <interrogation_context>
+     <session>{SESSION_NAME}</session>
+     <feature>{FEATURE_DESCRIPTION}</feature>
+     <user_role>developer</user_role>
+     <context_file>.claude/ar/{SESSION_NAME}/context.md</context_file>
+   </interrogation_context>
+
+   <task>
+   Interrogate the user to fill in the dialogue state slots.
+   Use the 4-phase question hierarchy:
+   1. Context (goal, scope)
+   2. Behavior (input, output, happy path)
+   3. Edge Cases (error handling, limits)
+   4. Verification (summary confirmation)
+
+   Ask ONE question at a time. Wait for answer before continuing.
+   Present options in labeled tables (A, B, C) when applicable.
+   When confidence >60%, present verification summary.
+   User must reply "proceed" to continue.
+   </task>
+   ```
+
+3. **4-Phase Question Hierarchy:**
+
+   | Phase | Focus | Example Questions |
+   |-------|-------|-------------------|
+   | 1. Context | Goal & Scope | "What's the primary goal?", "What's in/out of scope?" |
+   | 2. Behavior | Input/Output/Happy Path | "What inputs?", "What outputs?", "Walk through success case" |
+   | 3. Edge Cases | Errors & Limits | "What if input invalid?", "Rate limits?", "Failure modes?" |
+   | 4. Verification | Summary | "Does this capture your needs? Reply 'proceed' to continue" |
+
+4. **Dialogue State Slots:**
+   ```yaml
+   slots:
+     goal: null        # Primary objective
+     scope: null       # In/out boundaries
+     input_spec: null  # Data inputs
+     output_spec: null # Expected outputs
+     happy_path: null  # Success scenario
+     error_handling: null  # Failure handling
+     constraints: null # Performance/security requirements
+   ```
+
+5. **Golden Prompt Pattern:**
+   - Ask ONE question at a time
+   - Wait for answer before asking next
+   - Present multiple options in labeled table:
+     ```
+     | Option | Description |
+     |--------|-------------|
+     | A | Option A description |
+     | B | Option B description |
+     | C | Option C description |
+     ```
+
+6. **Confidence Thresholds:**
+   | Slots Filled | Confidence | Action |
+   |--------------|------------|--------|
+   | 7/7 | >80% | Proceed to research |
+   | 5-6 | 60-80% | Proceed with assumptions |
+   | 3-4 | 40-60% | Ask blocking questions |
+   | <3 | <40% | Continue interrogation |
+
+7. **Write specification to context.md:**
+   ```bash
+   ar_write_context "$SESSION_NAME" "specification" "$SPEC_SUMMARY"
    ar_write_progress "$SESSION_NAME" "in_progress" "research" "" "" "0"
+   ```
+
+8. **Verification summary format:**
+   ```markdown
+   ## Feature Specification
+
+   **Goal:** {goal}
+   **Scope:** {scope}
+
+   **Inputs:** {input_spec}
+   **Outputs:** {output_spec}
+   **Happy Path:** {happy_path}
+   **Error Handling:** {error_handling}
+   **Constraints:** {constraints}
+
+   **Confidence:** {confidence}%
+
+   Reply "proceed" to start decomposition.
    ```
 
 ### Phase 1: Research & Gap Analysis
@@ -330,6 +452,14 @@ Phase 4: Integration
 ## Subagents
 
 This skill uses specialized agents with **context firewall** pattern:
+
+### Interrogator Agent
+- **Location**: `.claude/agents/ar/interrogator.md`
+- **Input**: XML context with session, feature, user_role
+- **Process**: 4-phase question hierarchy to fill dialogue state slots
+- **Output**: Asks ONE question at a time, presents options in tables
+- **Returns**: Specification summary with confidence score
+- **Slots**: goal, scope, input_spec, output_spec, happy_path, error_handling, constraints
 
 ### Gap Analyzer Agent
 - **Location**: `.claude/agents/ar/gap-analyzer.md`
