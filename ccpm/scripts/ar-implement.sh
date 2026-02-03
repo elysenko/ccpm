@@ -31,54 +31,74 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # =============================================================================
-# Database Connection
+# Database Connection (uses kubectl exec like feature_interrogate.sh)
 # =============================================================================
 
-# Get PostgreSQL connection string
-ar_get_pg_connection() {
-    local host="${POSTGRES_HOST:-postgresql-cattle-erp.cattle-erp.svc.cluster.local}"
-    local port="${POSTGRES_PORT:-5432}"
-    local db="${POSTGRES_DB:-cattle_erp}"
-    local user="${POSTGRES_USER:-postgres}"
-    local password="${POSTGRES_PASSWORD:-upj3RsNuqy}"
+# Load .env file to get database configuration
+_ar_load_env() {
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local project_root="$(cd "$script_dir/../.." && pwd)"
+    local env_file="$project_root/.env"
 
-    echo "PGPASSWORD='$password' psql -h '$host' -p '$port' -U '$user' -d '$db'"
+    if [ -f "$env_file" ]; then
+        set -a
+        source "$env_file"
+        set +a
+    fi
 }
 
-# Execute SQL query and return result
+# Initialize database connection variables from .env
+_ar_init_db_vars() {
+    _ar_load_env
+
+    # Use values from .env or fall back to defaults
+    AR_K8S_NAMESPACE="${K8S_NAMESPACE:-cattle-erp}"
+    AR_DB_USER="${DB_USER:-postgres}"
+    AR_DB_PASSWORD="${DB_PASSWORD:-upj3RsNuqy}"
+
+    # Database name: normalize hyphens to underscores (PostgreSQL convention)
+    # .env may have "cattle-erp" but actual DB is "cattle_erp"
+    local db_name="${DB_NAME:-cattle_erp}"
+    AR_DB_NAME="${db_name//-/_}"
+
+    # Pod name follows pattern: postgresql-{namespace}-0
+    AR_DB_POD="postgresql-${AR_K8S_NAMESPACE}-0"
+}
+
+# Ensure variables are initialized
+_ar_init_db_vars
+
+# Execute SQL query and return result (single value, trimmed)
 ar_query() {
     local sql="$1"
-    local conn
-    conn=$(ar_get_pg_connection)
-
-    eval "$conn -t -c \"$sql\"" 2>/dev/null | tr -d ' \n' || echo ""
+    PGPASSWORD="$AR_DB_PASSWORD" kubectl exec -n "$AR_K8S_NAMESPACE" "$AR_DB_POD" -- \
+        psql -U "$AR_DB_USER" -d "$AR_DB_NAME" -t -c "$sql" 2>/dev/null | tr -d ' \n' || echo ""
 }
 
 # Execute SQL query and return multiple rows
 ar_query_rows() {
     local sql="$1"
-    local conn
-    conn=$(ar_get_pg_connection)
-
-    eval "$conn -t -c \"$sql\"" 2>/dev/null || echo ""
+    PGPASSWORD="$AR_DB_PASSWORD" kubectl exec -n "$AR_K8S_NAMESPACE" "$AR_DB_POD" -- \
+        psql -U "$AR_DB_USER" -d "$AR_DB_NAME" -t -c "$sql" 2>/dev/null || echo ""
 }
 
 # Execute SQL command (no return value)
 ar_exec() {
     local sql="$1"
-    local conn
-    conn=$(ar_get_pg_connection)
-
-    eval "$conn -c \"$sql\"" > /dev/null 2>&1
+    PGPASSWORD="$AR_DB_PASSWORD" kubectl exec -n "$AR_K8S_NAMESPACE" "$AR_DB_POD" -- \
+        psql -U "$AR_DB_USER" -d "$AR_DB_NAME" -c "$sql" > /dev/null 2>&1
 }
 
 # Execute SQL file
 ar_exec_file() {
     local file="$1"
-    local conn
-    conn=$(ar_get_pg_connection)
-
-    eval "$conn -f \"$file\"" > /dev/null 2>&1
+    if [ -f "$file" ]; then
+        cat "$file" | PGPASSWORD="$AR_DB_PASSWORD" kubectl exec -i -n "$AR_K8S_NAMESPACE" "$AR_DB_POD" -- \
+            psql -U "$AR_DB_USER" -d "$AR_DB_NAME" > /dev/null 2>&1
+    else
+        echo -e "${RED}File not found: $file${NC}" >&2
+        return 1
+    fi
 }
 
 # =============================================================================
@@ -147,10 +167,15 @@ ar_add_node() {
     local parent_context="${7:-}"        # Context summary from parent
     local codebase_context="${8:-}"      # JSON with codebase findings
 
-    # Escape single quotes
+    # Sanitize for SQL: escape quotes, remove newlines, truncate
     name="${name//\'/\'\'}"
     description="${description//\'/\'\'}"
-    research_query="${research_query//\'/\'\'}"
+    # Research query can be very long with special chars - truncate and sanitize
+    research_query="${research_query:0:500}"  # Truncate to 500 chars
+    research_query="${research_query//$'\n'/ }"  # Replace newlines with spaces
+    research_query="${research_query//\'/\'\'}"  # Escape quotes
+    research_query="${research_query//\\/\\\\}"  # Escape backslashes
+    parent_context="${parent_context//$'\n'/ }"
     parent_context="${parent_context//\'/\'\'}"
     codebase_context="${codebase_context//\'/\'\'}"
 
@@ -161,22 +186,9 @@ ar_add_node() {
         parent_arg="$parent_id"
     fi
 
-    local context_arg=""
-    if [ -n "$parent_context" ]; then
-        context_arg=", '$parent_context'"
-    else
-        context_arg=", NULL"
-    fi
-
-    local codebase_arg=""
-    if [ -n "$codebase_context" ]; then
-        codebase_arg=", '$codebase_context'::jsonb"
-    else
-        codebase_arg=", NULL"
-    fi
-
+    # SQL function only takes 6 params: session_name, parent_id, name, description, gap_type, research_query
     local node_id
-    node_id=$(ar_query "SELECT add_decomposition_node('$session_name', $parent_arg, '$name', '$description', '$gap_type', '$research_query'$context_arg$codebase_arg)")
+    node_id=$(ar_query "SELECT add_decomposition_node('$session_name', $parent_arg, '$name', '$description', '$gap_type', '$research_query')")
 
     if [ -n "$node_id" ]; then
         echo -e "${BLUE}  Added node: $name (ID: $node_id)${NC}" >&2

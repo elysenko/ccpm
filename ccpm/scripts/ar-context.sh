@@ -176,40 +176,60 @@ ar_write_context() {
     local updated_at
     updated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-    # Update the Updated timestamp
+    # Update the Updated timestamp (safe - no special chars)
     sed -i "s/^Updated: .*/Updated: ${updated_at}/" "$context_file"
+
+    # Use awk for content replacement to avoid sed special character issues
+    # Content may contain *, /, &, etc. which break sed
+    local temp_file="${context_file}.tmp"
 
     case "$section" in
         specification)
-            # Replace entire Specification section (multi-line content)
-            # First remove old specification content
-            sed -i '/^## Specification$/,/^## Research Findings$/{/^## Research Findings$/!d}' "$context_file"
-            # Then insert new content after the header
-            sed -i "/^## Specification$/a\\${content}\n" "$context_file"
+            # Replace Specification section content
+            awk -v content="$content" '
+                /^## Specification$/ { print; print content; skip=1; next }
+                /^## Research Findings$/ { skip=0 }
+                !skip { print }
+            ' "$context_file" > "$temp_file" && mv "$temp_file" "$context_file"
             ;;
         research)
-            # Replace Research Findings section
-            sed -i '/^## Research Findings$/,/^## /{/^## Research Findings$/!{/^## /!d}}' "$context_file"
-            sed -i "s/^## Research Findings$/## Research Findings\n${content}/" "$context_file"
+            # Replace Research Findings section content
+            awk -v content="$content" '
+                /^## Research Findings$/ { print; print content; skip=1; next }
+                /^## Codebase Analysis$/ { skip=0 }
+                !skip { print }
+            ' "$context_file" > "$temp_file" && mv "$temp_file" "$context_file"
             ;;
         codebase)
-            # Replace Codebase Analysis section
-            sed -i '/^## Codebase Analysis$/,/^## /{/^## Codebase Analysis$/!{/^## /!d}}' "$context_file"
-            sed -i "s/^## Codebase Analysis$/## Codebase Analysis\n${content}/" "$context_file"
+            # Replace Codebase Analysis section content
+            awk -v content="$content" '
+                /^## Codebase Analysis$/ { print; print content; skip=1; next }
+                /^## Gap Summary$/ { skip=0 }
+                !skip { print }
+            ' "$context_file" > "$temp_file" && mv "$temp_file" "$context_file"
             ;;
         gaps)
-            # Replace Gap Summary section
-            sed -i '/^## Gap Summary$/,/^## /{/^## Gap Summary$/!{/^## /!d}}' "$context_file"
-            sed -i "s/^## Gap Summary$/## Gap Summary\n${content}/" "$context_file"
+            # Replace Gap Summary section content
+            awk -v content="$content" '
+                /^## Gap Summary$/ { print; print content; skip=1; next }
+                /^## Decisions Made$/ { skip=0 }
+                !skip { print }
+            ' "$context_file" > "$temp_file" && mv "$temp_file" "$context_file"
             ;;
         decisions)
             # Append to Decisions Made section
-            sed -i "/^## Decisions Made$/a\\- ${content}" "$context_file"
+            awk -v content="$content" '
+                /^## Decisions Made$/ { print; print "- " content; next }
+                { print }
+            ' "$context_file" > "$temp_file" && mv "$temp_file" "$context_file"
             ;;
         focus)
-            # Replace Current Focus section
-            sed -i '/^## Current Focus$/,/^---/{/^## Current Focus$/!{/^---/!d}}' "$context_file"
-            sed -i "s/^## Current Focus$/## Current Focus\n${content}/" "$context_file"
+            # Replace Current Focus section content
+            awk -v content="$content" '
+                /^## Current Focus$/ { print; print content; skip=1; next }
+                /^---$/ { skip=0 }
+                !skip { print }
+            ' "$context_file" > "$temp_file" && mv "$temp_file" "$context_file"
             ;;
         *)
             echo -e "${YELLOW}Unknown section: $section${NC}" >&2

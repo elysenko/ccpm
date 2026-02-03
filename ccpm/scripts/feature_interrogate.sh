@@ -7,7 +7,7 @@
 # Usage:
 #   ./feature_interrogate.sh [session-name]
 #
-# Pipeline (9 steps):
+# Pipeline (14 steps):
 #   1. repo-research     → Understand the repository structure
 #   2. user-input        → Get feature description from user
 #   3. context-research  → Deep research (/dr) to understand the domain (NEW)
@@ -17,6 +17,11 @@
 #   7. flow-diagram      → Generate and verify flow diagrams
 #   8. db-sync           → Sync to database/scope documents
 #   9. data-schema       → Generate data models and migrations
+#  10. run-migration     → Apply migration SQL to PostgreSQL
+#  11. integrate-models  → Copy SQLAlchemy models into backend and register
+#  12. api-generation    → Generate FastAPI router + schemas (self-refine loop)
+#  13. journey-gen       → Generate user journeys (delegates to generate-journeys.sh)
+#  14. frontend-gen      → Generate frontend components (platform-agnostic)
 #
 # Output:
 #   .claude/RESEARCH/{session}/ - Research files
@@ -64,13 +69,13 @@ readonly BOX_L='├'
 readonly BOX_R='┤'
 
 # Step tracking
-TOTAL_STEPS=9
+TOTAL_STEPS=14
 CURRENT_STEP=0
 STEP_START_TIME=0
 SESSION_START_TIME=0
-declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema")
-declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
-declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0)
+declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Gen")
+declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
+declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 
 # Spinner characters (braille pattern for smooth animation)
 readonly SPINNER_CHARS='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -240,6 +245,19 @@ complete_step() {
   STEP_STATUS[$((step_num-1))]="complete"
 
   echo -e "${GREEN}✓${NC} $message ${DIM}($(format_duration $duration))${NC}"
+}
+
+# Fail a step and record duration
+fail_step() {
+  local step_num=$1
+  local message="${2:-Failed}"
+
+  local end_time=$(date +%s)
+  local duration=$((end_time - STEP_START_TIME))
+  STEP_DURATIONS[$((step_num-1))]=$duration
+  STEP_STATUS[$((step_num-1))]="failed"
+
+  log_error "Step $step_num failed: $message"
 }
 
 # Show progress summary
@@ -2095,6 +2113,12 @@ Pipeline Steps:
   5. Conversation Summary  - Save discovery summary
   6. Flow Diagram Loop     - Generate and verify flow diagram
   7. Database Sync         - Persist to PostgreSQL
+  8. Data Schema           - Generate domain model, migration, SQLAlchemy models
+  9. Run Migration         - Apply migration SQL to PostgreSQL
+  10. Integrate Models     - Copy models into backend, register in __init__.py
+  11. API Generation       - Generate FastAPI router + Pydantic schemas
+  12. Journey Generation   - Generate user journeys via generate-journeys.sh
+  13. Frontend Gen         - Generate frontend components (platform-agnostic)
 
 Output Files:
   .claude/RESEARCH/{session}/
@@ -2104,7 +2128,12 @@ Output Files:
   ├── research-output.md      - /dr research results
   ├── summary.md              - Complete conversation summary
   ├── flow-feedback.md        - User feedback during iterations
-  └── flow-confirmed.txt      - Confirmation marker
+  ├── flow-confirmed.txt      - Confirmation marker
+  ├── schema-migration.sql    - PostgreSQL migration DDL
+  ├── schema-sqlalchemy.py    - SQLAlchemy model definitions
+  ├── api-router.py           - Generated FastAPI router
+  ├── api-schemas.py          - Generated Pydantic schemas
+  └── journeys.json           - Generated user journeys
 
   .claude/scopes/{session}/
   ├── 00_scope_document.md    - Main scope document
@@ -2145,7 +2174,7 @@ list_sessions() {
   for session in "${sessions[@]}"; do
     local session_dir="$research_dir/$session"
     local completed=0
-    local total=8
+    local total=12
 
     # Check each step's completion
     [ -f "$session_dir/repo-analysis.md" ] && completed=$((completed + 1))
@@ -2156,6 +2185,10 @@ list_sessions() {
     [ -f "$session_dir/flow-confirmed.txt" ] && completed=$((completed + 1))
     [ -f "$session_dir/scope-synced.txt" ] && completed=$((completed + 1))
     [ -f "$session_dir/schema-complete.txt" ] && completed=$((completed + 1))
+    [ -f "$session_dir/migration-complete.txt" ] && completed=$((completed + 1))
+    [ -f "$session_dir/models-integrated.txt" ] && completed=$((completed + 1))
+    [ -f "$session_dir/api-generated.txt" ] && completed=$((completed + 1))
+    [ -f "$session_dir/journeys-generated.txt" ] && completed=$((completed + 1))
 
     # Progress bar
     local bar=""
@@ -2191,8 +2224,18 @@ detect_completed_steps() {
   local session_dir="$1"
 
   # Check steps in reverse order to find where to resume
-  if [ -f "$session_dir/schema-complete.txt" ]; then
-    echo 9  # All complete (8 steps done)
+  if [ -f "$session_dir/frontend-complete.txt" ]; then
+    echo 14  # All complete (14 steps done)
+  elif [ -f "$session_dir/journeys-generated.txt" ]; then
+    echo 13  # Steps 1-12 skip, resume from step 13 (step 14 runs fresh)
+  elif [ -f "$session_dir/api-generated.txt" ]; then
+    echo 12  # Steps 1-11 skip, resume from step 12 (step 13 runs fresh)
+  elif [ -f "$session_dir/models-integrated.txt" ]; then
+    echo 11  # Steps 1-10 skip, resume from step 11 (step 12 runs fresh)
+  elif [ -f "$session_dir/migration-complete.txt" ]; then
+    echo 10  # Steps 1-9 skip, resume from step 10 (step 11 runs fresh)
+  elif [ -f "$session_dir/schema-complete.txt" ]; then
+    echo 9  # Steps 1-8 skip, resume from step 9 (step 10 runs fresh)
   elif [ -f "$session_dir/scope-synced.txt" ]; then
     echo 8  # Resume from step 8 (data schema)
   elif [ -f "$session_dir/flow-confirmed.txt" ]; then
@@ -3891,7 +3934,7 @@ generate_data_schema() {
   gather_schema_context_data "$context_file"
 
   while [ $attempt -lt $max_attempts ] && [ "$passed" = "false" ]; do
-    ((attempt++))
+    attempt=$((attempt + 1))
     log "Attempt $attempt/$max_attempts..."
 
     # Phase 1: Generate domain model
@@ -3990,12 +4033,20 @@ gather_schema_context_data() {
     printf "## Existing Database Tables (for FK references)\n%s\n\n" "$existing_tables"
     printf "## Research Highlights\n%s\n\n" "$research_entities"
     printf "## Domain Context\nThis is a Cattle ERP system with:\n"
-    printf "- Users (id, email, username) - authentication/authorization\n"
-    printf "- Vendors (id, name, contact_email) - suppliers\n"
-    printf "- Customers (id, name, contact_email) - buyers\n"
-    printf "- Cattle tracking, inventory, procurement workflows\n"
-    printf "- Kanban boards for order processing\n"
+    printf '%s\n' "- Users (id, email, username) - authentication/authorization"
+    printf '%s\n' "- Vendors (id, name, contact_email) - suppliers"
+    printf '%s\n' "- Customers (id, name, contact_email) - buyers"
+    printf '%s\n' "- Cattle tracking, inventory, procurement workflows"
+    printf '%s\n' "- Kanban boards for order processing"
   } > "$context_file"
+}
+
+# Strip markdown code fences from a file (```lang ... ```)
+strip_code_fences() {
+  local file="$1"
+  if [ ! -f "$file" ]; then return 1; fi
+  # Remove lines that are only code fences (```sql, ```python, ```, etc.)
+  sed -i '/^```[a-z]*[[:space:]]*$/d' "$file"
 }
 
 # Generate domain model using Claude
@@ -4021,8 +4072,8 @@ generate_domain_model_file() {
     printf "# Domain Model: {Feature Name}\n\n"
     printf "## Entities\n\n"
     printf "### {EntityName}\n"
-    printf "- **Purpose**: {brief description}\n"
-    printf "- **Table Name**: {snake_case_plural}\n\n"
+    printf -- "- **Purpose**: {brief description}\n"
+    printf -- "- **Table Name**: {snake_case_plural}\n\n"
     printf "| Column | Type | Constraints | Description |\n"
     printf "|--------|------|-------------|-------------|\n"
     printf "| id | UUID | PK, DEFAULT gen_random_uuid() | Primary key |\n\n"
@@ -4032,13 +4083,19 @@ generate_domain_model_file() {
   } > "$prompt_file"
 
   # Call Claude
-  if command -v claude &>/dev/null; then
-    claude --dangerously-skip-permissions --print < "$prompt_file" > "$domain_model_file" 2>/dev/null
-    [ -s "$domain_model_file" ] && return 0
+  if ! command -v claude &>/dev/null; then
+    log_error "Claude CLI not available"
+    return 1
   fi
-
-  # Fallback: create placeholder
-  printf "# Domain Model\n\nGeneration pending - run with claude CLI available.\n" > "$domain_model_file"
+  if ! claude --print --tools "" < "$prompt_file" > "$domain_model_file" 2>/dev/null; then
+    log_error "Claude CLI call failed for domain model"
+    return 1
+  fi
+  strip_code_fences "$domain_model_file"
+  if [ ! -s "$domain_model_file" ]; then
+    log_error "Domain model generation produced empty output"
+    return 1
+  fi
   return 0
 }
 
@@ -4052,24 +4109,30 @@ generate_migration_ddl_file() {
   {
     printf "You are a PostgreSQL database architect generating production-ready migrations.\n\n"
     printf "CONVENTIONS:\n"
-    printf "- UUID PRIMARY KEY DEFAULT gen_random_uuid()\n"
-    printf "- TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP\n"
-    printf "- CREATE TABLE IF NOT EXISTS\n"
-    printf "- CREATE INDEX IF NOT EXISTS\n"
-    printf "- snake_case naming\n\n"
+    printf -- "- UUID PRIMARY KEY DEFAULT gen_random_uuid()\n"
+    printf -- "- TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP\n"
+    printf -- "- CREATE TABLE IF NOT EXISTS\n"
+    printf -- "- CREATE INDEX IF NOT EXISTS\n"
+    printf -- "- snake_case naming\n\n"
     printf "<domain_model>\n"
     cat "$domain_model" 2>/dev/null
     printf "</domain_model>\n\n"
     printf "Generate ONLY valid PostgreSQL SQL. No markdown. Start with: -- Migration\n"
   } > "$prompt_file"
 
-  if command -v claude &>/dev/null; then
-    claude --dangerously-skip-permissions --print < "$prompt_file" > "$migration_file" 2>/dev/null
-    [ -s "$migration_file" ] && return 0
+  if ! command -v claude &>/dev/null; then
+    log_error "Claude CLI not available"
+    return 1
   fi
-
-  # Fallback placeholder
-  printf "-- Migration: placeholder\n-- Run with claude CLI for full generation\n" > "$migration_file"
+  if ! claude --print --tools "" < "$prompt_file" > "$migration_file" 2>/dev/null; then
+    log_error "Claude CLI call failed for migration DDL"
+    return 1
+  fi
+  strip_code_fences "$migration_file"
+  if [ ! -s "$migration_file" ]; then
+    log_error "Migration DDL generation produced empty output"
+    return 1
+  fi
   return 0
 }
 
@@ -4084,9 +4147,9 @@ generate_sqlalchemy_models_file() {
   {
     printf "Generate SQLAlchemy 2.0 models for FastAPI.\n\n"
     printf "CONVENTIONS:\n"
-    printf "- Inherit from app.core.database.Base\n"
-    printf "- UUID primary keys with uuid.uuid4 default\n"
-    printf "- DateTime(timezone=True) for timestamps\n\n"
+    printf -- "- Inherit from app.core.database.Base\n"
+    printf -- "- UUID primary keys with uuid.uuid4 default\n"
+    printf -- "- DateTime(timezone=True) for timestamps\n\n"
     printf "<domain_model>\n"
     cat "$domain_model" 2>/dev/null
     printf "</domain_model>\n\n"
@@ -4096,13 +4159,19 @@ generate_sqlalchemy_models_file() {
     printf "Output ONLY valid Python code. Start with imports.\n"
   } > "$prompt_file"
 
-  if command -v claude &>/dev/null; then
-    claude --dangerously-skip-permissions --print < "$prompt_file" > "$model_file" 2>/dev/null
-    [ -s "$model_file" ] && return 0
+  if ! command -v claude &>/dev/null; then
+    log_error "Claude CLI not available"
+    return 1
   fi
-
-  # Fallback placeholder
-  printf "# SQLAlchemy models placeholder\n# Run with claude CLI for full generation\n" > "$model_file"
+  if ! claude --print --tools "" < "$prompt_file" > "$model_file" 2>/dev/null; then
+    log_error "Claude CLI call failed for SQLAlchemy models"
+    return 1
+  fi
+  strip_code_fences "$model_file"
+  if [ ! -s "$model_file" ]; then
+    log_error "SQLAlchemy model generation produced empty output"
+    return 1
+  fi
   return 0
 }
 
@@ -4164,10 +4233,1458 @@ save_validation_report() {
     printf "**Threshold:** %s%%\n" "$threshold"
     printf "**Status:** %s\n\n" "$status"
     printf "## Files Generated\n\n"
-    printf "- domain-model.md - Entity analysis\n"
-    printf "- schema-migration.sql - PostgreSQL DDL\n"
-    printf "- schema-sqlalchemy.py - Python models\n"
+    printf -- "- domain-model.md - Entity analysis\n"
+    printf -- "- schema-migration.sql - PostgreSQL DDL\n"
+    printf -- "- schema-sqlalchemy.py - Python models\n"
   } > "$SESSION_DIR/schema-validation.md"
+}
+
+# ============================================================================
+# Step 10: Run Migration
+# ============================================================================
+
+# Apply generated migration SQL to PostgreSQL
+run_migration() {
+  show_step_header 10 "Run Migration" "sync"
+
+  # Check prerequisites
+  if [ ! -f "$SESSION_DIR/schema-migration.sql" ]; then
+    log_error "Missing schema-migration.sql - run step 9 (Data Schema) first"
+    fail_step 10 "Missing prerequisites (schema-migration.sql)"
+    return 1
+  fi
+
+  # Database connection settings (same as generate-journeys.sh)
+  local db_namespace="cattle-erp"
+  local db_pod="postgresql-cattle-erp-0"
+  local db_name="cattle_erp"
+  local db_user="postgres"
+  local db_pass="upj3RsNuqy"
+
+  # Determine next migration number
+  log "Determining next migration number..."
+  local next_num="001"
+  if [ -d "backend/migrations" ]; then
+    local last_num
+    last_num=$(ls -1 backend/migrations/[0-9]*.sql 2>/dev/null | \
+      sed 's|.*/||' | sed 's/_.*//' | sort -n | tail -1 || echo "000")
+    if [ -n "$last_num" ] && [ "$last_num" != "000" ]; then
+      # Remove leading zeros for arithmetic, then re-pad
+      last_num=$((10#$last_num))
+      next_num=$(printf "%03d" $((last_num + 1)))
+    fi
+  fi
+
+  # Convert session name to snake_case for migration filename
+  local session_snake
+  session_snake=$(echo "$SESSION_NAME" | tr '-' '_' | tr '[:upper:]' '[:lower:]')
+  local migration_file="backend/migrations/${next_num}_${session_snake}.sql"
+
+  # Copy migration SQL
+  log "Copying migration to $migration_file..."
+  mkdir -p backend/migrations
+  cp "$SESSION_DIR/schema-migration.sql" "$migration_file"
+
+  # Apply migration via kubectl
+  log "Applying migration to PostgreSQL..."
+  local apply_output
+  if apply_output=$(kubectl exec -n "$db_namespace" "$db_pod" -i -- \
+    env PGPASSWORD="$db_pass" psql -U "$db_user" -d "$db_name" -f - < "$migration_file" 2>&1); then
+    log "Migration applied successfully"
+  else
+    log_error "Migration apply returned errors (may be idempotent):"
+    echo -e "  ${DIM}$apply_output${NC}" | head -5
+    # Don't fail hard - IF NOT EXISTS makes re-runs safe
+    log "Continuing (idempotent migrations are expected to warn on re-run)"
+  fi
+
+  # Verify tables exist by checking information_schema
+  log "Verifying tables..."
+  local expected_tables
+  expected_tables=$(grep -oP 'CREATE TABLE(?:\s+IF NOT EXISTS)?\s+\K[a-z_]+' "$SESSION_DIR/schema-migration.sql" 2>/dev/null || true)
+
+  local verified_count=0
+  local expected_count=0
+  for table in $expected_tables; do
+    expected_count=$((expected_count + 1))
+    local exists
+    exists=$(kubectl exec -n "$db_namespace" "$db_pod" -- \
+      env PGPASSWORD="$db_pass" psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='$table'" 2>/dev/null || echo "0")
+    exists=$(echo "$exists" | tr -d '[:space:]')
+    if [ "$exists" = "1" ]; then
+      verified_count=$((verified_count + 1))
+    else
+      log_error "Table '$table' not found in database"
+    fi
+  done
+
+  if [ "$expected_count" -eq 0 ]; then
+    log "No CREATE TABLE statements found (migration may be ALTER-only)"
+    verified_count=0
+    expected_count=0
+  fi
+
+  # Write marker file
+  {
+    echo "migration_file=$migration_file"
+    echo "tables_expected=$expected_count"
+    echo "tables_verified=$verified_count"
+    echo "verified_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  } > "$SESSION_DIR/migration-complete.txt"
+
+  complete_step 10 "Migration applied ($verified_count/$expected_count tables verified)"
+  dim_path "  Migration: $migration_file"
+}
+
+# ============================================================================
+# Step 11: Integrate Models
+# ============================================================================
+
+# Copy SQLAlchemy models into backend and register in __init__.py
+integrate_models() {
+  show_step_header 11 "Integrate Models" "sync"
+
+  # Check prerequisites
+  if [ ! -f "$SESSION_DIR/schema-sqlalchemy.py" ]; then
+    log_error "Missing schema-sqlalchemy.py - run step 9 (Data Schema) first"
+    fail_step 11 "Missing prerequisites (schema-sqlalchemy.py)"
+    return 1
+  fi
+
+  local init_file="backend/app/models/__init__.py"
+  if [ ! -f "$init_file" ]; then
+    log_error "Missing $init_file - backend structure not found"
+    fail_step 11 "Missing $init_file"
+    return 1
+  fi
+
+  # Convert session name to snake_case for model filename
+  local session_snake
+  session_snake=$(echo "$SESSION_NAME" | tr '-' '_' | tr '[:upper:]' '[:lower:]')
+  local model_file="backend/app/models/${session_snake}.py"
+
+  # Copy model file
+  log "Copying models to $model_file..."
+  cp "$SESSION_DIR/schema-sqlalchemy.py" "$model_file"
+
+  # Extract class names (SQLAlchemy model classes)
+  log "Extracting model class names..."
+  local class_names
+  class_names=$(grep -oP 'class\s+\K\w+(?=\s*\()' "$model_file" 2>/dev/null || true)
+
+  if [ -z "$class_names" ]; then
+    log_error "No model classes found in $model_file"
+    fail_step 11 "No model classes found"
+    return 1
+  fi
+
+  local class_list=""
+  local class_count=0
+  for cls in $class_names; do
+    class_list="${class_list:+$class_list, }$cls"
+    class_count=$((class_count + 1))
+  done
+  log "Found $class_count classes: $class_list"
+
+  # Add import line to __init__.py (before __all__)
+  log "Registering in $init_file..."
+  local import_line="from app.models.${session_snake} import ${class_list}"
+
+  # Check if import already exists
+  if grep -qF "from app.models.${session_snake} import" "$init_file" 2>/dev/null; then
+    log "Import already exists in $init_file, updating..."
+    # Replace existing import line
+    sed -i "s|^from app\.models\.${session_snake} import.*|${import_line}|" "$init_file"
+  else
+    # Insert import before __all__
+    sed -i "/^__all__ = \[/i\\${import_line}" "$init_file"
+  fi
+
+  # Add class names to __all__ list (before closing bracket)
+  for cls in $class_names; do
+    if ! grep -qF "\"$cls\"" "$init_file" 2>/dev/null; then
+      # Insert before the closing ]
+      sed -i "/^\]$/i\\    \"${cls}\"," "$init_file"
+    fi
+  done
+
+  # Validate syntax of both files
+  log "Validating Python syntax..."
+  local syntax_valid=true
+
+  if ! python3 -m py_compile "$model_file" 2>/dev/null; then
+    log_error "Syntax error in $model_file"
+    syntax_valid=false
+  fi
+
+  if ! python3 -m py_compile "$init_file" 2>/dev/null; then
+    log_error "Syntax error in $init_file"
+    syntax_valid=false
+  fi
+
+  if [ "$syntax_valid" = "false" ]; then
+    fail_step 11 "Python syntax validation failed"
+    return 1
+  fi
+
+  # Write marker file
+  {
+    echo "model_file=$model_file"
+    echo "classes=$class_list"
+    echo "syntax_valid=true"
+    echo "verified_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  } > "$SESSION_DIR/models-integrated.txt"
+
+  complete_step 11 "Models integrated ($class_count classes)"
+  dim_path "  Model file: $model_file"
+  dim_path "  Registered in: $init_file"
+}
+
+# ============================================================================
+# Step 12: API Generation
+# ============================================================================
+
+# Generate FastAPI router and Pydantic schemas using Claude CLI self-refine loop
+generate_api_code() {
+  show_step_header 12 "API Generation" "sync"
+
+  # Check prerequisites
+  if [ ! -f "$SESSION_DIR/schema-sqlalchemy.py" ]; then
+    log_error "Missing schema-sqlalchemy.py - run step 9 first"
+    fail_step 12 "Missing prerequisites (schema-sqlalchemy.py)"
+    return 1
+  fi
+
+  local config_file=".claude/configs/framework-configs/fastapi.yaml"
+  local accuracy_threshold=80
+  local max_iterations=3
+
+  # Read config if available
+  if [ -f "$config_file" ]; then
+    local cfg_threshold
+    cfg_threshold=$(sed -n '/^validation:/,/^[a-z]/p' "$config_file" 2>/dev/null | grep 'threshold:' | head -1 | sed 's/.*threshold: *//')
+    [ -n "$cfg_threshold" ] && accuracy_threshold="$cfg_threshold"
+
+    local cfg_max_iter
+    cfg_max_iter=$(sed -n '/^validation:/,/^[a-z]/p' "$config_file" 2>/dev/null | grep 'max_iterations:' | head -1 | sed 's/.*max_iterations: *//')
+    [ -n "$cfg_max_iter" ] && max_iterations="$cfg_max_iter"
+  fi
+
+  # Convert session name to snake_case
+  local session_snake
+  session_snake=$(echo "$SESSION_NAME" | tr '-' '_' | tr '[:upper:]' '[:lower:]')
+
+  mkdir -p "$SESSION_DIR/generated-api"
+  local router_output="$SESSION_DIR/generated-api/router.py"
+  local schemas_output="$SESSION_DIR/generated-api/schemas.py"
+
+  # Gather context for prompt
+  log "Gathering API generation context..."
+  local context_file="$SESSION_DIR/.api-context.txt"
+  {
+    echo "=== REQUIREMENTS ==="
+    if [ -f "$SESSION_DIR/refined-requirements.md" ]; then
+      sed '1{/^---$/!q;};1,/^---$/d;1,/^---$/d' "$SESSION_DIR/refined-requirements.md" 2>/dev/null | head -80
+    fi
+
+    echo ""
+    echo "=== DOMAIN MODEL ==="
+    if [ -f "$SESSION_DIR/domain-model.md" ]; then
+      head -100 "$SESSION_DIR/domain-model.md" 2>/dev/null
+    fi
+
+    echo ""
+    echo "=== SQLALCHEMY MODELS ==="
+    cat "$SESSION_DIR/schema-sqlalchemy.py" 2>/dev/null
+
+    echo ""
+    echo "=== ENDPOINT TABLE MAPPING ==="
+    if [ -f "$SESSION_DIR/flow-diagram.md" ]; then
+      # Extract endpoint mapping table if present
+      sed -n '/ENDPOINT.*TABLE\|endpoint.*mapping\|API.*Route/I,/^$/p' "$SESSION_DIR/flow-diagram.md" 2>/dev/null | head -40
+    fi
+
+    echo ""
+    echo "=== EXISTING ROUTER EXAMPLE ==="
+    # Show a real router as example for style consistency
+    local example_files=("inventory.py" "vendors.py")
+    for ef in "${example_files[@]}"; do
+      if [ -f "backend/app/api/v1/$ef" ]; then
+        echo "--- $ef (first 100 lines) ---"
+        head -100 "backend/app/api/v1/$ef" 2>/dev/null
+        break
+      fi
+    done
+
+    echo ""
+    echo "=== FRAMEWORK CONFIG ==="
+    if [ -f "$config_file" ]; then
+      cat "$config_file" 2>/dev/null
+    fi
+  } > "$context_file"
+
+  local iteration=0
+  local passed=false
+  local score=0
+
+  while [ "$iteration" -lt "$max_iterations" ] && [ "$passed" = "false" ]; do
+    iteration=$((iteration + 1))
+    log "Generation attempt $iteration/$max_iterations..."
+
+    # Build prompt for Claude CLI
+    local prompt_file="$SESSION_DIR/.api-prompt.md"
+    local feedback=""
+    if [ "$iteration" -gt 1 ] && [ -f "$SESSION_DIR/.api-validation-feedback.txt" ]; then
+      feedback=$(cat "$SESSION_DIR/.api-validation-feedback.txt" 2>/dev/null)
+    fi
+
+    {
+      cat << 'PROMPT_HEADER'
+You are generating a FastAPI router and Pydantic schemas for a cattle ERP system.
+
+## Output Format
+You MUST output EXACTLY two code blocks:
+
+1. First block: The router file (```python ... ```)
+2. Second block: The schemas file (```python ... ```)
+
+Separate them with a line containing only: --- SCHEMAS ---
+
+## Requirements
+- Use SQLAlchemy 2.0 async patterns (select(), await db.execute())
+- All handlers MUST be async def
+- Use Depends(require_privilege("entity.action")) for auth
+- Use Depends(get_db) for database sessions
+- All UUID fields: convert with str(obj.id) in responses
+- Return dicts (not Pydantic models) from handlers
+- Include proper error handling with HTTPException
+- Add docstrings to all handlers
+- Follow the existing router patterns from the codebase examples
+
+PROMPT_HEADER
+
+      if [ -n "$feedback" ]; then
+        echo ""
+        echo "## IMPORTANT: Previous Attempt Feedback"
+        echo "The previous generation scored below threshold. Fix these issues:"
+        echo "$feedback"
+        echo ""
+      fi
+
+      echo ""
+      echo "## Context"
+      echo '```'
+      cat "$context_file" 2>/dev/null
+      echo '```'
+    } > "$prompt_file"
+
+    # Call Claude CLI
+    local claude_output="$SESSION_DIR/.api-claude-output.txt"
+    log "Calling Claude CLI for API generation..."
+    if ! claude -p "$(cat "$prompt_file")" --output-format text > "$claude_output" 2>/dev/null; then
+      log_error "Claude CLI call failed"
+      continue
+    fi
+
+    # Parse output: split at "--- SCHEMAS ---" marker
+    # Extract first python code block as router
+    local in_router=false
+    local in_schemas=false
+    local past_separator=false
+
+    > "$router_output"
+    > "$schemas_output"
+
+    while IFS= read -r line; do
+      if [[ "$line" == *"--- SCHEMAS ---"* ]]; then
+        past_separator=true
+        in_router=false
+        continue
+      fi
+
+      if [ "$past_separator" = "false" ]; then
+        # Router section
+        if [[ "$line" == '```python'* ]] && [ "$in_router" = "false" ]; then
+          in_router=true
+          continue
+        elif [[ "$line" == '```' ]] && [ "$in_router" = "true" ]; then
+          in_router=false
+          continue
+        elif [ "$in_router" = "true" ]; then
+          echo "$line" >> "$router_output"
+        fi
+      else
+        # Schemas section
+        if [[ "$line" == '```python'* ]] && [ "$in_schemas" = "false" ]; then
+          in_schemas=true
+          continue
+        elif [[ "$line" == '```' ]] && [ "$in_schemas" = "true" ]; then
+          in_schemas=false
+          continue
+        elif [ "$in_schemas" = "true" ]; then
+          echo "$line" >> "$schemas_output"
+        fi
+      fi
+    done < "$claude_output"
+
+    # Fallback: if no separator found, try to split at second code block
+    if [ ! -s "$schemas_output" ] && [ -s "$router_output" ]; then
+      log "No separator found, attempting fallback split..."
+      # Re-parse: first code block = router, second = schemas
+      local block_count=0
+      > "$router_output"
+      > "$schemas_output"
+      local current_target="$router_output"
+      local in_block=false
+
+      while IFS= read -r line; do
+        if [[ "$line" == '```python'* ]] && [ "$in_block" = "false" ]; then
+          ((block_count++))
+          in_block=true
+          if [ "$block_count" -ge 2 ]; then
+            current_target="$schemas_output"
+          fi
+          continue
+        elif [[ "$line" == '```' ]] && [ "$in_block" = "true" ]; then
+          in_block=false
+          continue
+        elif [ "$in_block" = "true" ]; then
+          echo "$line" >> "$current_target"
+        fi
+      done < "$claude_output"
+    fi
+
+    # Validate: check that we have content
+    if [ ! -s "$router_output" ]; then
+      log_error "Router output is empty"
+      echo "Router output was empty - ensure you output two python code blocks" > "$SESSION_DIR/.api-validation-feedback.txt"
+      continue
+    fi
+
+    # Validate generated code
+    log "Validating generated API code..."
+    score=0
+    local total_points=0
+    local feedback_lines=""
+    local blocking_fail=false
+
+    # Check 1: Syntax (20 points, blocking)
+    total_points=$((total_points + 20))
+    if python3 -m py_compile "$router_output" 2>/dev/null; then
+      score=$((score + 20))
+    else
+      feedback_lines="${feedback_lines}FAIL: Router has Python syntax errors\n"
+      blocking_fail=true
+    fi
+
+    if [ -s "$schemas_output" ]; then
+      if ! python3 -m py_compile "$schemas_output" 2>/dev/null; then
+        feedback_lines="${feedback_lines}FAIL: Schemas file has Python syntax errors\n"
+      fi
+    fi
+
+    # Check 2: Router declaration (10 points)
+    total_points=$((total_points + 10))
+    if grep -q "router = APIRouter" "$router_output" 2>/dev/null; then
+      score=$((score + 10))
+    else
+      feedback_lines="${feedback_lines}FAIL: Missing 'router = APIRouter()' declaration\n"
+    fi
+
+    # Check 3: Async handlers (10 points)
+    total_points=$((total_points + 10))
+    if grep -q "async def" "$router_output" 2>/dev/null; then
+      score=$((score + 10))
+    else
+      feedback_lines="${feedback_lines}FAIL: No async def handlers found\n"
+    fi
+
+    # Check 4: Auth decorator (10 points)
+    total_points=$((total_points + 10))
+    if grep -q "require_privilege" "$router_output" 2>/dev/null; then
+      score=$((score + 10))
+    else
+      feedback_lines="${feedback_lines}FAIL: Missing require_privilege auth decorator\n"
+    fi
+
+    # Check 5: FastAPI imports (10 points)
+    total_points=$((total_points + 10))
+    if grep -q "from fastapi import" "$router_output" 2>/dev/null; then
+      score=$((score + 10))
+    else
+      feedback_lines="${feedback_lines}FAIL: Missing FastAPI imports\n"
+    fi
+
+    # Check 6: DB dependency (10 points)
+    total_points=$((total_points + 10))
+    if grep -q "Depends(get_db)" "$router_output" 2>/dev/null; then
+      score=$((score + 10))
+    else
+      feedback_lines="${feedback_lines}FAIL: Missing Depends(get_db) database dependency\n"
+    fi
+
+    # Check 7: Error handling (10 points)
+    total_points=$((total_points + 10))
+    if grep -q "HTTPException" "$router_output" 2>/dev/null; then
+      score=$((score + 10))
+    else
+      feedback_lines="${feedback_lines}FAIL: Missing HTTPException error handling\n"
+    fi
+
+    # Check 8: Docstrings (10 points)
+    total_points=$((total_points + 10))
+    if grep -q '"""' "$router_output" 2>/dev/null; then
+      score=$((score + 10))
+    else
+      feedback_lines="${feedback_lines}FAIL: Missing docstrings on handlers\n"
+    fi
+
+    # Check 9: UUID conversion (10 points)
+    total_points=$((total_points + 10))
+    if grep -qP 'str\([a-z_]+\.id\)' "$router_output" 2>/dev/null; then
+      score=$((score + 10))
+    else
+      feedback_lines="${feedback_lines}WARN: No str(obj.id) UUID conversion found\n"
+    fi
+
+    # Normalize score to percentage
+    if [ "$total_points" -gt 0 ]; then
+      score=$(( (score * 100) / total_points ))
+    fi
+
+    # Save feedback for next iteration
+    echo -e "$feedback_lines" > "$SESSION_DIR/.api-validation-feedback.txt"
+
+    if [ "$blocking_fail" = "true" ]; then
+      echo -e "  ${YELLOW}Score: $score% (BLOCKING: syntax error)${NC}"
+      continue
+    fi
+
+    if [ "$score" -ge "$accuracy_threshold" ]; then
+      passed=true
+      echo -e "  ${GREEN}Score: $score% (threshold: $accuracy_threshold%)${NC}"
+    else
+      echo -e "  ${YELLOW}Score: $score% (below threshold: $accuracy_threshold%)${NC}"
+      if [ "$iteration" -lt "$max_iterations" ]; then
+        log "Retrying with validation feedback..."
+      fi
+    fi
+  done
+
+  if [ "$passed" = "true" ]; then
+    # Copy to backend locations
+    local dest_router="backend/app/api/v1/${session_snake}.py"
+    local dest_schemas="backend/app/schemas/${session_snake}.py"
+
+    mkdir -p "backend/app/api/v1"
+    mkdir -p "backend/app/schemas"
+    cp "$router_output" "$dest_router"
+    if [ -s "$schemas_output" ]; then
+      cp "$schemas_output" "$dest_schemas"
+    fi
+
+    # Register router in main_complete.py
+    local main_file="backend/app/main_complete.py"
+    if [ -f "$main_file" ]; then
+      # Check if router already registered
+      if ! grep -qF "from app.api.v1 import ${session_snake}" "$main_file" 2>/dev/null; then
+        log "Registering router in main_complete.py..."
+
+        # Find the last "except ImportError" in the router registration block and insert before it
+        # Use the pattern: add a new try/except block after the gorgias router block
+        local registration_block
+        registration_block=$(cat << REGEOF
+
+# Try to import ${session_snake} router (generated by feature_interrogate)
+try:
+    from app.api.v1 import ${session_snake}
+    app.include_router(${session_snake}.router, prefix="/api/v1/${session_snake}", tags=["${session_snake}"])
+    logger.info("✓ ${SESSION_NAME} API router registered")
+except ImportError as e:
+    logger.warning(f"${SESSION_NAME} API router not loaded: {e}")
+REGEOF
+)
+        # Insert after the last router registration block (after gorgias)
+        # Find the line with "DEPENDENCY INJECTION" section header and insert before it
+        sed -i "/^# ====.*DEPENDENCY INJECTION/i\\${registration_block//$'\n'/\\n}" "$main_file" 2>/dev/null || \
+          log "Could not auto-register router - add manually to main_complete.py"
+      else
+        log "Router already registered in main_complete.py"
+      fi
+    fi
+
+    # Write marker file
+    {
+      echo "status: passed"
+      echo "router_file: $dest_router"
+      echo "schemas_file: $dest_schemas"
+      echo "score: $score"
+      echo "iterations: $iteration"
+      echo "generated_at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    } > "$SESSION_DIR/api-generated.txt"
+
+    complete_step 12 "API generated (score: $score%, iterations: $iteration)"
+    dim_path "  Router: $dest_router"
+    dim_path "  Schemas: $dest_schemas"
+  else
+    log_error "API generation failed after $iteration attempts (score: $score%)"
+    fail_step 12 "Validation failed ($score% < $accuracy_threshold%)"
+    return 1
+  fi
+}
+
+# ============================================================================
+# Step 13: Journey Generation
+# ============================================================================
+
+# Generate user journeys by delegating to generate-journeys.sh
+generate_journey_steps() {
+  show_step_header 13 "Journey Generation" "sync"
+
+  # Check prerequisites
+  if [ ! -f "$SESSION_DIR/refined-requirements.md" ]; then
+    log_error "Missing refined-requirements.md - run earlier steps first"
+    fail_step 13 "Missing prerequisites (refined-requirements.md)"
+    return 1
+  fi
+
+  local journey_script="${SCRIPT_DIR}/generate-journeys.sh"
+  if [ ! -f "$journey_script" ]; then
+    log_error "Missing generate-journeys.sh at $journey_script"
+    fail_step 13 "Missing generate-journeys.sh"
+    return 1
+  fi
+
+  # Run generate-journeys.sh
+  # NOTE: generate-journeys.sh mixes log output with return values on stdout.
+  # We ignore stdout entirely and verify results by checking output files.
+  log "Delegating to generate-journeys.sh..."
+  if bash "$journey_script" "$SESSION_NAME" "$SESSION_DIR" > /dev/null 2>&1; then
+    log "generate-journeys.sh completed"
+  else
+    log "generate-journeys.sh exited with non-zero status"
+    # Don't fail immediately - check if outputs were generated anyway
+  fi
+
+  # Verify outputs
+  local journeys_found=false
+  local journey_count=0
+
+  if [ -f "$SESSION_DIR/journeys.json" ]; then
+    journeys_found=true
+    # Count journeys in JSON
+    journey_count=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('$SESSION_DIR/journeys.json'))
+    if isinstance(data, list):
+        print(len(data))
+    elif isinstance(data, dict) and 'journeys' in data:
+        print(len(data['journeys']))
+    else:
+        print(0)
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+  fi
+
+  # Also check the report
+  local report_exists=false
+  if [ -f "$SESSION_DIR/journey-generation-report.md" ]; then
+    report_exists=true
+  fi
+
+  if [ "$journeys_found" = "true" ] && [ "$journey_count" -gt 0 ]; then
+    # Write marker file (we write this, not generate-journeys.sh)
+    {
+      echo "journeys_file=$SESSION_DIR/journeys.json"
+      echo "journey_count=$journey_count"
+      echo "report_exists=$report_exists"
+      echo "generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    } > "$SESSION_DIR/journeys-generated.txt"
+
+    complete_step 13 "Journeys generated ($journey_count journeys)"
+    dim_path "  Journeys: $SESSION_DIR/journeys.json"
+    if [ "$report_exists" = "true" ]; then
+      dim_path "  Report: $SESSION_DIR/journey-generation-report.md"
+    fi
+  else
+    log_error "Journey generation failed - no journeys found in output"
+    fail_step 13 "No journeys generated"
+    return 1
+  fi
+}
+
+# ============================================================================
+# Step 14: Frontend Component Generation (Platform-Agnostic)
+# ============================================================================
+
+# Global frontend detection state
+PLATFORM_CONFIG_FILE=""
+PLATFORM_NAME=""
+PLATFORM_LANGUAGE=""
+STACK_BACKEND=""
+STACK_FRONTEND=""
+STACK_DATABASE=""
+STACK_AUTH=""
+STACK_INFRA=""
+
+# Build full-stack technology profile from prior artifacts
+build_stack_profile() {
+  local profile_file="$SESSION_DIR/.stack-profile.txt"
+  local scope_doc="$SCOPE_DIR/00_scope_document.md"
+  local repo_analysis="$SESSION_DIR/repo-analysis.md"
+
+  log "Building technology stack profile..."
+
+  # Primary source: scope document Tech Stack table
+  if [ -f "$scope_doc" ]; then
+    local stack_section
+    stack_section=$(sed -n '/## Tech Stack/,/^## /p' "$scope_doc" 2>/dev/null | sed '$d')
+    if [ -n "$stack_section" ]; then
+      STACK_BACKEND=$(echo "$stack_section" | grep -i "backend" | sed 's/.*|[[:space:]]*//' | sed 's/[[:space:]]*|.*//' | head -1)
+      STACK_FRONTEND=$(echo "$stack_section" | grep -i "frontend" | sed 's/.*|[[:space:]]*//' | sed 's/[[:space:]]*|.*//' | head -1)
+      STACK_DATABASE=$(echo "$stack_section" | grep -i "database\|storage" | sed 's/.*|[[:space:]]*//' | sed 's/[[:space:]]*|.*//' | head -1)
+      STACK_AUTH=$(echo "$stack_section" | grep -i "auth" | sed 's/.*|[[:space:]]*//' | sed 's/[[:space:]]*|.*//' | head -1)
+      STACK_INFRA=$(echo "$stack_section" | grep -i "infra\|deploy" | sed 's/.*|[[:space:]]*//' | sed 's/[[:space:]]*|.*//' | head -1)
+    fi
+  fi
+
+  # Fallback: repo analysis
+  if [ -z "$STACK_FRONTEND" ] && [ -f "$repo_analysis" ]; then
+    STACK_FRONTEND=$(grep -i "frontend\|react\|vue\|angular\|svelte\|flutter\|swift" "$repo_analysis" 2>/dev/null | head -3 | tr '\n' ' ')
+    STACK_BACKEND=$(grep -i "backend\|fastapi\|django\|express\|flask" "$repo_analysis" 2>/dev/null | head -3 | tr '\n' ' ')
+  fi
+
+  # Detect DB type from migration DDL if available
+  if [ -f "$SESSION_DIR/schema-migration.sql" ]; then
+    if grep -qi "gen_random_uuid\|SERIAL\|TIMESTAMP WITH TIME ZONE" "$SESSION_DIR/schema-migration.sql" 2>/dev/null; then
+      [ -z "$STACK_DATABASE" ] && STACK_DATABASE="PostgreSQL"
+    fi
+  fi
+
+  # Detect ORM from schema file
+  local stack_orm=""
+  if [ -f "$SESSION_DIR/schema-sqlalchemy.py" ]; then
+    stack_orm="SQLAlchemy 2.0"
+  fi
+
+  # Write profile for prompt injection
+  {
+    printf "## Full-Stack Technology Profile\n\n"
+    printf "| Layer | Technology |\n"
+    printf "|-------|------------|\n"
+    printf "| Frontend | %s |\n" "${STACK_FRONTEND:-Unknown}"
+    printf "| Backend | %s |\n" "${STACK_BACKEND:-Unknown}"
+    printf "| Database | %s |\n" "${STACK_DATABASE:-Unknown}"
+    printf "| ORM | %s |\n" "${stack_orm:-Unknown}"
+    printf "| Auth | %s |\n" "${STACK_AUTH:-Unknown}"
+    printf "| Infrastructure | %s |\n" "${STACK_INFRA:-Unknown}"
+  } > "$profile_file"
+
+  log_success "Stack profile built"
+}
+
+# Detect frontend platform from available configs
+detect_frontend_platform() {
+  local configs_dir="$PROJECT_ROOT/.claude/configs/platform-configs"
+
+  # Ensure configs directory exists
+  if [ ! -d "$configs_dir" ]; then
+    log_error "No platform configs found at .claude/configs/platform-configs/"
+    log_error "Create a config file (e.g., react-mui.yaml) to enable frontend generation"
+    return 1
+  fi
+
+  # Tier 1: Match STACK_FRONTEND keywords against config detection.tech_stack_keywords
+  local frontend_lower
+  frontend_lower=$(echo "$STACK_FRONTEND" | tr '[:upper:]' '[:lower:]')
+
+  for config_file in "$configs_dir"/*.yaml; do
+    [ -f "$config_file" ] || continue
+    local keywords
+    keywords=$(sed -n '/^detection:/,/^[a-z]/p' "$config_file" | grep -A 20 "tech_stack_keywords:" | grep '^ *- ' | sed 's/^ *- *//;s/"//g')
+    while IFS= read -r keyword; do
+      [ -z "$keyword" ] && continue
+      if echo "$frontend_lower" | grep -qi "$keyword"; then
+        PLATFORM_CONFIG_FILE="$config_file"
+        PLATFORM_NAME=$(grep '^name:' "$config_file" | head -1 | sed 's/name: *//;s/"//g')
+        PLATFORM_LANGUAGE=$(grep '^language:' "$config_file" | head -1 | sed 's/language: *//;s/"//g')
+        log_success "Platform detected: $PLATFORM_NAME (from stack profile)"
+        return 0
+      fi
+    done <<< "$keywords"
+  done
+
+  # Tier 2: Scan manifest files
+  if detect_from_manifests "$configs_dir"; then
+    return 0
+  fi
+
+  # Tier 3: Count file extensions
+  if detect_from_files "$configs_dir"; then
+    return 0
+  fi
+
+  # No match found
+  local available_configs
+  available_configs=$(ls "$configs_dir"/*.yaml 2>/dev/null | xargs -I{} basename {} .yaml | tr '\n' ', ' | sed 's/,$//')
+  log_error "Could not detect frontend platform"
+  log_error "Available configs: $available_configs"
+  log_error "Ensure your project has a frontend or add a new config to .claude/configs/platform-configs/"
+  return 1
+}
+
+# Helper: detect platform from manifest files (package.json, Podfile, etc.)
+detect_from_manifests() {
+  local configs_dir="$1"
+
+  for config_file in "$configs_dir"/*.yaml; do
+    [ -f "$config_file" ] || continue
+    local manifest_section
+    manifest_section=$(sed -n '/manifests:/,/^  [a-z]/p' "$config_file" 2>/dev/null)
+
+    # Extract manifest file paths and patterns
+    local manifest_files
+    manifest_files=$(echo "$manifest_section" | grep 'file:' | sed 's/.*file: *//;s/"//g')
+    while IFS= read -r manifest_file; do
+      [ -z "$manifest_file" ] && continue
+      if [ -f "$PROJECT_ROOT/$manifest_file" ]; then
+        # Check if patterns match in manifest
+        local patterns
+        patterns=$(echo "$manifest_section" | grep -A 10 "$manifest_file" | grep '^ *- ' | grep -v 'file:' | sed 's/^ *- *//;s/"//g')
+        local all_match=true
+        while IFS= read -r pattern; do
+          [ -z "$pattern" ] && continue
+          if ! grep -q "$pattern" "$PROJECT_ROOT/$manifest_file" 2>/dev/null; then
+            all_match=false
+            break
+          fi
+        done <<< "$patterns"
+        if [ "$all_match" = "true" ] && [ -n "$patterns" ]; then
+          PLATFORM_CONFIG_FILE="$config_file"
+          PLATFORM_NAME=$(grep '^name:' "$config_file" | head -1 | sed 's/name: *//;s/"//g')
+          PLATFORM_LANGUAGE=$(grep '^language:' "$config_file" | head -1 | sed 's/language: *//;s/"//g')
+          log_success "Platform detected: $PLATFORM_NAME (from manifest)"
+          return 0
+        fi
+      fi
+    done <<< "$manifest_files"
+  done
+
+  return 1
+}
+
+# Helper: detect platform from file extensions
+detect_from_files() {
+  local configs_dir="$1"
+
+  for config_file in "$configs_dir"/*.yaml; do
+    [ -f "$config_file" ] || continue
+    local extensions
+    extensions=$(sed -n '/file_extensions:/,/^  [a-z]/p' "$config_file" 2>/dev/null | grep '^ *- ' | sed 's/^ *- *//;s/"//g')
+    while IFS= read -r ext; do
+      [ -z "$ext" ] && continue
+      local count
+      count=$(find "$PROJECT_ROOT" -name "*${ext}" -not -path "*/node_modules/*" -not -path "*/.git/*" 2>/dev/null | wc -l)
+      if [ "$count" -gt 5 ]; then
+        PLATFORM_CONFIG_FILE="$config_file"
+        PLATFORM_NAME=$(grep '^name:' "$config_file" | head -1 | sed 's/name: *//;s/"//g')
+        PLATFORM_LANGUAGE=$(grep '^language:' "$config_file" | head -1 | sed 's/language: *//;s/"//g')
+        log_success "Platform detected: $PLATFORM_NAME (from file extensions: ${count} ${ext} files)"
+        return 0
+      fi
+    done <<< "$extensions"
+  done
+
+  return 1
+}
+
+# Extract [NEW] component names from flow diagram
+extract_new_components() {
+  local flow_file="$SESSION_DIR/flow-diagram.md"
+  if [ ! -f "$flow_file" ]; then
+    return
+  fi
+
+  # Look for [NEW] markers in frontend subgraph section
+  local in_frontend=false
+  while IFS= read -r line; do
+    if echo "$line" | grep -qi "subgraph.*frontend"; then
+      in_frontend=true
+      continue
+    fi
+    if [ "$in_frontend" = "true" ] && echo "$line" | grep -q "^  end"; then
+      in_frontend=false
+      continue
+    fi
+    if [ "$in_frontend" = "true" ] && echo "$line" | grep -q "\[NEW\]"; then
+      # Extract component name - handle formats like: ComponentName[NEW] or ComponentName["Label [NEW]"]
+      local component
+      component=$(echo "$line" | sed 's/.*\[\(.*\)\].*/\1/' | sed 's/ *\[NEW\]//' | sed 's/"//g' | xargs)
+      # Also try extracting the node ID
+      local node_id
+      node_id=$(echo "$line" | sed 's/[[:space:]]*\([A-Za-z_]*\).*/\1/')
+      [ -n "$node_id" ] && echo "$node_id"
+    fi
+  done < "$flow_file"
+}
+
+# Extract existing code patterns from config-specified example files
+extract_existing_patterns() {
+  local config_file="$1"
+  local output=""
+
+  # Extract example file paths and line counts from config
+  local example_section
+  example_section=$(sed -n '/^examples:/,/^[a-z]/p' "$config_file" 2>/dev/null)
+  local file_paths
+  file_paths=$(echo "$example_section" | grep 'path:' | sed 's/.*path: *//;s/"//g')
+  local file_lines
+  file_lines=$(echo "$example_section" | grep 'lines:' | sed 's/.*lines: *//;s/"//g')
+
+  local idx=0
+  while IFS= read -r fpath; do
+    [ -z "$fpath" ] && continue
+    local full_path="$PROJECT_ROOT/$fpath"
+    local max_lines
+    max_lines=$(echo "$file_lines" | sed -n "$((idx+1))p")
+    [ -z "$max_lines" ] && max_lines=100
+
+    if [ -f "$full_path" ]; then
+      output+=$(printf "\n### Example: %s\n\`\`\`\n" "$fpath")
+      output+=$(head -n "$max_lines" "$full_path")
+      output+=$(printf "\n\`\`\`\n")
+    fi
+    ((idx++))
+  done <<< "$file_paths"
+
+  echo "$output"
+}
+
+# Gather all frontend generation context from prior artifacts
+gather_frontend_context() {
+  local context_file="$SESSION_DIR/.frontend-context.txt"
+  log "Gathering full-stack context for frontend generation..."
+
+  {
+    # 1. Stack profile
+    if [ -f "$SESSION_DIR/.stack-profile.txt" ]; then
+      cat "$SESSION_DIR/.stack-profile.txt"
+      printf "\n\n"
+    fi
+
+    # 2. Platform config (raw YAML for Claude to interpret)
+    if [ -f "$PLATFORM_CONFIG_FILE" ]; then
+      printf "## Platform Configuration\n\n"
+      printf '```yaml\n'
+      cat "$PLATFORM_CONFIG_FILE"
+      printf '\n```\n\n'
+    fi
+
+    # 3. Existing code patterns (from config-specified examples)
+    if [ -f "$PLATFORM_CONFIG_FILE" ]; then
+      local patterns
+      patterns=$(extract_existing_patterns "$PLATFORM_CONFIG_FILE")
+      if [ -n "$patterns" ]; then
+        printf "## Existing Code Patterns\n%s\n\n" "$patterns"
+      fi
+    fi
+
+    # 4. API contract from generated router
+    if [ -f "$SESSION_DIR/generated-api/router.py" ]; then
+      printf "## Generated API Router (Backend Contract)\n\n"
+      printf '```python\n'
+      head -200 "$SESSION_DIR/generated-api/router.py"
+      printf '\n```\n\n'
+    fi
+
+    # 5. Pydantic schemas (request/response shapes)
+    if [ -f "$SESSION_DIR/generated-api/schemas.py" ]; then
+      printf "## Generated Pydantic Schemas\n\n"
+      printf '```python\n'
+      head -200 "$SESSION_DIR/generated-api/schemas.py"
+      printf '\n```\n\n'
+    fi
+
+    # 6. Database schema for type derivation
+    if [ -f "$SESSION_DIR/schema-migration.sql" ]; then
+      printf "## Database Schema (DDL)\n\n"
+      printf '```sql\n'
+      head -100 "$SESSION_DIR/schema-migration.sql"
+      printf '\n```\n\n'
+    fi
+
+    # 7. Domain model entities
+    if [ -f "$SESSION_DIR/domain-model.md" ]; then
+      printf "## Domain Model\n\n"
+      head -100 "$SESSION_DIR/domain-model.md"
+      printf "\n\n"
+    fi
+
+    # 8. Flow diagram (component list, endpoint mapping)
+    if [ -f "$SESSION_DIR/flow-diagram.md" ]; then
+      printf "## Flow Diagram\n\n"
+      cat "$SESSION_DIR/flow-diagram.md"
+      printf "\n\n"
+    fi
+
+    # 9. User journeys
+    if [ -f "$SESSION_DIR/journeys.json" ]; then
+      printf "## User Journeys\n\n"
+      printf '```json\n'
+      cat "$SESSION_DIR/journeys.json"
+      printf '\n```\n\n'
+    fi
+
+    # 10. Feature requirements
+    if [ -f "$SESSION_DIR/refined-requirements.md" ]; then
+      printf "## Feature Requirements\n\n"
+      sed '1{/^---$/!q;};1,/^---$/d;1,/^---$/d' "$SESSION_DIR/refined-requirements.md" 2>/dev/null | head -100
+      printf "\n\n"
+    fi
+
+    # 11. Domain context from step 4
+    if [ -f "$SESSION_DIR/domain-context.yaml" ]; then
+      printf "## Domain Context\n\n"
+      printf '```yaml\n'
+      head -80 "$SESSION_DIR/domain-context.yaml"
+      printf '\n```\n\n'
+    fi
+
+  } > "$context_file"
+
+  local context_lines
+  context_lines=$(wc -l < "$context_file")
+  log_success "Context assembled ($context_lines lines from available artifacts)"
+}
+
+# Generate TypeScript interfaces / frontend type definitions
+generate_frontend_types() {
+  local output_dir="$SESSION_DIR/generated-frontend/models"
+  mkdir -p "$output_dir"
+
+  local prompt_file="$SESSION_DIR/.frontend-types-prompt.txt"
+  local context_file="$SESSION_DIR/.frontend-context.txt"
+
+  # Read file extension from config
+  local file_ext
+  file_ext=$(grep 'file_extension:' "$PLATFORM_CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*file_extension: *//;s/"//g')
+  [ -z "$file_ext" ] && file_ext=".tsx"
+  # Types files use .ts not .tsx
+  local types_ext="${file_ext/x/}"
+  [ -z "$types_ext" ] && types_ext=".ts"
+
+  {
+    printf "You are a frontend developer generating type definitions for a %s application.\n\n" "$PLATFORM_NAME"
+    printf "<context>\n"
+    cat "$context_file"
+    printf "</context>\n\n"
+    printf "<task>\n"
+    printf "Generate type definitions that match the backend API contract and database schema.\n"
+    printf "Map backend field types to native frontend types:\n"
+    printf -- "- UUID -> string\n"
+    printf -- "- TIMESTAMP -> string (ISO format)\n"
+    printf -- "- BOOLEAN -> boolean\n"
+    printf -- "- INTEGER/NUMERIC -> number\n"
+    printf -- "- VARCHAR/TEXT -> string\n"
+    printf -- "- JSONB -> Record<string, unknown>\n"
+    printf -- "- Enum types -> native %s enum types or union types\n\n" "$PLATFORM_LANGUAGE"
+    printf "Include interfaces for:\n"
+    printf "1. Entity types (matching DB schema columns)\n"
+    printf "2. Create/Update request types (omitting auto-generated fields like id, created_at)\n"
+    printf "3. API response types (if different from entities)\n"
+    printf "4. Enum types for any constrained fields\n"
+    printf "</task>\n\n"
+    printf "<output_format>\n"
+    printf "Output ONLY valid %s code. No markdown fences. Start with imports or type declarations.\n" "$PLATFORM_LANGUAGE"
+    printf "</output_format>\n"
+  } > "$prompt_file"
+
+  log "Generating type definitions..."
+  if command -v claude &>/dev/null; then
+    claude --dangerously-skip-permissions --print < "$prompt_file" > "$output_dir/types${types_ext}" 2>/dev/null
+    if [ -s "$output_dir/types${types_ext}" ]; then
+      # Strip markdown code fences if Claude wrapped the output
+      sed -i '1{/^```/d}' "$output_dir/types${types_ext}"
+      sed -i '${/^```/d}' "$output_dir/types${types_ext}"
+      log_success "Type definitions generated"
+      return 0
+    fi
+  fi
+
+  log_warn "Type generation skipped (claude CLI not available)"
+  printf "// Type definitions placeholder\n// Run with claude CLI for full generation\n" > "$output_dir/types${types_ext}"
+  return 0
+}
+
+# Generate API client module
+generate_frontend_api_client() {
+  local output_dir="$SESSION_DIR/generated-frontend/api"
+  mkdir -p "$output_dir"
+
+  local prompt_file="$SESSION_DIR/.frontend-api-prompt.txt"
+  local context_file="$SESSION_DIR/.frontend-context.txt"
+
+  local file_ext
+  file_ext=$(grep 'file_extension:' "$PLATFORM_CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*file_extension: *//;s/"//g')
+  [ -z "$file_ext" ] && file_ext=".tsx"
+  local api_ext="${file_ext/x/}"
+  [ -z "$api_ext" ] && api_ext=".ts"
+
+  {
+    printf "You are a frontend developer generating an API client module for a %s application.\n\n" "$PLATFORM_NAME"
+    printf "<context>\n"
+    cat "$context_file"
+    printf "</context>\n\n"
+    printf "<task>\n"
+    printf "Generate an API client module that:\n"
+    printf "1. Matches the actual backend endpoint paths and HTTP methods from the generated API router\n"
+    printf "2. Uses the project's existing API client pattern (see Existing Code Patterns above)\n"
+    printf "3. Includes proper %s types for request params and response data\n" "$PLATFORM_LANGUAGE"
+    printf "4. Handles the authentication mechanism described in the stack profile\n"
+    printf "5. Follows the api_client_pattern from the platform config\n\n"
+    printf "Each API function should:\n"
+    printf -- "- Map to a specific backend endpoint\n"
+    printf -- "- Accept typed parameters\n"
+    printf -- "- Return typed responses\n"
+    printf "</task>\n\n"
+    printf "<output_format>\n"
+    printf "Output ONLY valid %s code. No markdown fences. Start with imports.\n" "$PLATFORM_LANGUAGE"
+    printf "</output_format>\n"
+  } > "$prompt_file"
+
+  log "Generating API client..."
+  if command -v claude &>/dev/null; then
+    claude --dangerously-skip-permissions --print < "$prompt_file" > "$output_dir/api${api_ext}" 2>/dev/null
+    if [ -s "$output_dir/api${api_ext}" ]; then
+      sed -i '1{/^```/d}' "$output_dir/api${api_ext}"
+      sed -i '${/^```/d}' "$output_dir/api${api_ext}"
+      log_success "API client generated"
+      return 0
+    fi
+  fi
+
+  log_warn "API client generation skipped (claude CLI not available)"
+  printf "// API client placeholder\n// Run with claude CLI for full generation\n" > "$output_dir/api${api_ext}"
+  return 0
+}
+
+# Generate frontend page components
+generate_frontend_pages() {
+  local output_dir="$SESSION_DIR/generated-frontend"
+  mkdir -p "$output_dir"
+
+  local context_file="$SESSION_DIR/.frontend-context.txt"
+
+  local file_ext
+  file_ext=$(grep 'file_extension:' "$PLATFORM_CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*file_extension: *//;s/"//g')
+  [ -z "$file_ext" ] && file_ext=".tsx"
+
+  # Get component list from flow diagram
+  local components
+  components=$(extract_new_components)
+
+  if [ -z "$components" ]; then
+    # Fallback: derive component name from session name
+    local session_pascal
+    session_pascal=$(echo "$SESSION_NAME" | sed 's/-\([a-z]\)/\U\1/g;s/^\([a-z]\)/\U\1/' | sed 's/_\([a-z]\)/\U\1/g')
+    components="${session_pascal}Page"
+    log_warn "No [NEW] components found in flow diagram, generating: $components"
+  fi
+
+  local generated_count=0
+  while IFS= read -r component; do
+    [ -z "$component" ] && continue
+
+    local prompt_file="$SESSION_DIR/.frontend-page-${component}-prompt.txt"
+
+    # Extract journey steps relevant to this component (if journeys.json exists)
+    local journey_context=""
+    if [ -f "$SESSION_DIR/journeys.json" ]; then
+      journey_context=$(grep -i "$component" "$SESSION_DIR/journeys.json" 2>/dev/null | head -20)
+    fi
+
+    {
+      printf "You are a frontend developer building a page component for a %s application.\n\n" "$PLATFORM_NAME"
+      printf "<context>\n"
+      cat "$context_file"
+      printf "</context>\n\n"
+      if [ -n "$journey_context" ]; then
+        printf "<journey_context>\n"
+        printf "Relevant user journey steps for this component:\n%s\n" "$journey_context"
+        printf "</journey_context>\n\n"
+      fi
+      # Include generated types if available
+      if [ -f "$output_dir/models/types${file_ext/x/}" ]; then
+        printf "<generated_types>\n"
+        cat "$output_dir/models/types${file_ext/x/}"
+        printf "\n</generated_types>\n\n"
+      fi
+      # Include generated API client if available
+      local api_ext="${file_ext/x/}"
+      if [ -f "$output_dir/api/api${api_ext}" ]; then
+        printf "<generated_api_client>\n"
+        cat "$output_dir/api/api${api_ext}"
+        printf "\n</generated_api_client>\n\n"
+      fi
+      printf "<task>\n"
+      printf "Generate the '%s' page component.\n\n" "$component"
+      printf "Requirements:\n"
+      printf -- "- Follow the platform conventions from the config\n"
+      printf -- "- Match the existing code patterns from example files\n"
+      printf -- "- Use the generated types and API client\n"
+      printf -- "- GET endpoints → list/table views with search and filters\n"
+      printf -- "- POST endpoints → create forms with validation\n"
+      printf -- "- PUT/PATCH endpoints → edit forms with pre-populated data\n"
+      printf -- "- DELETE endpoints → confirmation dialogs\n"
+      printf -- "- Include loading, error, and empty states\n"
+      printf -- "- Include CRUD operations where applicable\n"
+      printf "</task>\n\n"
+      printf "<output_format>\n"
+      printf "Output ONLY valid %s code. No markdown fences. Start with imports.\n" "$PLATFORM_LANGUAGE"
+      printf "Export the component as default.\n"
+      printf "</output_format>\n"
+    } > "$prompt_file"
+
+    log "Generating component: $component..."
+    if command -v claude &>/dev/null; then
+      claude --dangerously-skip-permissions --print < "$prompt_file" > "$output_dir/${component}${file_ext}" 2>/dev/null
+      if [ -s "$output_dir/${component}${file_ext}" ]; then
+        sed -i '1{/^```/d}' "$output_dir/${component}${file_ext}"
+        sed -i '${/^```/d}' "$output_dir/${component}${file_ext}"
+        log_success "Generated: ${component}${file_ext}"
+        ((generated_count++))
+      else
+        log_error "Failed to generate: $component"
+      fi
+    else
+      log_warn "Skipped $component (claude CLI not available)"
+      printf "// %s component placeholder\n// Run with claude CLI for full generation\n" "$component" > "$output_dir/${component}${file_ext}"
+    fi
+  done <<< "$components"
+
+  log_success "Generated $generated_count page component(s)"
+}
+
+# Validate generated frontend files against config checks
+validate_frontend_files() {
+  local output_dir="$SESSION_DIR/generated-frontend"
+  local total_points=0
+  local earned_points=0
+  local check_results=""
+
+  # Extract validation checks from config: name, points, pattern
+  local checks_section
+  checks_section=$(sed -n '/^validation:/,/^[a-z]/p' "$PLATFORM_CONFIG_FILE" 2>/dev/null)
+  local threshold
+  threshold=$(echo "$checks_section" | grep 'threshold:' | head -1 | sed 's/.*threshold: *//')
+  [ -z "$threshold" ] && threshold=95
+
+  local check_names check_points check_patterns
+  check_names=$(echo "$checks_section" | grep 'name:' | sed 's/.*name: *//;s/"//g')
+  check_points=$(echo "$checks_section" | grep 'points:' | sed 's/.*points: *//')
+  check_patterns=$(echo "$checks_section" | grep 'pattern:' | sed 's/.*pattern: *//;s/"//g')
+
+  # Process each check against all generated files
+  local name_idx=0
+  while IFS= read -r check_name; do
+    [ -z "$check_name" ] && continue
+    local points
+    points=$(echo "$check_points" | sed -n "$((name_idx+1))p")
+    [ -z "$points" ] && points=10
+    local pattern
+    pattern=$(echo "$check_patterns" | sed -n "$((name_idx+1))p")
+    [ -z "$pattern" ] && { ((name_idx++)); continue; }
+
+    total_points=$((total_points + points))
+
+    # Check if any generated file matches the pattern
+    local found=false
+    while IFS= read -r -d '' gen_file; do
+      if grep -qE "$pattern" "$gen_file" 2>/dev/null; then
+        found=true
+        break
+      fi
+    done < <(find "$output_dir" -type f -not -name "*.md" -print0 2>/dev/null)
+
+    if [ "$found" = "true" ]; then
+      earned_points=$((earned_points + points))
+      check_results+=$(printf "  PASS (%2d pts): %s\n" "$points" "$check_name")
+    else
+      check_results+=$(printf "  FAIL (%2d pts): %s [pattern: %s]\n" "$points" "$check_name" "$pattern")
+    fi
+
+    ((name_idx++))
+  done <<< "$check_names"
+
+  # Calculate percentage
+  local score=0
+  if [ "$total_points" -gt 0 ]; then
+    score=$((earned_points * 100 / total_points))
+  fi
+
+  # Store check results for report
+  FRONTEND_CHECK_RESULTS="$check_results"
+  FRONTEND_TOTAL_POINTS="$total_points"
+  FRONTEND_EARNED_POINTS="$earned_points"
+
+  echo "$score"
+}
+
+# Save frontend generation report
+save_frontend_report() {
+  local score="$1"
+  local iterations="$2"
+  local current_date
+  current_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  # Main generation report
+  {
+    printf "# Frontend Generation Report\n\n"
+    printf "**Generated:** %s\n" "$current_date"
+    printf "**Platform:** %s\n" "$PLATFORM_NAME"
+    printf "**Language:** %s\n" "$PLATFORM_LANGUAGE"
+    printf "**Config:** %s\n" "$(basename "$PLATFORM_CONFIG_FILE")"
+    printf "**Iterations:** %s\n" "$iterations"
+    printf "**Score:** %s%%\n\n" "$score"
+    printf "## Validation Results\n\n"
+    printf '```\n'
+    printf "%s\n" "${FRONTEND_CHECK_RESULTS:-No checks run}"
+    printf "Score: %s/%s points (%s%%)\n" "${FRONTEND_EARNED_POINTS:-0}" "${FRONTEND_TOTAL_POINTS:-0}" "$score"
+    printf '```\n\n'
+    printf "## Files Generated\n\n"
+    if [ -d "$SESSION_DIR/generated-frontend" ]; then
+      find "$SESSION_DIR/generated-frontend" -type f | sort | while read -r f; do
+        local relpath="${f#"$SESSION_DIR/"}"
+        printf -- "- %s\n" "$relpath"
+      done
+    fi
+  } > "$SESSION_DIR/frontend-generation-report.md"
+
+  # Integration report (where to place files)
+  local pages_dir components_dir api_file route_file
+  pages_dir=$(grep 'pages_dir:' "$PLATFORM_CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*pages_dir: *//;s/"//g')
+  components_dir=$(grep 'components_dir:' "$PLATFORM_CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*components_dir: *//;s/"//g')
+  api_file=$(grep 'api_file:' "$PLATFORM_CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*api_file: *//;s/"//g')
+  route_file=$(grep 'route_file:' "$PLATFORM_CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*route_file: *//;s/"//g')
+
+  {
+    printf "# Integration Guide\n\n"
+    printf "## Generated Files → Project Locations\n\n"
+    printf "| Generated File | Copy To |\n"
+    printf "|---------------|---------|\n"
+    if [ -d "$SESSION_DIR/generated-frontend/models" ]; then
+      printf "| generated-frontend/models/* | %s |\n" "${pages_dir:-frontend/src/types}"
+    fi
+    if [ -d "$SESSION_DIR/generated-frontend/api" ]; then
+      printf "| generated-frontend/api/* | Merge into %s |\n" "${api_file:-frontend/src/api.ts}"
+    fi
+    for page_file in "$SESSION_DIR/generated-frontend"/*.*; do
+      [ -f "$page_file" ] || continue
+      local basename_file
+      basename_file=$(basename "$page_file")
+      # Skip directories we already handled
+      [[ "$basename_file" == *.md ]] && continue
+      printf "| generated-frontend/%s | %s/%s |\n" "$basename_file" "${pages_dir:-frontend/src/pages}" "$basename_file"
+    done
+    printf "\n## Registration Steps\n\n"
+    printf "1. Add route to %s\n" "${route_file:-your route file}"
+    printf "2. Add navigation menu entry\n"
+    printf "3. Register API client functions (if not auto-imported)\n"
+  } > "$SESSION_DIR/generated-frontend/integration-report.md"
+}
+
+# Main orchestrator for Step 14: Frontend Component Generation
+generate_frontend_components() {
+  show_step_header 14 "Frontend Component Generation" "sync"
+
+  local max_iterations=5
+  local iteration=0
+  local passed=false
+  local accuracy_threshold=95
+
+  # Check prerequisites
+  if [ ! -f "$SESSION_DIR/flow-diagram.md" ]; then
+    log_error "Missing flow-diagram.md - run earlier steps first"
+    fail_step 14 "Missing prerequisites (flow-diagram.md)"
+    return 1
+  fi
+
+  # Phase 1: Build stack profile
+  build_stack_profile
+
+  # Phase 2: Detect platform
+  if ! detect_frontend_platform; then
+    fail_step 14 "Platform detection failed"
+    return 1
+  fi
+
+  # Read threshold from config
+  local config_threshold
+  config_threshold=$(sed -n '/^validation:/,/^[a-z]/p' "$PLATFORM_CONFIG_FILE" 2>/dev/null | grep 'threshold:' | head -1 | sed 's/.*threshold: *//')
+  [ -n "$config_threshold" ] && accuracy_threshold="$config_threshold"
+
+  # Read max iterations from config
+  local config_max_iter
+  config_max_iter=$(sed -n '/^validation:/,/^[a-z]/p' "$PLATFORM_CONFIG_FILE" 2>/dev/null | grep 'max_iterations:' | head -1 | sed 's/.*max_iterations: *//')
+  [ -n "$config_max_iter" ] && max_iterations="$config_max_iter"
+
+  # Phase 3: Gather context
+  gather_frontend_context
+
+  # Phase 4: Generate + Validate loop
+  local score=0
+  while [ "$iteration" -lt "$max_iterations" ] && [ "$passed" = "false" ]; do
+    iteration=$((iteration + 1))
+    log "Generation attempt $iteration/$max_iterations..."
+
+    # Clean output dir on retry
+    if [ "$iteration" -gt 1 ]; then
+      rm -rf "$SESSION_DIR/generated-frontend"
+      log "Cleared previous output for retry"
+    fi
+
+    mkdir -p "$SESSION_DIR/generated-frontend"
+
+    # Generate artifacts
+    generate_frontend_types
+    generate_frontend_api_client
+    generate_frontend_pages
+
+    # Validate
+    log "Validating generated code..."
+    score=$(validate_frontend_files)
+
+    if [ "$score" -ge "$accuracy_threshold" ]; then
+      passed=true
+      echo -e "  ${GREEN}Score: $score% (threshold: $accuracy_threshold%)${NC}"
+    else
+      echo -e "  ${YELLOW}Score: $score% (below threshold: $accuracy_threshold%)${NC}"
+      if [ "$iteration" -lt "$max_iterations" ]; then
+        log "Retrying with fresh generation..."
+      fi
+    fi
+  done
+
+  if [ "$passed" = "true" ]; then
+    # Save reports
+    save_frontend_report "$score" "$iteration"
+
+    # Mark completion
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$SESSION_DIR/frontend-complete.txt"
+
+    complete_step 14 "Frontend generated (score: $score%, platform: $PLATFORM_NAME)"
+    dim_path "  Output: $SESSION_DIR/generated-frontend/"
+    dim_path "  Report: $SESSION_DIR/frontend-generation-report.md"
+    dim_path "  Guide: $SESSION_DIR/generated-frontend/integration-report.md"
+  else
+    save_frontend_report "$score" "$iteration"
+    log_error "Frontend generation failed after $iteration attempts"
+    fail_step 14 "Validation failed ($score% < $accuracy_threshold%)"
+    return 1
+  fi
 }
 
 # Show final summary
@@ -4214,9 +5731,10 @@ COMPLETE
   echo ""
   echo -e "  ${BOLD}Next Steps${NC}"
   echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
-  echo -e "  ${WHITE}1.${NC} Review scope documents"
-  echo -e "  ${WHITE}2.${NC} Run ${CYAN}/pm:decompose $SESSION_NAME${NC} to create PRDs"
-  echo -e "  ${WHITE}3.${NC} Query database for features/journeys"
+  echo -e "  ${WHITE}1.${NC} Review generated API and frontend code"
+  echo -e "  ${WHITE}2.${NC} Run ${CYAN}./build.sh${NC} to build and deploy"
+  echo -e "  ${WHITE}3.${NC} Run ${CYAN}/pm:decompose $SESSION_NAME${NC} to create PRDs"
+  echo -e "  ${WHITE}4.${NC} Query database for features/journeys"
   echo ""
 }
 
@@ -4237,7 +5755,7 @@ main() {
         ;;
       --start-from-step)
         if [ -z "${2:-}" ]; then
-          echo "Error: --start-from-step requires a step number (1-9)"
+          echo "Error: --start-from-step requires a step number (1-14)"
           exit 1
         fi
         start_from_step="$2"
@@ -4308,7 +5826,7 @@ main() {
   elif [ "$RESUME_MODE" = true ]; then
     RESUME_FROM_STEP=$(detect_completed_steps "$SESSION_DIR")
 
-    if [ "$RESUME_FROM_STEP" -ge 9 ]; then
+    if [ "$RESUME_FROM_STEP" -ge 14 ]; then
       echo -e "  ${GREEN}Session already complete!${NC}"
       echo ""
       show_final_summary
@@ -4382,6 +5900,36 @@ main() {
     generate_data_schema
   else
     echo -e "  ${DIM}Step 9: Data Schema - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 10 ]; then
+    run_migration
+  else
+    echo -e "  ${DIM}Step 10: Run Migration - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 11 ]; then
+    integrate_models
+  else
+    echo -e "  ${DIM}Step 11: Integrate Models - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 12 ]; then
+    generate_api_code
+  else
+    echo -e "  ${DIM}Step 12: API Generation - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 13 ]; then
+    generate_journey_steps
+  else
+    echo -e "  ${DIM}Step 13: Journey Gen - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 14 ]; then
+    generate_frontend_components
+  else
+    echo -e "  ${DIM}Step 14: Frontend Gen - skipped (already complete)${NC}"
   fi
 
   show_final_summary
