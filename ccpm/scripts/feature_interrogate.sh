@@ -73,13 +73,13 @@ readonly BOX_L='├'
 readonly BOX_R='┤'
 
 # Step tracking
-TOTAL_STEPS=18
+TOTAL_STEPS=19
 CURRENT_STEP=0
 STEP_START_TIME=0
 SESSION_START_TIME=0
-declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Types" "Frontend API" "Frontend Pages" "Frontend Integrate" "Build & Deploy")
-declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
-declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Types" "Frontend API" "Frontend Pages" "Frontend Integrate" "Build & Deploy" "Test Personas")
+declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
+declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 
 # Spinner characters (braille pattern for smooth animation)
 readonly SPINNER_CHARS='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -2232,8 +2232,10 @@ detect_completed_steps() {
   local session_dir="$1"
 
   # Check steps in reverse order to find where to resume
-  if [ -f "$session_dir/build-deployed.txt" ]; then
-    echo 19  # All 18 steps done — resume past end
+  if [ -f "$session_dir/personas-generated.txt" ]; then
+    echo 20  # All 19 steps done — resume past end
+  elif [ -f "$session_dir/build-deployed.txt" ]; then
+    echo 19  # Steps 1-18 done, resume from step 19 (personas)
   elif [ -f "$session_dir/frontend-integrated.txt" ]; then
     echo 17  # Resume from step 18 (build & deploy)
   elif [ -f "$session_dir/frontend-complete.txt" ]; then
@@ -6187,7 +6189,9 @@ $context
 GEN_DYNAMIC
 
   local generated
-  generated=$(claude --dangerously-skip-permissions --print "$(cat "$prompt_file")" 2>&1) || true
+  generated=$(claude --dangerously-skip-permissions --print \
+    --append-system-prompt "You are a build script generator. Output ONLY raw bash starting with #!/bin/bash. Never output prose, explanations, or markdown. Your stdout is piped directly into a .sh file." \
+    -p "$(cat "$prompt_file")" 2>&1) || true
 
   if [ -z "$generated" ]; then
     log_error "Failed to generate build.sh — empty response from Claude"
@@ -6247,33 +6251,22 @@ review_build_sh_updates() {
     return 0
   fi
 
-  local build_content
-  build_content=$(cat "$PROJECT_ROOT/build.sh")
-
   local prompt_file="$SESSION_DIR/.review-build-prompt.txt"
 
-  cat > "$prompt_file" << 'REVIEW_STATIC'
-Review this build.sh and determine if it needs updates based on newly generated pipeline artifacts.
-
-If build.sh already handles these artifact types generically (e.g., builds from Dockerfile which includes all backend/frontend code, runs all migrations from a directory), then no changes are needed.
-
-Only suggest changes if build.sh is genuinely missing handling for something new (e.g., a new service that needs its own Dockerfile, new k8s manifests not covered by existing apply commands, new env vars required).
-
-If updates ARE needed, output ONLY the complete updated build.sh — no markdown fences, no explanation.
-If NO updates are needed, output exactly the text: NO_CHANGES_NEEDED
-REVIEW_STATIC
-
-  cat >> "$prompt_file" << REVIEW_DYNAMIC
-
-Pipeline artifacts generated this session:
+  cat > "$prompt_file" << REVIEW_PROMPT
+Read the file $PROJECT_ROOT/build.sh using the Read tool, then determine if it needs updates for these new pipeline artifacts:
 $(echo -e "$artifacts")
 
-Current build.sh:
-$build_content
-REVIEW_DYNAMIC
+If build.sh already handles these generically (e.g., builds from Dockerfile, runs all migrations from a directory), output exactly: NO_CHANGES_NEEDED
+
+If updates ARE needed, output ONLY the complete updated bash script starting with #!/bin/bash — no markdown fences, no explanation. Your output is piped directly into build.sh.
+REVIEW_PROMPT
 
   local response
-  response=$(claude --dangerously-skip-permissions --print "$(cat "$prompt_file")" 2>&1) || true
+  response=$(claude --dangerously-skip-permissions --print \
+    --append-system-prompt "You are a build script editor. Output ONLY raw bash or the sentinel NO_CHANGES_NEEDED. Never output prose, explanations, or markdown. Your stdout is piped directly into a .sh file." \
+    --tools "Read" \
+    -p "$(cat "$prompt_file")" 2>&1) || true
 
   if [ -z "$response" ]; then
     log_warn "Empty response from review — continuing with current build.sh"
@@ -6322,27 +6315,23 @@ Diagnose the root cause and suggest specific fixes."
   log "Research saved to .build-failure-research.md"
 
   # Ask Claude to apply the research findings to fix build.sh
-  local build_content
-  build_content=$(cat "$PROJECT_ROOT/build.sh")
-
   local fix_prompt_file="$SESSION_DIR/.fix-build-prompt.txt"
 
-  cat > "$fix_prompt_file" << 'FIX_STATIC'
-Apply the research findings to fix this failing build script.
-Output ONLY the complete fixed bash script — no markdown fences, no explanation.
-FIX_STATIC
+  cat > "$fix_prompt_file" << FIX_PROMPT
+Read these two files using the Read tool:
+1. $SESSION_DIR/.build-failure-research.md (research findings)
+2. $PROJECT_ROOT/build.sh (failing build script)
 
-  cat >> "$fix_prompt_file" << FIX_DYNAMIC
-
-Research findings:
-$research_output
-
-Current build.sh (failing):
-$build_content
-FIX_DYNAMIC
+Apply the research findings to fix the build script.
+Output ONLY the complete fixed bash script starting with #!/bin/bash.
+Your output is piped directly into build.sh — no markdown fences, no explanation.
+FIX_PROMPT
 
   local fixed
-  fixed=$(claude --dangerously-skip-permissions --print "$(cat "$fix_prompt_file")" 2>&1) || true
+  fixed=$(claude --dangerously-skip-permissions --print \
+    --append-system-prompt "You are a build script fixer. Output ONLY raw bash. Never output prose, explanations, or markdown. Your stdout is piped directly into a .sh file." \
+    --tools "Read" \
+    -p "$(cat "$fix_prompt_file")" 2>&1) || true
 
   if [ -n "$fixed" ] && [ "$(echo "$fixed" | wc -l)" -gt 5 ]; then
     local cleaned
@@ -6412,6 +6401,370 @@ build_and_deploy_step() {
   dim_path "  Research: $SESSION_DIR/.build-failure-research.md"
   fail_step 18 "Build and deploy failed"
   return 1
+}
+
+# ============================================================================
+# Step 19: Generate Test Personas
+# ============================================================================
+
+generate_personas_step() {
+  show_step_header 19 "Test Personas" "sync"
+
+  local db_cmd="PGPASSWORD=upj3RsNuqy kubectl exec -n cattle-erp postgresql-cattle-erp-0 --"
+  local personas_json="$SESSION_DIR/personas.json"
+  local personas_backup=".claude/testing/personas/${SESSION_NAME}-personas.json"
+  local api_base="http://ubuntu.desmana-truck.ts.net:32080"
+
+  # ── Phase A: Run migrations ──────────────────────────────────────────────
+  local persona_table_exists
+  persona_table_exists=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+    "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='persona');" 2>/dev/null) || true
+
+  if [ "$persona_table_exists" != "t" ]; then
+    log "Running persona migrations..."
+    for mig in backend/migrations/037_persona_table.sql backend/migrations/038_test_results_table.sql; do
+      if [ -f "$PROJECT_ROOT/$mig" ]; then
+        $db_cmd psql -U postgres -d cattle_erp -f - < "$PROJECT_ROOT/$mig" 2>/dev/null || true
+      fi
+    done
+    log_success "Persona tables created"
+  else
+    log "Persona tables already exist — skipping migrations"
+  fi
+
+  # ── Phase B: Ensure RBAC groups exist ────────────────────────────────────
+  # Create persona-specific RBAC groups if they don't exist
+  local group_count
+  group_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+    "SELECT count(*) FROM user_groups WHERE name LIKE 'persona-%';" 2>/dev/null) || true
+
+  if [ "${group_count:-0}" -lt 5 ]; then
+    log "Creating persona RBAC groups..."
+    $db_cmd psql -U postgres -d cattle_erp -c "
+DO \$\$
+DECLARE
+  admin_id UUID;
+BEGIN
+  SELECT id INTO admin_id FROM users WHERE email = 'admin@cattle-erp.com' LIMIT 1;
+  IF admin_id IS NULL THEN
+    SELECT id INTO admin_id FROM users WHERE is_admin = true LIMIT 1;
+  END IF;
+
+  -- Create groups (idempotent via ON CONFLICT)
+  INSERT INTO user_groups (name, description, is_active, created_by) VALUES
+    ('persona-ranch-owners', 'Ranch owners with full admin access', true, admin_id),
+    ('persona-ranch-operations', 'Ranch foremen and feedlot operators', true, admin_id),
+    ('persona-ranch-hands', 'Ranch hands with limited access', true, admin_id),
+    ('persona-buyers', 'Livestock buyers', true, admin_id),
+    ('persona-office-staff', 'Office managers and administrators', true, admin_id),
+    ('persona-read-only', 'Read-only access for external reps', true, admin_id)
+  ON CONFLICT (name) DO NOTHING;
+END \$\$;
+" 2>/dev/null || true
+    log_success "RBAC groups created"
+  else
+    log "Persona RBAC groups already exist — skipping"
+  fi
+
+  # ── Phase C: Confirm journeys ────────────────────────────────────────────
+  local unconfirmed
+  unconfirmed=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+    "SELECT count(*) FROM journey WHERE session_name='$SESSION_NAME' AND confirmation_status != 'confirmed';" 2>/dev/null) || true
+
+  if [ "${unconfirmed:-0}" -gt 0 ]; then
+    log "Confirming $unconfirmed journeys..."
+    $db_cmd psql -U postgres -d cattle_erp -c \
+      "UPDATE journey SET confirmation_status='confirmed' WHERE session_name='$SESSION_NAME';" 2>/dev/null || true
+    log_success "Journeys confirmed"
+  else
+    log "All journeys already confirmed"
+  fi
+
+  # ── Phase D: Generate personas JSON via Claude ───────────────────────────
+  if [ ! -f "$personas_json" ]; then
+    log "Generating 10 cattle-industry personas via Claude..."
+
+    # Collect journey IDs from DB or file
+    local journey_ids=""
+    if [ -f "$SESSION_DIR/journeys.json" ]; then
+      journey_ids=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('$SESSION_DIR/journeys.json'))
+    journeys = data if isinstance(data, list) else data.get('journeys', [])
+    ids = [j.get('id', j.get('journey_id', '')) for j in journeys if isinstance(j, dict)]
+    print(', '.join(ids[:20]))
+except:
+    print('J-001, J-002, J-003')
+" 2>/dev/null) || true
+    fi
+    [ -z "$journey_ids" ] && journey_ids="J-001, J-002, J-003"
+
+    # Build the persona generation prompt
+    local prompt_file="$SESSION_DIR/.persona-prompt.txt"
+    cat > "$prompt_file" << PERSONA_PROMPT_EOF
+You are a QA persona generator for a cattle ERP system called "KC Cattle Company."
+
+Generate exactly 10 test personas as a JSON object with a "personas" array. Each persona must match this schema:
+
+PERSONA ROLES AND RBAC:
+| # | ID | Role | Group | Granted Privileges | Denied Privileges |
+|---|-----|------|-------|-------------------|-------------------|
+| 1 | persona-01 | Ranch Owner/Manager | persona-ranch-owners | all privileges | (none) |
+| 2 | persona-02 | Ranch Foreman | persona-ranch-operations | inventory.*, vendors.*, orders.*, kanban.* | users.delete |
+| 3 | persona-03 | Ranch Hand | persona-ranch-hands | inventory.view, kanban.view | inventory.delete, vendors.*, orders.edit |
+| 4 | persona-04 | Livestock Buyer | persona-buyers | inventory.view, orders.*, kanban.edit | inventory.edit, vendors.delete |
+| 5 | persona-05 | Feedlot Operator | persona-ranch-operations | inventory.*, orders.*, kanban.*, vendors.* | users.* |
+| 6 | persona-06 | Auction House Rep | persona-read-only | inventory.view, orders.view | orders.edit, inventory.edit |
+| 7 | persona-07 | Veterinarian | persona-read-only | inventory.view, reports.view | inventory.delete, orders.* |
+| 8 | persona-08 | Office Manager | persona-office-staff | inventory.*, vendors.*, orders.*, reports.* | users.delete |
+| 9 | persona-09 | New Hire (Edge Case) | persona-ranch-hands | inventory.view | everything else |
+| 10 | persona-10 | Multi-Ranch Manager (Edge Case) | persona-ranch-owners | all privileges (multi-org) | (none) |
+
+AVAILABLE JOURNEYS: $journey_ids
+
+EACH PERSONA MUST HAVE:
+- id: "persona-NN" format
+- name: Realistic cattle-industry name
+- role: From the table above
+- demographics: { age (18-80), techProficiency (low/medium/high), industry: "cattle", companySize (small/medium/enterprise), devicePreference (desktop/mobile/both), accessibilityNeeds: [] }
+- behavioral: { goals (1-5 items), painPoints (1-5), preferredWorkflow, patienceLevel (low/medium/high), errorTolerance (low/medium/high), commonMistakes (1-5) }
+- journeys: { primary: ["J-NNN" IDs], secondary: [], frequency (daily/weekly/monthly/occasional), sessionDuration (short/medium/long) }
+- testData: { email: "test+persona-NN@cattle-erp.com", password: "TestPersona!NN", profileData: { displayName: "..." } }
+- feedback: { style (detailed/brief/frustrated/enthusiastic), complaintThreshold (1-10), praiseThreshold (1-10), likelyComplaints: [...], likelyPraises: [...], verbosity (minimal/moderate/verbose) }
+- metadata: { userType (primary/secondary/admin/edge_case), generatedFrom: "session: $SESSION_NAME", createdAt: "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" }
+
+Output ONLY valid JSON. No markdown fences, no explanation. Start with { and end with }.
+PERSONA_PROMPT_EOF
+
+    local persona_output="$SESSION_DIR/.persona-raw-output.json"
+    local claude_attempt=1
+    local max_claude_attempts=3
+    local generation_success=false
+
+    while [ "$claude_attempt" -le "$max_claude_attempts" ]; do
+      log "Claude generation attempt $claude_attempt/$max_claude_attempts..."
+
+      claude --dangerously-skip-permissions --print \
+        --append-system-prompt "You are a QA persona generator. Output ONLY valid JSON. No markdown, no explanation." \
+        -p "$(cat "$prompt_file")" \
+        > "$persona_output" 2>/dev/null || true
+
+      # Strip leading blank lines and markdown fences
+      if [ -f "$persona_output" ] && [ -s "$persona_output" ]; then
+        sed -i '/./,$!d' "$persona_output"
+        sed -i '/^```/d' "$persona_output"
+
+        # Validate JSON
+        if python3 -c "import json; data=json.load(open('$persona_output')); assert 'personas' in data and len(data['personas']) >= 8" 2>/dev/null; then
+          cp "$persona_output" "$personas_json"
+          generation_success=true
+          log_success "Personas JSON generated and validated"
+          break
+        else
+          log_error "Invalid JSON output on attempt $claude_attempt"
+        fi
+      else
+        log_error "Empty output on attempt $claude_attempt"
+      fi
+
+      ((claude_attempt++)) || true
+    done
+
+    if [ "$generation_success" != "true" ]; then
+      fail_step 19 "Failed to generate valid personas JSON after $max_claude_attempts attempts"
+      return 1
+    fi
+  else
+    log "Personas JSON already exists — skipping generation"
+  fi
+
+  # ── Phase E: Register test users via API ─────────────────────────────────
+  local test_user_count
+  test_user_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+    "SELECT count(*) FROM users WHERE email LIKE 'test+persona%';" 2>/dev/null) || true
+
+  if [ "${test_user_count:-0}" -lt 10 ]; then
+    log "Registering test user accounts..."
+
+    local registered=0
+    local skipped=0
+
+    # Parse personas and register each one
+    python3 -c "
+import json, sys
+data = json.load(open('$personas_json'))
+personas = data.get('personas', data if isinstance(data, list) else [])
+for p in personas:
+    td = p.get('testData', {})
+    email = td.get('email', '')
+    password = td.get('password', '')
+    name = p.get('name', 'Test User')
+    parts = name.split(' ', 1)
+    first = parts[0] if parts else 'Test'
+    last = parts[1] if len(parts) > 1 else 'User'
+    pid = p.get('id', 'unknown')
+    username = pid.replace('-', '_')
+    print(f'{email}|{password}|{username}|{first}|{last}|{pid}')
+" 2>/dev/null | while IFS='|' read -r email password username first last pid; do
+      [ -z "$email" ] && continue
+
+      # Check if user already exists
+      local exists
+      exists=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+        "SELECT count(*) FROM users WHERE email='$email';" 2>/dev/null) || true
+
+      if [ "${exists:-0}" -gt 0 ]; then
+        ((skipped++)) || true
+        continue
+      fi
+
+      # Register via API
+      local reg_response
+      reg_response=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST "$api_base/api/v1/auth/register" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"$email\",\"password\":\"$password\",\"username\":\"$username\",\"first_name\":\"$first\",\"last_name\":\"$last\"}" \
+        2>/dev/null) || true
+
+      if [ "$reg_response" = "200" ] || [ "$reg_response" = "201" ]; then
+        ((registered++)) || true
+      elif [ "$reg_response" = "400" ]; then
+        # Already exists
+        ((skipped++)) || true
+      else
+        log_error "Failed to register $email (HTTP $reg_response)"
+      fi
+    done
+
+    log_success "Test users registered"
+  else
+    log "Test users already registered ($test_user_count found) — skipping"
+  fi
+
+  # ── Phase F: Assign RBAC group memberships ──────────────────────────────
+  local membership_count
+  membership_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+    "SELECT count(*) FROM user_group_members ugm
+     JOIN users u ON u.id = ugm.user_id
+     WHERE u.email LIKE 'test+persona%';" 2>/dev/null) || true
+
+  if [ "${membership_count:-0}" -lt 10 ]; then
+    log "Assigning RBAC group memberships..."
+    $db_cmd psql -U postgres -d cattle_erp -c "
+DO \$\$
+DECLARE
+  admin_id UUID;
+  persona_rec RECORD;
+  target_group_id UUID;
+  target_user_id UUID;
+  group_map TEXT[][] := ARRAY[
+    ['test+persona-01@cattle-erp.com', 'persona-ranch-owners'],
+    ['test+persona-02@cattle-erp.com', 'persona-ranch-operations'],
+    ['test+persona-03@cattle-erp.com', 'persona-ranch-hands'],
+    ['test+persona-04@cattle-erp.com', 'persona-buyers'],
+    ['test+persona-05@cattle-erp.com', 'persona-ranch-operations'],
+    ['test+persona-06@cattle-erp.com', 'persona-read-only'],
+    ['test+persona-07@cattle-erp.com', 'persona-read-only'],
+    ['test+persona-08@cattle-erp.com', 'persona-office-staff'],
+    ['test+persona-09@cattle-erp.com', 'persona-ranch-hands'],
+    ['test+persona-10@cattle-erp.com', 'persona-ranch-owners']
+  ];
+  i INTEGER;
+BEGIN
+  SELECT id INTO admin_id FROM users WHERE is_admin = true LIMIT 1;
+
+  FOR i IN 1..array_length(group_map, 1) LOOP
+    SELECT id INTO target_user_id FROM users WHERE email = group_map[i][1] LIMIT 1;
+    SELECT id INTO target_group_id FROM user_groups WHERE name = group_map[i][2] LIMIT 1;
+
+    IF target_user_id IS NOT NULL AND target_group_id IS NOT NULL THEN
+      INSERT INTO user_group_members (user_id, group_id, assigned_by)
+      VALUES (target_user_id, target_group_id, admin_id)
+      ON CONFLICT DO NOTHING;
+    END IF;
+  END LOOP;
+END \$\$;
+" 2>/dev/null || true
+    log_success "RBAC group memberships assigned"
+  else
+    log "RBAC memberships already assigned ($membership_count found) — skipping"
+  fi
+
+  # ── Phase G: Insert personas into DB ─────────────────────────────────────
+  local persona_db_count
+  persona_db_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+    "SELECT count(*) FROM persona WHERE session_name='$SESSION_NAME';" 2>/dev/null) || true
+
+  if [ "${persona_db_count:-0}" -lt 10 ]; then
+    log "Inserting personas into database..."
+
+    python3 -c "
+import json, subprocess, sys
+
+data = json.load(open('$personas_json'))
+personas = data.get('personas', data if isinstance(data, list) else [])
+session = '$SESSION_NAME'
+
+values = []
+for p in personas:
+    pid = p.get('id', '')
+    name = p.get('name', '').replace(\"'\", \"''\")
+    role = p.get('role', '').replace(\"'\", \"''\")
+    demo = json.dumps(p.get('demographics', {})).replace(\"'\", \"''\")
+    behav = json.dumps(p.get('behavioral', {})).replace(\"'\", \"''\")
+    journ = json.dumps(p.get('journeys', {})).replace(\"'\", \"''\")
+    tdata = json.dumps(p.get('testData', {})).replace(\"'\", \"''\")
+    fb = json.dumps(p.get('feedback', {})).replace(\"'\", \"''\")
+    meta = json.dumps(p.get('metadata', {})).replace(\"'\", \"''\")
+    values.append(
+        f\"('{session}', '{pid}', '{name}', '{role}', '{demo}', '{behav}', '{journ}', '{tdata}', '{fb}', '{meta}')\"
+    )
+
+sql = '''INSERT INTO persona (session_name, persona_id, name, role, demographics, behavioral, journeys, test_data, feedback_preferences, metadata)
+VALUES ''' + ',\n'.join(values) + '''
+ON CONFLICT (session_name, persona_id) DO UPDATE SET
+  name = EXCLUDED.name,
+  role = EXCLUDED.role,
+  demographics = EXCLUDED.demographics,
+  behavioral = EXCLUDED.behavioral,
+  journeys = EXCLUDED.journeys,
+  test_data = EXCLUDED.test_data,
+  feedback_preferences = EXCLUDED.feedback_preferences,
+  metadata = EXCLUDED.metadata;'''
+
+print(sql)
+" 2>/dev/null | $db_cmd psql -U postgres -d cattle_erp 2>/dev/null || true
+
+    log_success "Personas inserted into database"
+  else
+    log "Personas already in database ($persona_db_count found) — skipping"
+  fi
+
+  # ── Write backup and marker ──────────────────────────────────────────────
+  mkdir -p "$(dirname "$PROJECT_ROOT/$personas_backup")" 2>/dev/null || true
+  cp "$personas_json" "$PROJECT_ROOT/$personas_backup" 2>/dev/null || true
+
+  # Final count verification
+  local final_persona_count
+  final_persona_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+    "SELECT count(*) FROM persona WHERE session_name='$SESSION_NAME';" 2>/dev/null) || true
+  local final_user_count
+  final_user_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+    "SELECT count(*) FROM users WHERE email LIKE 'test+persona%';" 2>/dev/null) || true
+
+  # Write marker file
+  {
+    echo "personas_file=$personas_json"
+    echo "persona_count=${final_persona_count:-0}"
+    echo "test_users_registered=${final_user_count:-0}"
+    echo "backup_file=$personas_backup"
+    echo "generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  } > "$SESSION_DIR/personas-generated.txt"
+
+  complete_step 19 "Test personas generated (${final_persona_count:-0} personas, ${final_user_count:-0} test users)"
+  dim_path "  Personas: $personas_json"
+  dim_path "  Backup: $personas_backup"
 }
 
 # Show final summary
@@ -6681,6 +7034,12 @@ main() {
     build_and_deploy_step
   else
     echo -e "  ${DIM}Step 18: Build & Deploy - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 19 ]; then
+    generate_personas_step
+  else
+    echo -e "  ${DIM}Step 19: Test Personas - skipped (already complete)${NC}"
   fi
 
   show_final_summary
