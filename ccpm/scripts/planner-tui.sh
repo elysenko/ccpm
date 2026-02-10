@@ -477,12 +477,14 @@ prompt_input() {
   local default="$2"
   local input=""
 
-  show_cursor
-  draw_message "$prompt"
-  move_cursor $((TERM_LINES - 5)) $((${#prompt} + 3))
+  # All terminal control must go to /dev/tty, not stdout.
+  # stdout is captured by $() command substitution at call sites.
+  show_cursor > /dev/tty
+  draw_message "$prompt" > /dev/tty
+  move_cursor $((TERM_LINES - 5)) $((${#prompt} + 3)) > /dev/tty
 
-  read -r input 2>/dev/null || true
-  hide_cursor
+  read -r input < /dev/tty 2>/dev/null || true
+  hide_cursor > /dev/tty
 
   echo "${input:-$default}"
 }
