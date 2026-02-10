@@ -77,7 +77,7 @@ TOTAL_STEPS=19
 CURRENT_STEP=0
 STEP_START_TIME=0
 SESSION_START_TIME=0
-declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Types" "Frontend API" "Frontend Pages" "Frontend Integrate" "Build & Deploy" "Test Personas")
+declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Types" "Frontend API" "Frontend Pages" "Frontend Integrate" "Build Codebase" "Test Personas")
 declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
 declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 
@@ -6133,274 +6133,73 @@ integrate_frontend_step() {
   fi
 }
 
-# Step 18 helper: Generate build.sh when none exists
-generate_build_sh() {
-  log "No build.sh found — generating from project structure..."
 
-  # Gather project context for the prompt
-  local context=""
-  if [ -f "$SESSION_DIR/repo-analysis.md" ]; then
-    context=$(head -80 "$SESSION_DIR/repo-analysis.md")
-  fi
+# Step 18: Build Codebase
+# Compiles frontend (TypeScript + Vite) and validates backend Python.
+# Does NOT run build.sh — that's for environment setup (Docker + K8s deploy).
+build_codebase_step() {
+  show_step_header 18 "Build Codebase" "deploy"
 
-  local dockerfiles=""
-  for df in "$PROJECT_ROOT"/Dockerfile "$PROJECT_ROOT"/*/Dockerfile; do
-    [ -f "$df" ] && dockerfiles+="  ${df#"$PROJECT_ROOT"/}"$'\n'
-  done
+  local build_log="$SESSION_DIR/.build-deploy.log"
+  local errors=0
 
-  local k8s_manifests=""
-  for mf in "$PROJECT_ROOT"/k8s/*.yaml "$PROJECT_ROOT"/k8s/*.yml; do
-    [ -f "$mf" ] && k8s_manifests+="  ${mf#"$PROJECT_ROOT"/}"$'\n'
-  done
-
-  local prompt_file="$SESSION_DIR/.gen-build-prompt.txt"
-
-  # Static template (no expansion)
-  cat > "$prompt_file" << 'GEN_STATIC'
-Generate a production build.sh script for this project.
-Output ONLY the raw bash script — no markdown fences, no explanation.
-
-Requirements:
-- Use nerdctl (NOT docker) for container builds
-- Use --insecure-registry flag for nerdctl push (HTTP registry)
-- Configure containerd hosts.toml for plain HTTP access before pushing
-- Run database migrations via kubectl exec if migration SQL files exist
-- Apply all K8s manifests from k8s/ directory
-- Load env vars from parent directory ../.env if it exists, fallback to ./.env
-- Create k8s namespace if it doesn't exist
-- Create k8s secrets from .env if needed
-- Include set -eo pipefail at the top
-- Make script idempotent (safe to re-run)
-GEN_STATIC
-
-  # Dynamic context (with expansion)
-  cat >> "$prompt_file" << GEN_DYNAMIC
-
-Registry: ubuntu.desmana-truck.ts.net:30500
-
-Dockerfiles found:
-${dockerfiles:-  (none found)}
-
-K8s manifests found:
-${k8s_manifests:-  (none found)}
-
-Project analysis:
-$context
-GEN_DYNAMIC
-
-  local generated
-  generated=$(claude --dangerously-skip-permissions --print \
-    --append-system-prompt "You are a build script generator. Output ONLY raw bash starting with #!/bin/bash. Never output prose, explanations, or markdown. Your stdout is piped directly into a .sh file." \
-    -p "$(cat "$prompt_file")" 2>&1) || true
-
-  if [ -z "$generated" ]; then
-    log_error "Failed to generate build.sh — empty response from Claude"
-    return 1
-  fi
-
-  # Strip leading blank lines and markdown fences, then validate
-  local cleaned
-  cleaned=$(echo "$generated" | sed '/./,$!d' | sed '/^```/d' | sed '/^bash$/d')
-  if ! validate_bash_output "$cleaned"; then
-    log_error "Generated output is not valid bash"
-    return 1
-  fi
-  echo "$cleaned" > "$PROJECT_ROOT/build.sh"
-  chmod +x "$PROJECT_ROOT/build.sh"
-  log "Generated build.sh ($(wc -l < "$PROJECT_ROOT/build.sh") lines)"
-}
-
-# Validate that a string is valid bash before writing to build.sh
-validate_bash_output() {
-  local content="$1"
-  local tmp_file="$SESSION_DIR/.build-validate.tmp"
-
-  # Must start with shebang or set command (not prose)
-  local first_line
-  first_line=$(echo "$content" | head -1)
-  if [[ ! "$first_line" =~ ^#!.*/bash ]] && [[ ! "$first_line" =~ ^set\ - ]]; then
-    log_warn "Output doesn't start with shebang or 'set -' — likely prose, not a script"
-    return 1
-  fi
-
-  # Must pass bash -n syntax check
-  echo "$content" > "$tmp_file"
-  if ! bash -n "$tmp_file" 2>/dev/null; then
-    log_warn "Output fails bash -n syntax check — not a valid script"
-    rm -f "$tmp_file"
-    return 1
-  fi
-
-  rm -f "$tmp_file"
-  return 0
-}
-
-# Step 18 helper: Review existing build.sh for updates needed after pipeline
-review_build_sh_updates() {
-  log "Reviewing build.sh for needed updates..."
-
-  # Summarize what the pipeline generated
-  local artifacts=""
-  [ -f "$SESSION_DIR/schema-complete.txt" ] && artifacts+="- New database migration SQL files generated\n"
-  [ -f "$SESSION_DIR/models-integrated.txt" ] && artifacts+="- New SQLAlchemy models integrated into backend\n"
-  [ -f "$SESSION_DIR/api-generated.txt" ] && artifacts+="- New FastAPI router and schemas generated\n"
-  [ -f "$SESSION_DIR/frontend-integrated.txt" ] && artifacts+="- New frontend pages and routes integrated into frontend/src/\n"
-
-  if [ -z "$artifacts" ]; then
-    log "No pipeline artifacts that could affect build.sh"
-    return 0
-  fi
-
-  local prompt_file="$SESSION_DIR/.review-build-prompt.txt"
-
-  cat > "$prompt_file" << REVIEW_PROMPT
-Read the file $PROJECT_ROOT/build.sh using the Read tool, then determine if it needs updates for these new pipeline artifacts:
-$(echo -e "$artifacts")
-
-If build.sh already handles these generically (e.g., builds from Dockerfile, runs all migrations from a directory), output exactly: NO_CHANGES_NEEDED
-
-If updates ARE needed, output ONLY the complete updated bash script starting with #!/bin/bash — no markdown fences, no explanation. Your output is piped directly into build.sh.
-REVIEW_PROMPT
-
-  local response
-  response=$(claude --dangerously-skip-permissions --print \
-    --append-system-prompt "You are a build script editor. Output ONLY raw bash or the sentinel NO_CHANGES_NEEDED. Never output prose, explanations, or markdown. Your stdout is piped directly into a .sh file." \
-    --tools "Read" \
-    -p "$(cat "$prompt_file")" 2>&1) || true
-
-  if [ -z "$response" ]; then
-    log_warn "Empty response from review — continuing with current build.sh"
-    return 0
-  fi
-
-  if echo "$response" | grep -q "NO_CHANGES_NEEDED"; then
-    log "build.sh is up to date — no changes needed"
-  else
-    local cleaned
-    cleaned=$(echo "$response" | sed '/./,$!d' | sed '/^```/d' | sed '/^bash$/d')
-    if validate_bash_output "$cleaned"; then
-      cp "$PROJECT_ROOT/build.sh" "$PROJECT_ROOT/build.sh.bak"
-      echo "$cleaned" > "$PROJECT_ROOT/build.sh"
-      chmod +x "$PROJECT_ROOT/build.sh"
-      log "Updated build.sh with pipeline changes (backup: build.sh.bak)"
+  # --- Frontend build ---
+  local frontend_dir="$PROJECT_ROOT/frontend"
+  if [ -f "$frontend_dir/package.json" ]; then
+    log "Installing frontend dependencies..."
+    if ! (cd "$frontend_dir" && npm install --no-audit --no-fund) >> "$build_log" 2>&1; then
+      log_error "npm install failed"
+      ((errors++)) || true
     else
-      log_warn "Review returned invalid bash — keeping current build.sh unchanged"
-    fi
-  fi
-}
-
-# Step 18 helper: Deep-research a build failure and attempt to fix build.sh
-research_and_fix_build_failure() {
-  local log_file="$1"
-  local error_tail
-  error_tail=$(tail -30 "$log_file" 2>/dev/null)
-
-  log "Researching build failure with /dr..."
-
-  local research_query="Verify this build.sh will correctly build Docker images with nerdctl, push to the local HTTP registry at ubuntu.desmana-truck.ts.net:30500, deploy to the local Kubernetes cluster (namespace: cattle-erp), and expose services over NodePort. The script is currently failing. Last 30 lines of output:
-
-$error_tail
-
-Diagnose the root cause and suggest specific fixes."
-
-  local research_output
-  research_output=$(claude --dangerously-skip-permissions --print "/dr $research_query" 2>&1) || true
-
-  if [ -z "$research_output" ]; then
-    log_warn "/dr returned empty — continuing with retries"
-    return 0
-  fi
-
-  echo "$research_output" > "$SESSION_DIR/.build-failure-research.md"
-  log "Research saved to .build-failure-research.md"
-
-  # Ask Claude to apply the research findings to fix build.sh
-  local fix_prompt_file="$SESSION_DIR/.fix-build-prompt.txt"
-
-  cat > "$fix_prompt_file" << FIX_PROMPT
-Read these two files using the Read tool:
-1. $SESSION_DIR/.build-failure-research.md (research findings)
-2. $PROJECT_ROOT/build.sh (failing build script)
-
-Apply the research findings to fix the build script.
-Output ONLY the complete fixed bash script starting with #!/bin/bash.
-Your output is piped directly into build.sh — no markdown fences, no explanation.
-FIX_PROMPT
-
-  local fixed
-  fixed=$(claude --dangerously-skip-permissions --print \
-    --append-system-prompt "You are a build script fixer. Output ONLY raw bash. Never output prose, explanations, or markdown. Your stdout is piped directly into a .sh file." \
-    --tools "Read" \
-    -p "$(cat "$fix_prompt_file")" 2>&1) || true
-
-  if [ -n "$fixed" ] && [ "$(echo "$fixed" | wc -l)" -gt 5 ]; then
-    local cleaned
-    cleaned=$(echo "$fixed" | sed '/./,$!d' | sed '/^```/d' | sed '/^bash$/d')
-    if validate_bash_output "$cleaned"; then
-      cp "$PROJECT_ROOT/build.sh" "$PROJECT_ROOT/build.sh.pre-fix"
-      echo "$cleaned" > "$PROJECT_ROOT/build.sh"
-      chmod +x "$PROJECT_ROOT/build.sh"
-      log "Applied /dr fixes to build.sh (backup: build.sh.pre-fix)"
-    else
-      log_warn "/dr fix output is not valid bash — restoring from backup"
-      if [ -f "$PROJECT_ROOT/build.sh.bak" ]; then
-        cp "$PROJECT_ROOT/build.sh.bak" "$PROJECT_ROOT/build.sh"
-        log "Restored build.sh from .bak"
+      log "Compiling frontend (tsc + vite build)..."
+      if ! (cd "$frontend_dir" && npm run build) >> "$build_log" 2>&1; then
+        log_error "Frontend build failed — check TypeScript/Vite errors"
+        tail -20 "$build_log" 2>/dev/null | while IFS= read -r line; do
+          log_error "  $line"
+        done
+        ((errors++)) || true
+      else
+        log "Frontend build succeeded"
       fi
     fi
   else
-    log_warn "Could not apply fixes automatically — continuing with retries"
+    log_warn "No frontend/package.json found — skipping frontend build"
   fi
-}
 
-# Step 18: Build & Deploy
-build_and_deploy_step() {
-  show_step_header 18 "Build & Deploy" "deploy"
+  # --- Backend validation ---
+  local backend_dir="$PROJECT_ROOT/backend"
+  if [ -d "$backend_dir/app" ]; then
+    log "Validating backend Python syntax..."
+    local py_errors=0
+    while IFS= read -r -d '' pyfile; do
+      if ! python3 -m py_compile "$pyfile" 2>> "$build_log"; then
+        log_error "Syntax error: ${pyfile#"$PROJECT_ROOT"/}"
+        ((py_errors++)) || true
+      fi
+    done < <(find "$backend_dir/app" -name '*.py' -print0)
 
-  local build_log="$SESSION_DIR/.build-deploy.log"
-  local max_retries=3
-
-  # Generate build.sh if missing, or review existing for updates
-  if [ ! -x "$PROJECT_ROOT/build.sh" ]; then
-    generate_build_sh || {
-      fail_step 18 "Could not generate build.sh"
-      return 1
-    }
+    if [ "$py_errors" -gt 0 ]; then
+      log_error "Backend has $py_errors Python file(s) with syntax errors"
+      ((errors++)) || true
+    else
+      log "Backend Python syntax OK"
+    fi
   else
-    review_build_sh_updates
+    log_warn "No backend/app directory found — skipping backend validation"
   fi
 
-  # Run build.sh with retry loop
-  local attempt=1
-  while [ "$attempt" -le "$max_retries" ]; do
-    log "Build attempt $attempt/$max_retries..."
-
-    if "$PROJECT_ROOT/build.sh" > "$build_log" 2>&1; then
-      date -u +"%Y-%m-%dT%H:%M:%SZ" > "$SESSION_DIR/build-deployed.txt"
-      complete_step 18 "Build and deploy completed (attempt $attempt)"
-      dim_path "  Log: $build_log"
-      return 0
-    fi
-
-    log_error "Attempt $attempt failed"
-    tail -5 "$build_log" 2>/dev/null | while IFS= read -r line; do
-      log_error "  $line"
-    done
-
-    # On 2nd failure, deep-research and attempt to fix
-    if [ "$attempt" -eq 1 ]; then
-      research_and_fix_build_failure "$build_log"
-    fi
-
-    ((attempt++)) || true
-  done
-
-  # All retries exhausted
-  log_error "build.sh failed after $max_retries attempts"
-  dim_path "  Full log: $build_log"
-  dim_path "  Research: $SESSION_DIR/.build-failure-research.md"
-  fail_step 18 "Build and deploy failed"
-  return 1
+  # --- Result ---
+  if [ "$errors" -eq 0 ]; then
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$SESSION_DIR/build-deployed.txt"
+    complete_step 18 "Codebase build succeeded"
+    dim_path "  Log: $build_log"
+    return 0
+  else
+    log_error "Codebase build had $errors error(s)"
+    dim_path "  Full log: $build_log"
+    fail_step 18 "Codebase build failed"
+    return 1
+  fi
 }
 
 # ============================================================================
@@ -7031,9 +6830,9 @@ main() {
   fi
 
   if [ "$RESUME_FROM_STEP" -le 18 ]; then
-    build_and_deploy_step
+    build_codebase_step
   else
-    echo -e "  ${DIM}Step 18: Build & Deploy - skipped (already complete)${NC}"
+    echo -e "  ${DIM}Step 18: Build Codebase - skipped (already complete)${NC}"
   fi
 
   if [ "$RESUME_FROM_STEP" -le 19 ]; then

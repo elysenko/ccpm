@@ -1466,7 +1466,7 @@ action_view_task() {
       [ -f "$research_dir/api-client-generated.txt" ] && feature_step=15 && feature_step_name="Frontend API"
       [ -f "$research_dir/frontend-complete.txt" ] && feature_step=16 && feature_step_name="Frontend Pages"
       [ -f "$research_dir/frontend-integrated.txt" ] && feature_step=17 && feature_step_name="Frontend Integrate"
-      [ -f "$research_dir/build-deployed.txt" ] && feature_step=18 && feature_step_name="Build & Deploy"
+      [ -f "$research_dir/build-deployed.txt" ] && feature_step=18 && feature_step_name="Build Codebase"
     fi
 
     # Show feature step if tracked
@@ -1860,7 +1860,7 @@ view_action_feature_status() {
     "Frontend API"
     "Frontend Pages"
     "Frontend Integrate"
-    "Build & Deploy"
+    "Build Codebase"
     "Test Personas"
   )
 
@@ -2554,7 +2554,7 @@ sync_interrogate_results() {
     feature_step=17; feature_step_name="Frontend Integrate"
   fi
   if [ -f "$research_dir/build-deployed.txt" ]; then
-    feature_step=18; feature_step_name="Build & Deploy"
+    feature_step=18; feature_step_name="Build Codebase"
   fi
 
   # Count sub-step for refinement (round number)
@@ -2821,7 +2821,7 @@ view_action_select_step() {
     "Step 15: Frontend API"
     "Step 16: Frontend Pages"
     "Step 17: Frontend Integrate"
-    "Step 18: Build & Deploy"
+    "Step 18: Build Codebase"
     "Step 19: Test Personas"
   )
 
