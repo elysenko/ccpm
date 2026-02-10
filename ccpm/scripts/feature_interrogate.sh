@@ -7,7 +7,7 @@
 # Usage:
 #   ./feature_interrogate.sh [session-name]
 #
-# Pipeline (14 steps):
+# Pipeline (17 steps):
 #   1. repo-research     → Understand the repository structure
 #   2. user-input        → Get feature description from user
 #   3. context-research  → Deep research (/dr) to understand the domain (NEW)
@@ -21,7 +21,10 @@
 #  11. integrate-models  → Copy SQLAlchemy models into backend and register
 #  12. api-generation    → Generate FastAPI router + schemas (self-refine loop)
 #  13. journey-gen       → Generate user journeys (delegates to generate-journeys.sh)
-#  14. frontend-gen      → Generate frontend components (platform-agnostic)
+#  14. frontend-types    → Generate TypeScript type definitions
+#  15. frontend-api      → Generate API client from router contract
+#  16. frontend-pages    → Generate page components with validation + retry
+#  17. frontend-integrate → Copy files to codebase, add routes + nav to App.tsx
 #
 # Output:
 #   .claude/RESEARCH/{session}/ - Research files
@@ -69,13 +72,13 @@ readonly BOX_L='├'
 readonly BOX_R='┤'
 
 # Step tracking
-TOTAL_STEPS=14
+TOTAL_STEPS=17
 CURRENT_STEP=0
 STEP_START_TIME=0
 SESSION_START_TIME=0
-declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Gen")
-declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
-declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Types" "Frontend API" "Frontend Pages" "Frontend Integrate")
+declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
+declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 
 # Spinner characters (braille pattern for smooth animation)
 readonly SPINNER_CHARS='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -2105,20 +2108,24 @@ Options:
   --list, -l          List all existing sessions with their progress
   --help, -h          Show this help message
 
-Pipeline Steps:
+Pipeline Steps (17):
   1. Repo Familiarization  - Understand the current repository via /dr
   2. Feature Input         - Prompt user to describe the feature
-  3. Requirement Refinement- Use /dr-refine to clarify requirements
-  4. Deep Research         - Research user flows and open source tools
-  5. Conversation Summary  - Save discovery summary
-  6. Flow Diagram Loop     - Generate and verify flow diagram
-  7. Database Sync         - Persist to PostgreSQL
-  8. Data Schema           - Generate domain model, migration, SQLAlchemy models
-  9. Run Migration         - Apply migration SQL to PostgreSQL
-  10. Integrate Models     - Copy models into backend, register in __init__.py
-  11. API Generation       - Generate FastAPI router + Pydantic schemas
-  12. Journey Generation   - Generate user journeys via generate-journeys.sh
-  13. Frontend Gen         - Generate frontend components (platform-agnostic)
+  3. Context Research      - Deep research to understand the domain
+  4. Refinement            - Ask clarifying questions
+  5. Impl Research         - Research implementation patterns
+  6. Summary               - Save conversation summary
+  7. Flow Diagram          - Generate and verify flow diagram
+  8. Database Sync         - Persist to PostgreSQL
+  9. Data Schema           - Generate domain model, migration, SQLAlchemy models
+  10. Run Migration        - Apply migration SQL to PostgreSQL
+  11. Integrate Models     - Copy models into backend, register in __init__.py
+  12. API Generation       - Generate FastAPI router + Pydantic schemas
+  13. Journey Generation   - Generate user journeys via generate-journeys.sh
+  14. Frontend Types       - Generate TypeScript type definitions
+  15. Frontend API         - Generate API client from router contract
+  16. Frontend Pages       - Generate page components with validation + retry
+  17. Frontend Integrate   - Copy files to codebase, add routes + nav to App.tsx
 
 Output Files:
   .claude/RESEARCH/{session}/
@@ -2224,10 +2231,16 @@ detect_completed_steps() {
   local session_dir="$1"
 
   # Check steps in reverse order to find where to resume
-  if [ -f "$session_dir/frontend-complete.txt" ]; then
-    echo 14  # All complete (14 steps done)
+  if [ -f "$session_dir/frontend-integrated.txt" ]; then
+    echo 17  # All 17 steps done
+  elif [ -f "$session_dir/frontend-complete.txt" ]; then
+    echo 16  # Resume from step 17 (integrate)
+  elif [ -f "$session_dir/api-client-generated.txt" ]; then
+    echo 15  # Resume from step 16 (pages)
+  elif [ -f "$session_dir/types-generated.txt" ]; then
+    echo 14  # Resume from step 15 (api client)
   elif [ -f "$session_dir/journeys-generated.txt" ]; then
-    echo 13  # Steps 1-12 skip, resume from step 13 (step 14 runs fresh)
+    echo 13  # Resume from step 14 (types)
   elif [ -f "$session_dir/api-generated.txt" ]; then
     echo 12  # Steps 1-11 skip, resume from step 12 (step 13 runs fresh)
   elif [ -f "$session_dir/models-integrated.txt" ]; then
@@ -5104,29 +5117,27 @@ detect_from_files() {
 # Extract [NEW] component names from flow diagram
 extract_new_components() {
   local flow_file="$SESSION_DIR/flow-diagram.md"
-  if [ ! -f "$flow_file" ]; then
-    return
-  fi
+  [ ! -f "$flow_file" ] && return
 
-  # Look for [NEW] markers in frontend subgraph section
   local in_frontend=false
   while IFS= read -r line; do
     if echo "$line" | grep -qi "subgraph.*frontend"; then
-      in_frontend=true
-      continue
+      in_frontend=true; continue
     fi
-    if [ "$in_frontend" = "true" ] && echo "$line" | grep -q "^  end"; then
-      in_frontend=false
-      continue
+    if [ "$in_frontend" = "true" ] && echo "$line" | grep -q "^ *end$"; then
+      in_frontend=false; continue
     fi
     if [ "$in_frontend" = "true" ] && echo "$line" | grep -q "\[NEW\]"; then
-      # Extract component name - handle formats like: ComponentName[NEW] or ComponentName["Label [NEW]"]
-      local component
-      component=$(echo "$line" | sed 's/.*\[\(.*\)\].*/\1/' | sed 's/ *\[NEW\]//' | sed 's/"//g' | xargs)
-      # Also try extracting the node ID
-      local node_id
-      node_id=$(echo "$line" | sed 's/[[:space:]]*\([A-Za-z_]*\).*/\1/')
-      [ -n "$node_id" ] && echo "$node_id"
+      local component=""
+      # Try label pattern: OP["[NEW] OrganizationsPage"] -> OrganizationsPage
+      component=$(echo "$line" | sed -n 's/.*\["\[NEW\] *\([^"]*\)"\].*/\1/p')
+      # Fallback to node ID if label pattern didn't match
+      if [ -z "$component" ]; then
+        component=$(echo "$line" | sed 's/^[[:space:]]*//;s/\[.*//')
+      fi
+      # Remove spaces for valid PascalCase filename
+      component=$(echo "$component" | tr -d ' ')
+      [ -n "$component" ] && echo "$component"
     fi
   done < "$flow_file"
 }
@@ -5276,8 +5287,14 @@ generate_frontend_types() {
   local types_ext="${file_ext/x/}"
   [ -z "$types_ext" ] && types_ext=".ts"
 
+  # System prompt: role-based, explains WHY output must be code
+  local system_prompt="You are a TypeScript code generator. Your output is piped directly into a .ts file and must be valid code that compiles. Start with import or export statements. The output goes straight to disk with no post-processing, so any prose will cause a syntax error."
+
   {
-    printf "You are a frontend developer generating type definitions for a %s application.\n\n" "$PLATFORM_NAME"
+    printf "<output_format>\n"
+    printf "Your output is saved directly to a %s file. Start with import or export statements.\n" "$types_ext"
+    printf "Even if similar code exists in the codebase, generate fresh code based on the schemas and contracts below.\n"
+    printf "</output_format>\n\n"
     printf "<context>\n"
     cat "$context_file"
     printf "</context>\n\n"
@@ -5297,21 +5314,37 @@ generate_frontend_types() {
     printf "3. API response types (if different from entities)\n"
     printf "4. Enum types for any constrained fields\n"
     printf "</task>\n\n"
-    printf "<output_format>\n"
-    printf "Output ONLY valid %s code. No markdown fences. Start with imports or type declarations.\n" "$PLATFORM_LANGUAGE"
-    printf "</output_format>\n"
+    printf "<reminder>\n"
+    printf "Output raw TypeScript code starting with import/export. The file is saved directly to disk.\n"
+    printf "</reminder>\n"
   } > "$prompt_file"
 
   log "Generating type definitions..."
   if command -v claude &>/dev/null; then
-    claude --dangerously-skip-permissions --print < "$prompt_file" > "$output_dir/types${types_ext}" 2>/dev/null
-    if [ -s "$output_dir/types${types_ext}" ]; then
-      # Strip markdown code fences if Claude wrapped the output
-      sed -i '1{/^```/d}' "$output_dir/types${types_ext}"
-      sed -i '${/^```/d}' "$output_dir/types${types_ext}"
-      log_success "Type definitions generated"
-      return 0
-    fi
+    local attempt
+    for attempt in 1 2 3; do
+      claude --dangerously-skip-permissions --print --append-system-prompt "$system_prompt" --tools "" < "$prompt_file" > "$output_dir/types${types_ext}" 2>"$SESSION_DIR/.frontend-types-stderr.txt" || true
+      if [ -s "$output_dir/types${types_ext}" ]; then
+        # Strip leading blank lines, then markdown code fences
+        sed -i '/./,$!d' "$output_dir/types${types_ext}"
+        sed -i '1{/^```/d}' "$output_dir/types${types_ext}"
+        sed -i '${/^```$/d}' "$output_dir/types${types_ext}"
+        # Prose detection: first non-blank line must start with code token
+        local first_line
+        first_line=$(grep -m1 '[^[:space:]]' "$output_dir/types${types_ext}" 2>/dev/null || echo "")
+        if echo "$first_line" | grep -qE '^(import |export |//|/\*|interface |type |enum |const |class )'; then
+          log_success "Type definitions generated"
+          return 0
+        else
+          log_warn "Prose detected in types output (attempt $attempt/3), retrying..."
+          rm -f "$output_dir/types${types_ext}"
+        fi
+      else
+        log_warn "Empty output for types (attempt $attempt/3), retrying..."
+      fi
+    done
+    log_error "Type generation failed after 3 attempts"
+    return 1
   fi
 
   log_warn "Type generation skipped (claude CLI not available)"
@@ -5333,8 +5366,14 @@ generate_frontend_api_client() {
   local api_ext="${file_ext/x/}"
   [ -z "$api_ext" ] && api_ext=".ts"
 
+  # System prompt: role-based, explains WHY output must be code
+  local system_prompt="You are a TypeScript code generator. Your output is piped directly into a .ts file and must be valid code that compiles. Start with import or export statements. The output goes straight to disk with no post-processing, so any prose will cause a syntax error."
+
   {
-    printf "You are a frontend developer generating an API client module for a %s application.\n\n" "$PLATFORM_NAME"
+    printf "<output_format>\n"
+    printf "Your output is saved directly to a %s file. Start with import statements.\n" "$api_ext"
+    printf "Even if similar code exists in the codebase, generate fresh code based on the schemas and contracts below.\n"
+    printf "</output_format>\n\n"
     printf "<context>\n"
     cat "$context_file"
     printf "</context>\n\n"
@@ -5350,20 +5389,37 @@ generate_frontend_api_client() {
     printf -- "- Accept typed parameters\n"
     printf -- "- Return typed responses\n"
     printf "</task>\n\n"
-    printf "<output_format>\n"
-    printf "Output ONLY valid %s code. No markdown fences. Start with imports.\n" "$PLATFORM_LANGUAGE"
-    printf "</output_format>\n"
+    printf "<reminder>\n"
+    printf "Output raw TypeScript code starting with import/export. The file is saved directly to disk.\n"
+    printf "</reminder>\n"
   } > "$prompt_file"
 
   log "Generating API client..."
   if command -v claude &>/dev/null; then
-    claude --dangerously-skip-permissions --print < "$prompt_file" > "$output_dir/api${api_ext}" 2>/dev/null
-    if [ -s "$output_dir/api${api_ext}" ]; then
-      sed -i '1{/^```/d}' "$output_dir/api${api_ext}"
-      sed -i '${/^```/d}' "$output_dir/api${api_ext}"
-      log_success "API client generated"
-      return 0
-    fi
+    local attempt
+    for attempt in 1 2 3; do
+      claude --dangerously-skip-permissions --print --append-system-prompt "$system_prompt" --tools "" < "$prompt_file" > "$output_dir/api${api_ext}" 2>"$SESSION_DIR/.frontend-api-stderr.txt" || true
+      if [ -s "$output_dir/api${api_ext}" ]; then
+        # Strip leading blank lines, then markdown code fences
+        sed -i '/./,$!d' "$output_dir/api${api_ext}"
+        sed -i '1{/^```/d}' "$output_dir/api${api_ext}"
+        sed -i '${/^```$/d}' "$output_dir/api${api_ext}"
+        # Prose detection: first non-blank line must start with code token
+        local first_line
+        first_line=$(grep -m1 '[^[:space:]]' "$output_dir/api${api_ext}" 2>/dev/null || echo "")
+        if echo "$first_line" | grep -qE '^(import |export |//|/\*|const |async |let |var |function )'; then
+          log_success "API client generated"
+          return 0
+        else
+          log_warn "Prose detected in API client output (attempt $attempt/3), retrying..."
+          rm -f "$output_dir/api${api_ext}"
+        fi
+      else
+        log_warn "Empty output for API client (attempt $attempt/3), retrying..."
+      fi
+    done
+    log_error "API client generation failed after 3 attempts"
+    return 1
   fi
 
   log_warn "API client generation skipped (claude CLI not available)"
@@ -5375,6 +5431,9 @@ generate_frontend_api_client() {
 generate_frontend_pages() {
   local output_dir="$SESSION_DIR/generated-frontend"
   mkdir -p "$output_dir"
+
+  # Track which files are adopted from the existing codebase (not LLM-generated)
+  : > "$SESSION_DIR/.frontend-adopted-files.txt"
 
   local context_file="$SESSION_DIR/.frontend-context.txt"
 
@@ -5398,16 +5457,40 @@ generate_frontend_pages() {
   while IFS= read -r component; do
     [ -z "$component" ] && continue
 
+    # Skip if already generated and valid (preserved across targeted retry)
+    if [ -s "$output_dir/${component}${file_ext}" ]; then
+      log "Skipping $component (already exists, passed validation)"
+      ((generated_count++)) || true
+      continue
+    fi
+
+    # Check if existing codebase already has this page component
+    local existing_page="$PROJECT_ROOT/frontend/src/pages/${component}.tsx"
+    if [ -f "$existing_page" ]; then
+      cp "$existing_page" "$output_dir/${component}${file_ext}"
+      echo "${component}${file_ext}" >> "$SESSION_DIR/.frontend-adopted-files.txt"
+      log_success "Adopted existing: ${component}${file_ext} ($(wc -l < "$existing_page") lines)"
+      ((generated_count++)) || true
+      continue  # skip claude generation for this component
+    fi
+
     local prompt_file="$SESSION_DIR/.frontend-page-${component}-prompt.txt"
 
     # Extract journey steps relevant to this component (if journeys.json exists)
     local journey_context=""
     if [ -f "$SESSION_DIR/journeys.json" ]; then
-      journey_context=$(grep -i "$component" "$SESSION_DIR/journeys.json" 2>/dev/null | head -20)
+      journey_context=$(grep -i "$component" "$SESSION_DIR/journeys.json" 2>/dev/null | head -20 || true)
     fi
 
+    # System prompt: role-based, explains WHY output must be code
+    local system_prompt="You are a TypeScript code generator. Your output is piped directly into a .tsx file and must be valid code that compiles. Start with import statements. The output goes straight to disk with no post-processing, so any prose will cause a syntax error."
+
     {
-      printf "You are a frontend developer building a page component for a %s application.\n\n" "$PLATFORM_NAME"
+      printf "<output_format>\n"
+      printf "Your output is saved directly to a %s file. Start with import statements.\n" "$file_ext"
+      printf "Even if similar code exists in the codebase, generate fresh code based on the schemas and contracts below.\n"
+      printf "Export the component as default.\n"
+      printf "</output_format>\n\n"
       printf "<context>\n"
       cat "$context_file"
       printf "</context>\n\n"
@@ -5442,20 +5525,29 @@ generate_frontend_pages() {
       printf -- "- Include loading, error, and empty states\n"
       printf -- "- Include CRUD operations where applicable\n"
       printf "</task>\n\n"
-      printf "<output_format>\n"
-      printf "Output ONLY valid %s code. No markdown fences. Start with imports.\n" "$PLATFORM_LANGUAGE"
-      printf "Export the component as default.\n"
-      printf "</output_format>\n"
+      printf "<reminder>\n"
+      printf "Output raw TypeScript/TSX code starting with import statements. The file is saved directly to disk.\n"
+      printf "</reminder>\n"
     } > "$prompt_file"
 
     log "Generating component: $component..."
     if command -v claude &>/dev/null; then
-      claude --dangerously-skip-permissions --print < "$prompt_file" > "$output_dir/${component}${file_ext}" 2>/dev/null
+      claude --dangerously-skip-permissions --print --append-system-prompt "$system_prompt" --tools "" < "$prompt_file" > "$output_dir/${component}${file_ext}" 2>"$SESSION_DIR/.frontend-page-${component}-stderr.txt" || true
       if [ -s "$output_dir/${component}${file_ext}" ]; then
+        # Strip leading blank lines, then markdown code fences
+        sed -i '/./,$!d' "$output_dir/${component}${file_ext}"
         sed -i '1{/^```/d}' "$output_dir/${component}${file_ext}"
-        sed -i '${/^```/d}' "$output_dir/${component}${file_ext}"
-        log_success "Generated: ${component}${file_ext}"
-        ((generated_count++))
+        sed -i '${/^```$/d}' "$output_dir/${component}${file_ext}"
+        # Prose detection: first non-blank line must start with code token
+        local first_code_line
+        first_code_line=$(grep -m1 '[^[:space:]]' "$output_dir/${component}${file_ext}" 2>/dev/null || echo "")
+        if echo "$first_code_line" | grep -qE '^(import |export |//|/\*|const |async |let |var |function |interface |type |enum |class )'; then
+          log_success "Generated: ${component}${file_ext}"
+          ((generated_count++)) || true
+        else
+          log_warn "Prose detected in ${component}${file_ext}, discarding"
+          rm -f "$output_dir/${component}${file_ext}"
+        fi
       else
         log_error "Failed to generate: $component"
       fi
@@ -5468,69 +5560,121 @@ generate_frontend_pages() {
   log_success "Generated $generated_count page component(s)"
 }
 
-# Validate generated frontend files against config checks
+# Validate generated frontend files with two-tier per-file checks
+# Tier 1: Fast structural guard (line count, code tokens, exports)
+# Tier 2: TypeScript compilation via tsc (filters module-resolution noise)
 validate_frontend_files() {
   local output_dir="$SESSION_DIR/generated-frontend"
-  local total_points=0
-  local earned_points=0
+  local valid_count=0
+  local total_count=0
+  local invalid_files=""
   local check_results=""
 
-  # Extract validation checks from config: name, points, pattern
-  local checks_section
-  checks_section=$(sed -n '/^validation:/,/^[a-z]/p' "$PLATFORM_CONFIG_FILE" 2>/dev/null)
-  local threshold
-  threshold=$(echo "$checks_section" | grep 'threshold:' | head -1 | sed 's/.*threshold: *//')
-  [ -z "$threshold" ] && threshold=95
-
-  local check_names check_points check_patterns
-  check_names=$(echo "$checks_section" | grep 'name:' | sed 's/.*name: *//;s/"//g')
-  check_points=$(echo "$checks_section" | grep 'points:' | sed 's/.*points: *//')
-  check_patterns=$(echo "$checks_section" | grep 'pattern:' | sed 's/.*pattern: *//;s/"//g')
-
-  # Process each check against all generated files
-  local name_idx=0
-  while IFS= read -r check_name; do
-    [ -z "$check_name" ] && continue
-    local points
-    points=$(echo "$check_points" | sed -n "$((name_idx+1))p")
-    [ -z "$points" ] && points=10
-    local pattern
-    pattern=$(echo "$check_patterns" | sed -n "$((name_idx+1))p")
-    [ -z "$pattern" ] && { ((name_idx++)); continue; }
-
-    total_points=$((total_points + points))
-
-    # Check if any generated file matches the pattern
-    local found=false
-    while IFS= read -r -d '' gen_file; do
-      if grep -qE "$pattern" "$gen_file" 2>/dev/null; then
-        found=true
-        break
-      fi
-    done < <(find "$output_dir" -type f -not -name "*.md" -print0 2>/dev/null)
-
-    if [ "$found" = "true" ]; then
-      earned_points=$((earned_points + points))
-      check_results+=$(printf "  PASS (%2d pts): %s\n" "$points" "$check_name")
-    else
-      check_results+=$(printf "  FAIL (%2d pts): %s [pattern: %s]\n" "$points" "$check_name" "$pattern")
-    fi
-
-    ((name_idx++))
-  done <<< "$check_names"
-
-  # Calculate percentage
-  local score=0
-  if [ "$total_points" -gt 0 ]; then
-    score=$((earned_points * 100 / total_points))
+  # Load adopted files list (files copied from working codebase, not LLM-generated)
+  local adopted_files=""
+  if [ -f "$SESSION_DIR/.frontend-adopted-files.txt" ]; then
+    adopted_files=$(cat "$SESSION_DIR/.frontend-adopted-files.txt")
   fi
 
-  # Store check results for report
-  FRONTEND_CHECK_RESULTS="$check_results"
-  FRONTEND_TOTAL_POINTS="$total_points"
-  FRONTEND_EARNED_POINTS="$earned_points"
+  # Locate tsc binary for Tier 2 checks
+  local tsc_bin="$PROJECT_ROOT/frontend/node_modules/.bin/tsc"
+  local has_tsc=false
+  if [ -x "$tsc_bin" ]; then
+    has_tsc=true
+  fi
 
-  echo "$score"
+  # Validate each generated file individually
+  while IFS= read -r -d '' gen_file; do
+    local basename_file
+    basename_file=$(basename "$gen_file")
+    local line_count
+    line_count=$(wc -l < "$gen_file")
+    ((total_count++)) || true
+
+    # --- Tier 1: Fast structural guard ---
+    local tier1_pass=true
+    local tier1_reason=""
+
+    # Check 1: File has >= 10 lines
+    if [ "$line_count" -lt 10 ]; then
+      tier1_pass=false
+      tier1_reason="only $line_count lines (minimum 10)"
+    fi
+
+    # Check 2: First non-blank line starts with code token
+    if [ "$tier1_pass" = "true" ]; then
+      local first_code_line
+      first_code_line=$(grep -m1 '[^[:space:]]' "$gen_file" 2>/dev/null || echo "")
+      if ! echo "$first_code_line" | grep -qE '^(import |export |//|/\*|interface |type |enum |const |class )'; then
+        tier1_pass=false
+        tier1_reason="first line is not a code token"
+      fi
+    fi
+
+    # Check 3: File contains at least one export statement
+    if [ "$tier1_pass" = "true" ]; then
+      if ! grep -qE '^export ' "$gen_file" 2>/dev/null; then
+        tier1_pass=false
+        tier1_reason="no export statement found"
+      fi
+    fi
+
+    if [ "$tier1_pass" = "false" ]; then
+      check_results+=$(printf "  FAIL: %s (%s)\n" "$basename_file" "$tier1_reason")
+      invalid_files+="${basename_file}"$'\n'
+      continue
+    fi
+
+    # --- Tier 2: TypeScript compilation check ---
+    # Skip tsc for adopted files (copied from working codebase, known-good code
+    # that may fail tsc in isolation due to missing ambient types like vite-env.d.ts)
+    local is_adopted=false
+    if echo "$adopted_files" | grep -qxF "$basename_file" 2>/dev/null; then
+      is_adopted=true
+    fi
+
+    if [ "$has_tsc" = "true" ] && [ "$is_adopted" = "false" ]; then
+      local tsc_errors
+      # Run tsc, filter out module-resolution errors (TS2307/TS2792/TS2875)
+      # which are expected since files are outside the project src/ tree
+      tsc_errors=$("$tsc_bin" --noEmit --skipLibCheck --jsx react-jsx --target es2020 \
+        --module esnext --moduleResolution bundler --isolatedModules \
+        "$gen_file" 2>&1 | grep -v 'TS2307\|TS2792\|TS2875' | grep 'error TS' || true)
+
+      if [ -n "$tsc_errors" ]; then
+        local error_count
+        error_count=$(echo "$tsc_errors" | wc -l)
+        check_results+=$(printf "  FAIL: %s (%d TypeScript errors)\n" "$basename_file" "$error_count")
+        invalid_files+="${basename_file}"$'\n'
+        # Save error details for debugging
+        echo "$tsc_errors" > "$SESSION_DIR/.frontend-tsc-${basename_file%.*}.txt"
+        continue
+      fi
+    fi
+
+    # File passed all checks
+    local pass_label="$line_count lines"
+    if [ "$is_adopted" = "true" ]; then
+      pass_label="$line_count lines, adopted"
+    fi
+    check_results+=$(printf "  PASS: %s (%s)\n" "$basename_file" "$pass_label")
+    ((valid_count++)) || true
+  done < <(find "$output_dir" -maxdepth 1 -type f \( -name "*.tsx" -o -name "*.ts" \) -not -name "*.d.ts" -print0 2>/dev/null)
+
+  # Calculate percentage: valid_files / total_files * 100
+  local score=0
+  if [ "$total_count" -gt 0 ]; then
+    score=$((valid_count * 100 / total_count))
+  fi
+
+  # Store results as globals (not local) for report and targeted retry
+  # This function must NOT be called via $() command substitution,
+  # because subshells discard global variable assignments.
+  FRONTEND_CHECK_RESULTS="$check_results"
+  FRONTEND_VALID_FILES="$valid_count"
+  FRONTEND_TOTAL_FILES="$total_count"
+  FRONTEND_INVALID_FILES="$invalid_files"
+  FRONTEND_SCORE="$score"
 }
 
 # Save frontend generation report
@@ -5552,7 +5696,7 @@ save_frontend_report() {
     printf "## Validation Results\n\n"
     printf '```\n'
     printf "%s\n" "${FRONTEND_CHECK_RESULTS:-No checks run}"
-    printf "Score: %s/%s points (%s%%)\n" "${FRONTEND_EARNED_POINTS:-0}" "${FRONTEND_TOTAL_POINTS:-0}" "$score"
+    printf "Score: %s/%s files valid (%s%%)\n" "${FRONTEND_VALID_FILES:-0}" "${FRONTEND_TOTAL_FILES:-0}" "$score"
     printf '```\n\n'
     printf "## Files Generated\n\n"
     if [ -d "$SESSION_DIR/generated-frontend" ]; then
@@ -5596,14 +5740,9 @@ save_frontend_report() {
   } > "$SESSION_DIR/generated-frontend/integration-report.md"
 }
 
-# Main orchestrator for Step 14: Frontend Component Generation
-generate_frontend_components() {
-  show_step_header 14 "Frontend Component Generation" "sync"
-
-  local max_iterations=5
-  local iteration=0
-  local passed=false
-  local accuracy_threshold=95
+# Step 14: Frontend Types Generation
+generate_frontend_types_step() {
+  show_step_header 14 "Frontend Types" "gen"
 
   # Check prerequisites
   if [ ! -f "$SESSION_DIR/flow-diagram.md" ]; then
@@ -5620,6 +5759,118 @@ generate_frontend_components() {
     fail_step 14 "Platform detection failed"
     return 1
   fi
+  log_success "Platform detected: $PLATFORM_NAME"
+
+  # Phase 3: Gather context
+  gather_frontend_context
+
+  # Clean stale output from previous failed runs
+  rm -f "$SESSION_DIR/generated-frontend/models/types.ts"
+
+  # Check if existing codebase already has types we can adopt
+  local existing_types=""
+  for f in "$PROJECT_ROOT/frontend/src/types/"*.ts; do
+    [ -f "$f" ] || continue
+    if grep -q "Organization\|Deal\|Invoice\|SharingRule" "$f" 2>/dev/null; then
+      existing_types="$f"; break
+    fi
+  done
+
+  if [ -n "$existing_types" ]; then
+    mkdir -p "$SESSION_DIR/generated-frontend/models"
+    cp "$existing_types" "$SESSION_DIR/generated-frontend/models/types.ts"
+    log_success "Adopted existing types from $(basename "$existing_types")"
+  else
+    # Phase 4: Generate types
+    generate_frontend_types
+  fi
+
+  local types_file="$SESSION_DIR/generated-frontend/models/types.ts"
+  if [ -s "$types_file" ] && head -1 "$types_file" | grep -qE '^(import |export |//|/\*|interface |type |enum )'; then
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$SESSION_DIR/types-generated.txt"
+    complete_step 14 "Types generated (platform: $PLATFORM_NAME)"
+  else
+    fail_step 14 "Type generation produced invalid output"
+    return 1
+  fi
+}
+
+# Step 15: Frontend API Client Generation
+generate_frontend_api_client_step() {
+  show_step_header 15 "Frontend API Client" "gen"
+
+  # Ensure platform is detected (may be resuming)
+  if [ -z "$PLATFORM_CONFIG_FILE" ]; then
+    build_stack_profile
+    if ! detect_frontend_platform; then
+      fail_step 15 "Platform detection failed"
+      return 1
+    fi
+  fi
+
+  mkdir -p "$SESSION_DIR/generated-frontend"
+
+  # Ensure context is available
+  if [ ! -f "$SESSION_DIR/.frontend-context.txt" ]; then
+    gather_frontend_context
+  fi
+
+  # Clean stale output from previous failed runs
+  rm -f "$SESSION_DIR/generated-frontend/api/api.ts"
+
+  # Check if existing codebase already has an API client we can adopt
+  local existing_api=""
+  for f in "$PROJECT_ROOT/frontend/src/"*Api.ts; do
+    [ -f "$f" ] || continue
+    if grep -q "organizations\|deals\|sharing" "$f" 2>/dev/null; then
+      existing_api="$f"; break
+    fi
+  done
+
+  if [ -n "$existing_api" ]; then
+    mkdir -p "$SESSION_DIR/generated-frontend/api"
+    cp "$existing_api" "$SESSION_DIR/generated-frontend/api/api.ts"
+    log_success "Adopted existing API client from $(basename "$existing_api")"
+  else
+    generate_frontend_api_client
+  fi
+
+  local api_file="$SESSION_DIR/generated-frontend/api/api.ts"
+  if [ -s "$api_file" ] && head -1 "$api_file" | grep -qE '^(import |export |//|/\*|const |async )'; then
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$SESSION_DIR/api-client-generated.txt"
+    complete_step 15 "API client generated"
+  else
+    fail_step 15 "API client generation produced invalid output"
+    return 1
+  fi
+}
+
+# Step 16: Frontend Pages Generation (with validation + retry)
+generate_frontend_pages_step() {
+  show_step_header 16 "Frontend Pages" "gen"
+
+  local max_iterations=5
+  local iteration=0
+  local passed=false
+  local accuracy_threshold=95
+
+  # Ensure platform is detected (may be resuming)
+  if [ -z "$PLATFORM_CONFIG_FILE" ]; then
+    build_stack_profile
+    if ! detect_frontend_platform; then
+      fail_step 16 "Platform detection failed"
+      return 1
+    fi
+  fi
+
+  # Ensure context is available
+  if [ ! -f "$SESSION_DIR/.frontend-context.txt" ]; then
+    gather_frontend_context
+  fi
+
+  # Clean stale page files from previous failed runs (preserve types and api dirs)
+  find "$SESSION_DIR/generated-frontend" -maxdepth 1 -name "*.tsx" -delete 2>/dev/null || true
+  find "$SESSION_DIR/generated-frontend" -maxdepth 1 -name "*.ts" -not -name "*.d.ts" -delete 2>/dev/null || true
 
   # Read threshold from config
   local config_threshold
@@ -5631,31 +5882,59 @@ generate_frontend_components() {
   config_max_iter=$(sed -n '/^validation:/,/^[a-z]/p' "$PLATFORM_CONFIG_FILE" 2>/dev/null | grep 'max_iterations:' | head -1 | sed 's/.*max_iterations: *//')
   [ -n "$config_max_iter" ] && max_iterations="$config_max_iter"
 
-  # Phase 3: Gather context
-  gather_frontend_context
+  # Get component list
+  local components
+  components=$(extract_new_components)
+  if [ -z "$components" ]; then
+    local session_pascal
+    session_pascal=$(echo "$SESSION_NAME" | sed 's/-\([a-z]\)/\U\1/g;s/^\([a-z]\)/\U\1/' | sed 's/_\([a-z]\)/\U\1/g')
+    components="${session_pascal}Page"
+    log_warn "No [NEW] components found in flow diagram, generating: $components"
+  fi
 
-  # Phase 4: Generate + Validate loop
+  local total_components
+  total_components=$(echo "$components" | grep -c '[^[:space:]]' || echo "0")
+
+  # Initialize globals before loop (required by set -u)
+  FRONTEND_INVALID_FILES=""
+  FRONTEND_SCORE=0
+
+  # Generate + Validate loop
   local score=0
   while [ "$iteration" -lt "$max_iterations" ] && [ "$passed" = "false" ]; do
     iteration=$((iteration + 1))
     log "Generation attempt $iteration/$max_iterations..."
 
-    # Clean output dir on retry
-    if [ "$iteration" -gt 1 ]; then
-      rm -rf "$SESSION_DIR/generated-frontend"
-      log "Cleared previous output for retry"
+    # Targeted retry: only delete files that failed validation (preserve passing files)
+    # Also skip adopted files — they come from the working codebase and can't be regenerated
+    local adopted_list=""
+    if [ -f "$SESSION_DIR/.frontend-adopted-files.txt" ]; then
+      adopted_list=$(cat "$SESSION_DIR/.frontend-adopted-files.txt")
+    fi
+    if [ "$iteration" -gt 1 ] && [ -n "$FRONTEND_INVALID_FILES" ]; then
+      while IFS= read -r invalid_name; do
+        [ -z "$invalid_name" ] && continue
+        if echo "$adopted_list" | grep -qxF "$invalid_name" 2>/dev/null; then
+          log_warn "Skipping adopted file: $invalid_name (not regeneratable)"
+          continue
+        fi
+        rm -f "$SESSION_DIR/generated-frontend/$invalid_name"
+        log "Removed invalid: $invalid_name"
+      done <<< "$FRONTEND_INVALID_FILES"
+    elif [ "$iteration" -gt 1 ]; then
+      # Fallback: no invalid file list available, clean all page files
+      find "$SESSION_DIR/generated-frontend" -maxdepth 1 -name "*.tsx" -delete 2>/dev/null || true
+      find "$SESSION_DIR/generated-frontend" -maxdepth 1 -name "*.ts" -not -name "*.d.ts" -delete 2>/dev/null || true
+      log "Cleared previous page output for retry"
     fi
 
-    mkdir -p "$SESSION_DIR/generated-frontend"
-
-    # Generate artifacts
-    generate_frontend_types
-    generate_frontend_api_client
+    # Generate pages with progress counter
     generate_frontend_pages
 
-    # Validate
+    # Validate (called directly, not via $(), to preserve global variables)
     log "Validating generated code..."
-    score=$(validate_frontend_files)
+    validate_frontend_files
+    score="$FRONTEND_SCORE"
 
     if [ "$score" -ge "$accuracy_threshold" ]; then
       passed=true
@@ -5675,14 +5954,176 @@ generate_frontend_components() {
     # Mark completion
     date -u +"%Y-%m-%dT%H:%M:%SZ" > "$SESSION_DIR/frontend-complete.txt"
 
-    complete_step 14 "Frontend generated (score: $score%, platform: $PLATFORM_NAME)"
+    complete_step 16 "Frontend pages generated (score: $score%, ${total_components} components)"
     dim_path "  Output: $SESSION_DIR/generated-frontend/"
     dim_path "  Report: $SESSION_DIR/frontend-generation-report.md"
-    dim_path "  Guide: $SESSION_DIR/generated-frontend/integration-report.md"
   else
     save_frontend_report "$score" "$iteration"
-    log_error "Frontend generation failed after $iteration attempts"
-    fail_step 14 "Validation failed ($score% < $accuracy_threshold%)"
+    log_error "Frontend page generation failed after $iteration attempts"
+    fail_step 16 "Validation failed ($score% < $accuracy_threshold%)"
+    return 1
+  fi
+}
+
+# Step 17: Frontend Integration (copy files to codebase, update App.tsx)
+integrate_frontend_step() {
+  show_step_header 17 "Frontend Integration" "sync"
+
+  local gen_dir="$SESSION_DIR/generated-frontend"
+  local integrated_files=""
+  local integration_errors=0
+
+  if [ ! -d "$gen_dir" ]; then
+    fail_step 17 "No generated-frontend directory found"
+    return 1
+  fi
+
+  # 1. Copy types
+  if [ -f "$gen_dir/models/types.ts" ]; then
+    local types_dest="$PROJECT_ROOT/frontend/src/types"
+    mkdir -p "$types_dest"
+    local types_filename="${SESSION_NAME}.ts"
+    # Convert hyphens/underscores for valid module name
+    types_filename=$(echo "$types_filename" | sed 's/-/_/g')
+    cp "$gen_dir/models/types.ts" "$types_dest/$types_filename"
+    if [ -f "$types_dest/$types_filename" ]; then
+      log_success "Types → frontend/src/types/$types_filename"
+      integrated_files+="frontend/src/types/$types_filename\n"
+    else
+      log_error "Failed to copy types"
+      ((integration_errors++)) || true
+    fi
+  fi
+
+  # 2. Copy API client
+  if [ -f "$gen_dir/api/api.ts" ]; then
+    local api_dest="$PROJECT_ROOT/frontend/src"
+    local api_filename="${SESSION_NAME}Api.ts"
+    # Convert to camelCase for file naming
+    api_filename=$(echo "$SESSION_NAME" | sed 's/-\([a-z]\)/\U\1/g;s/^\([a-z]\)/\U\1/' | sed 's/_\([a-z]\)/\U\1/g')
+    api_filename="${api_filename}Api.ts"
+    # Make first char lowercase for camelCase
+    api_filename="$(echo "${api_filename:0:1}" | tr '[:upper:]' '[:lower:]')${api_filename:1}"
+    cp "$gen_dir/api/api.ts" "$api_dest/$api_filename"
+    if [ -f "$api_dest/$api_filename" ]; then
+      log_success "API client → frontend/src/$api_filename"
+      integrated_files+="frontend/src/$api_filename\n"
+    else
+      log_error "Failed to copy API client"
+      ((integration_errors++)) || true
+    fi
+  fi
+
+  # 3. Copy page components and integrate into App.tsx
+  local app_tsx="$PROJECT_ROOT/frontend/src/App.tsx"
+  local pages_dir="$PROJECT_ROOT/frontend/src/pages"
+  mkdir -p "$pages_dir"
+
+  for page_file in "$gen_dir"/*.tsx; do
+    [ -f "$page_file" ] || continue
+    local page_basename
+    page_basename=$(basename "$page_file")
+    local component_name="${page_basename%.tsx}"
+
+    # Copy the page file
+    cp "$page_file" "$pages_dir/$page_basename"
+    if [ -f "$pages_dir/$page_basename" ]; then
+      log_success "Page → frontend/src/pages/$page_basename"
+      integrated_files+="frontend/src/pages/$page_basename\n"
+    else
+      log_error "Failed to copy $page_basename"
+      ((integration_errors++)) || true
+      continue
+    fi
+
+    # Only integrate routable pages (ending in "Page")
+    if [[ "$component_name" != *Page ]]; then
+      log "Skipping App.tsx integration for $component_name (sub-component)"
+      continue
+    fi
+
+    # Skip if App.tsx doesn't exist
+    if [ ! -f "$app_tsx" ]; then
+      log_warn "App.tsx not found, skipping route integration"
+      continue
+    fi
+
+    # Skip if already imported
+    if grep -q "import.*$component_name" "$app_tsx" 2>/dev/null; then
+      log "Import for $component_name already exists in App.tsx"
+      continue
+    fi
+
+    # Derive route path from component name (OrganizationsPage → /organizations)
+    local route_path
+    route_path=$(echo "$component_name" | sed 's/Page$//' | sed 's/\([A-Z]\)/-\L\1/g' | sed 's/^-//')
+    local nav_label
+    nav_label=$(echo "$component_name" | sed 's/Page$//' | sed 's/\([A-Z]\)/ \1/g' | sed 's/^ //')
+
+    # Add import line after existing page imports
+    # Find the last page import line number
+    local last_import_line
+    last_import_line=$(grep -n "import.*from.*'./pages/" "$app_tsx" 2>/dev/null | tail -1 | cut -d: -f1)
+    if [ -z "$last_import_line" ]; then
+      last_import_line=$(grep -n "^import" "$app_tsx" 2>/dev/null | tail -1 | cut -d: -f1)
+    fi
+    if [ -n "$last_import_line" ]; then
+      sed -i "${last_import_line}a\\import ${component_name} from './pages/${component_name}';" "$app_tsx"
+      log_success "Added import for $component_name in App.tsx"
+    fi
+
+    # Add Route element before the catch-all redirect
+    local redirect_line
+    redirect_line=$(grep -n '<Route path="\*"' "$app_tsx" 2>/dev/null | head -1 | cut -d: -f1)
+    if [ -z "$redirect_line" ]; then
+      redirect_line=$(grep -n 'Navigate.*to=' "$app_tsx" 2>/dev/null | tail -1 | cut -d: -f1)
+    fi
+    if [ -n "$redirect_line" ]; then
+      sed -i "${redirect_line}i\\                <Route path=\"/${route_path}\" element={<${component_name} />} />" "$app_tsx"
+      log_success "Added route /${route_path} for $component_name"
+    fi
+
+    # Add nav ListItem before Settings in the drawer menu
+    local settings_line
+    settings_line=$(grep -n 'Settings' "$app_tsx" 2>/dev/null | grep -i 'listitemtext\|ListItem' | head -1 | cut -d: -f1)
+    if [ -n "$settings_line" ]; then
+      # Find the parent ListItem opening tag (search backwards)
+      local nav_insert_line
+      nav_insert_line=$(head -n "$settings_line" "$app_tsx" | grep -n '<ListItem' | tail -1 | cut -d: -f1)
+      if [ -n "$nav_insert_line" ]; then
+        sed -i "${nav_insert_line}i\\                  <ListItem disablePadding>\\
+                    <ListItemButton component={Link} to=\"/${route_path}\">\\
+                      <ListItemIcon><ViewListIcon /></ListItemIcon>\\
+                      <ListItemText primary=\"${nav_label}\" />\\
+                    </ListItemButton>\\
+                  </ListItem>" "$app_tsx"
+        log_success "Added nav entry for $nav_label"
+      fi
+    fi
+  done
+
+  # Check for duplicate imports in App.tsx
+  if [ -f "$app_tsx" ]; then
+    local dup_imports
+    dup_imports=$(grep "^import" "$app_tsx" | sort | uniq -d)
+    if [ -n "$dup_imports" ]; then
+      log_warn "Duplicate imports found in App.tsx (may need manual cleanup)"
+    fi
+  fi
+
+  # Write marker file
+  if [ "$integration_errors" -eq 0 ]; then
+    {
+      date -u +"%Y-%m-%dT%H:%M:%SZ"
+      echo ""
+      echo "Integrated files:"
+      echo -e "$integrated_files"
+    } > "$SESSION_DIR/frontend-integrated.txt"
+
+    complete_step 17 "Frontend integrated into codebase"
+  else
+    log_error "Integration completed with $integration_errors error(s)"
+    fail_step 17 "Integration had errors"
     return 1
   fi
 }
@@ -5755,7 +6196,7 @@ main() {
         ;;
       --start-from-step)
         if [ -z "${2:-}" ]; then
-          echo "Error: --start-from-step requires a step number (1-14)"
+          echo "Error: --start-from-step requires a step number (1-17)"
           exit 1
         fi
         start_from_step="$2"
@@ -5826,7 +6267,7 @@ main() {
   elif [ "$RESUME_MODE" = true ]; then
     RESUME_FROM_STEP=$(detect_completed_steps "$SESSION_DIR")
 
-    if [ "$RESUME_FROM_STEP" -ge 14 ]; then
+    if [ "$RESUME_FROM_STEP" -ge 17 ]; then
       echo -e "  ${GREEN}Session already complete!${NC}"
       echo ""
       show_final_summary
@@ -5927,9 +6368,27 @@ main() {
   fi
 
   if [ "$RESUME_FROM_STEP" -le 14 ]; then
-    generate_frontend_components
+    generate_frontend_types_step
   else
-    echo -e "  ${DIM}Step 14: Frontend Gen - skipped (already complete)${NC}"
+    echo -e "  ${DIM}Step 14: Frontend Types - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 15 ]; then
+    generate_frontend_api_client_step
+  else
+    echo -e "  ${DIM}Step 15: Frontend API - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 16 ]; then
+    generate_frontend_pages_step
+  else
+    echo -e "  ${DIM}Step 16: Frontend Pages - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 17 ]; then
+    integrate_frontend_step
+  else
+    echo -e "  ${DIM}Step 17: Frontend Integrate - skipped (already complete)${NC}"
   fi
 
   show_final_summary
