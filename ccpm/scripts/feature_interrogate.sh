@@ -6422,7 +6422,7 @@ generate_personas_step() {
 
   if [ "$persona_table_exists" != "t" ]; then
     log "Running persona migrations..."
-    for mig in backend/migrations/037_persona_table.sql backend/migrations/038_test_results_table.sql; do
+    for mig in backend/migrations/039_persona_table.sql backend/migrations/040_test_results_table.sql; do
       if [ -f "$PROJECT_ROOT/$mig" ]; then
         $db_cmd psql -U postgres -d cattle_erp -f - < "$PROJECT_ROOT/$mig" 2>/dev/null || true
       fi
