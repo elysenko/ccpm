@@ -304,6 +304,25 @@ tl_check_test_prerequisites() {
     tl_log_warn "Backend health check failed — tests may have connectivity issues"
   fi
 
+  # 6. Persona RBAC privileges — fail if any persona has zero privileges
+  local zero_priv_count
+  zero_priv_count=$(echo "
+    SELECT count(*) FROM users u
+    WHERE u.email LIKE 'test+persona%'
+      AND NOT EXISTS (
+        SELECT 1 FROM user_group_members ugm
+        JOIN group_privileges gp ON gp.group_id = ugm.group_id AND gp.granted = true
+        WHERE ugm.user_id = u.id
+      );
+  " | tl_db_query) || true
+
+  if [ "${zero_priv_count:-0}" -gt 0 ]; then
+    tl_log_error "${zero_priv_count} persona(s) have ZERO RBAC privileges — RBAC groups/memberships/grants missing. Re-run Step 19."
+    ok=false
+  else
+    tl_log "All test personas have RBAC privileges"
+  fi
+
   if [ "$ok" = "false" ]; then
     return 1
   fi

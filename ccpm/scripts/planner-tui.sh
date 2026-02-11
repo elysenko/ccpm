@@ -101,7 +101,7 @@ VIEW_MODE="all"  # "all" or "session"
 SHOW_ARCHIVED=false  # Toggle to show archived tasks
 
 # Feature interrogate pipeline step count
-TOTAL_PIPELINE_STEPS=19
+TOTAL_PIPELINE_STEPS=20
 
 # Get terminal size
 get_term_size() {
@@ -1862,6 +1862,7 @@ view_action_feature_status() {
     "Frontend Integrate"
     "Build Codebase"
     "Test Personas"
+    "Journey Tests"
   )
 
   local -a step_files=(
@@ -1884,6 +1885,7 @@ view_action_feature_status() {
     "frontend-integrated.txt"
     "build-deployed.txt"
     "personas-generated.txt"
+    "test-feedback-generated.txt"
   )
 
   printf "${BOLD}Pipeline Progress:${RESET}\n"
@@ -2787,7 +2789,7 @@ check_interrogate_status() {
   fi
 
   # Check for final step completion - true end of pipeline
-  if [ -f "$research_dir/personas-generated.txt" ]; then
+  if [ -f "$research_dir/test-feedback-generated.txt" ]; then
     echo "complete"
   elif [ -f "$research_dir/pre-context.md" ]; then
     echo "in_progress"
@@ -2823,6 +2825,7 @@ view_action_select_step() {
     "Step 17: Frontend Integrate"
     "Step 18: Build Codebase"
     "Step 19: Test Personas"
+    "Step 20: Journey Tests"
   )
 
   # Build menu with status indicators
@@ -3000,6 +3003,7 @@ view_action_resume_interrogate() {
     "frontend-integrated.txt"
     "build-deployed.txt"
     "personas-generated.txt"
+    "test-feedback-generated.txt"
   )
 
   local next_step=1

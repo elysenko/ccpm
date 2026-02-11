@@ -144,6 +144,10 @@ insert_journey() {
   preconditions=$(echo "$preconditions" | sed "s/'/''/g")
   postconditions=$(echo "$postconditions" | sed "s/'/''/g")
 
+  # Extract required_privileges (array of privilege codes)
+  local required_privs
+  required_privs=$(echo "$journey_json" | jq -c '.required_privileges // []')
+
   # Use upsert function
   local journey_id
   journey_id=$(db_exec "SELECT upsert_journey(
@@ -158,6 +162,12 @@ insert_journey() {
     NULLIF('$complexity', ''),
     'generated'
   );")
+
+  # Update required_privileges (upsert_journey doesn't accept this param)
+  if [ "$required_privs" != "[]" ] && [ -n "$required_privs" ]; then
+    db_exec "UPDATE journey SET required_privileges = ARRAY(SELECT jsonb_array_elements_text('$required_privs'::jsonb))
+             WHERE session_name='$session_name' AND name='$name';" 2>/dev/null || true
+  fi
 
   echo "$journey_id"
 }
@@ -285,6 +295,10 @@ PROMPT_MID1_EOF
 </flow_diagram>
 
 <session_name>$session_name</session_name>
+
+<privilege_map>
+Available privilege codes: admin.all, inventory.view, inventory.edit, inventory.create, inventory.delete, vendors.view, vendors.edit, vendors.create, vendors.delete, orders.view, orders.edit, orders.create, orders.update, orders.delete, orders.approve, orders.workflow, kanban.view, kanban.edit, organizations.view, organizations.create, organizations.edit, organizations.delete, invoices.view, invoices.create, invoices.edit, invoices.delete, users.view, users.edit, users.delete, reports.view, reports.export
+</privilege_map>
 </context>
 
 <task>
@@ -320,7 +334,8 @@ Respond with ONLY valid JSON. No markdown, no explanation.
       "frequency": "daily|weekly|monthly|occasional",
       "complexity": "simple|moderate|complex",
       "estimated_duration": "e.g., 2 minutes",
-      "priority": "high|medium|low"
+      "priority": "high|medium|low",
+      "required_privileges": ["organizations.view", "organizations.edit"]
     }
   ]
 }
@@ -334,6 +349,9 @@ Respond with ONLY valid JSON. No markdown, no explanation.
 - Minimum 3 journeys, maximum 15 journeys
 - Journey names must be unique and use verb-noun format
 - Prefix any inferred/assumed information with "[INFERRED]"
+- Each journey MUST include required_privileges — the privilege codes from the privilege_map that a user needs to complete the journey
+- Map journey actions to privilege codes: viewing pages needs *.view, creating resources needs *.create or *.edit, deleting needs *.delete
+- Include organizations.view for any journey that accesses organization-scoped data
 </constraints>
 
 <examples>
@@ -348,7 +366,8 @@ Output journey:
   "preconditions": "User is authenticated, User has no organization",
   "postconditions": "Organization exists, User is owner",
   "frequency": "occasional",
-  "complexity": "simple"
+  "complexity": "simple",
+  "required_privileges": ["organizations.view", "organizations.create", "organizations.edit"]
 }
 </example>
 </examples>

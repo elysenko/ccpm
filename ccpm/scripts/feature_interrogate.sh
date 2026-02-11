@@ -4995,9 +4995,15 @@ def esc_jsonb(v):
     return \"'\" + json.dumps(v).replace(\"'\", \"''\") + \"'::jsonb\"
 
 for j in journeys:
-    print(f'''INSERT INTO journey (session_name, journey_id, name, actor, actor_description, trigger_event, goal, preconditions, postconditions, success_criteria, exception_paths, frequency, complexity, estimated_duration, priority, confirmation_status)
-VALUES ({esc(session)}, {esc(j.get('journey_id'))}, {esc(j.get('name'))}, {esc(j.get('actor'))}, {esc(j.get('actor_description'))}, {esc(j.get('trigger_event'))}, {esc(j.get('goal'))}, {esc(j.get('preconditions'))}, {esc(j.get('postconditions'))}, {esc_jsonb(j.get('success_criteria'))}, {esc_jsonb(j.get('exception_paths'))}, {esc(j.get('frequency'))}, {esc(j.get('complexity'))}, {esc(j.get('estimated_duration'))}, {esc(j.get('priority'))}, 'confirmed')
-ON CONFLICT (session_name, name) DO NOTHING;''')
+    # Build required_privileges array literal
+    rp = j.get('required_privileges', [])
+    if rp and isinstance(rp, list):
+        rp_sql = "ARRAY[" + ",".join(f"'{p}'" for p in rp) + "]::text[]"
+    else:
+        rp_sql = "'{}'::text[]"
+    print(f'''INSERT INTO journey (session_name, journey_id, name, actor, actor_description, trigger_event, goal, preconditions, postconditions, success_criteria, exception_paths, frequency, complexity, estimated_duration, priority, confirmation_status, required_privileges)
+VALUES ({esc(session)}, {esc(j.get('journey_id'))}, {esc(j.get('name'))}, {esc(j.get('actor'))}, {esc(j.get('actor_description'))}, {esc(j.get('trigger_event'))}, {esc(j.get('goal'))}, {esc(j.get('preconditions'))}, {esc(j.get('postconditions'))}, {esc_jsonb(j.get('success_criteria'))}, {esc_jsonb(j.get('exception_paths'))}, {esc(j.get('frequency'))}, {esc(j.get('complexity'))}, {esc(j.get('estimated_duration'))}, {esc(j.get('priority'))}, 'confirmed', {rp_sql})
+ON CONFLICT (session_name, name) DO UPDATE SET required_privileges = EXCLUDED.required_privileges;''')
 " 2>/dev/null | db_exec 2>/dev/null || true
 
       local inserted_count
@@ -6453,7 +6459,8 @@ generate_personas_step() {
 
   if [ "${group_count:-0}" -lt 5 ]; then
     log "Creating persona RBAC groups..."
-    $db_cmd psql -U "$DB_USER" -d "$DB_NAME" -c "
+    local group_output
+    group_output=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -c "
 DO \$\$
 DECLARE
   admin_id UUID;
@@ -6463,20 +6470,33 @@ BEGIN
     SELECT id INTO admin_id FROM users WHERE is_admin = true LIMIT 1;
   END IF;
 
-  -- Create groups (idempotent via ON CONFLICT)
-  INSERT INTO user_groups (name, description, is_active, created_by) VALUES
-    ('persona-ranch-owners', 'Ranch owners with full admin access', true, admin_id),
-    ('persona-ranch-operations', 'Ranch foremen and feedlot operators', true, admin_id),
-    ('persona-ranch-hands', 'Ranch hands with limited access', true, admin_id),
-    ('persona-buyers', 'Livestock buyers', true, admin_id),
-    ('persona-office-staff', 'Office managers and administrators', true, admin_id),
-    ('persona-read-only', 'Read-only access for external reps', true, admin_id)
+  -- Create groups with explicit UUIDs (idempotent via ON CONFLICT)
+  INSERT INTO user_groups (id, name, description, is_active, created_by) VALUES
+    (gen_random_uuid(), 'persona-ranch-owners', 'Ranch owners with full admin access', true, admin_id),
+    (gen_random_uuid(), 'persona-ranch-operations', 'Ranch foremen and feedlot operators', true, admin_id),
+    (gen_random_uuid(), 'persona-ranch-hands', 'Ranch hands with limited access', true, admin_id),
+    (gen_random_uuid(), 'persona-buyers', 'Livestock buyers', true, admin_id),
+    (gen_random_uuid(), 'persona-office-staff', 'Office managers and administrators', true, admin_id),
+    (gen_random_uuid(), 'persona-read-only', 'Read-only access for external reps', true, admin_id)
   ON CONFLICT (name) DO NOTHING;
 END \$\$;
-" 2>/dev/null || true
-    log_success "RBAC groups created"
+" 2>&1) || true
+
+    # Verify groups were actually created
+    local post_group_count
+    post_group_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+      "SELECT count(*) FROM user_groups WHERE name LIKE 'persona-%';" 2>/dev/null) || true
+
+    if [ "${post_group_count:-0}" -ge 5 ]; then
+      log_success "RBAC groups created ($post_group_count groups)"
+    else
+      log_error "RBAC group creation may have failed (only ${post_group_count:-0} groups found)"
+      if [ -n "$group_output" ]; then
+        log_error "DB output: $(echo "$group_output" | head -5)"
+      fi
+    fi
   else
-    log "Persona RBAC groups already exist — skipping"
+    log "Persona RBAC groups already exist ($group_count found) — skipping"
   fi
 
   # ── Phase C: Confirm journeys ────────────────────────────────────────────
@@ -6664,7 +6684,8 @@ for p in personas:
 
   if [ "${membership_count:-0}" -lt 10 ]; then
     log "Assigning RBAC group memberships..."
-    $db_cmd psql -U "$DB_USER" -d "$DB_NAME" -c "
+    local membership_output
+    membership_output=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -c "
 DO \$\$
 DECLARE
   admin_id UUID;
@@ -6692,14 +6713,29 @@ BEGIN
     SELECT id INTO target_group_id FROM user_groups WHERE name = group_map[i][2] LIMIT 1;
 
     IF target_user_id IS NOT NULL AND target_group_id IS NOT NULL THEN
-      INSERT INTO user_group_members (user_id, group_id, assigned_by)
-      VALUES (target_user_id, target_group_id, admin_id)
+      INSERT INTO user_group_members (id, user_id, group_id, assigned_at, assigned_by)
+      VALUES (gen_random_uuid(), target_user_id, target_group_id, NOW(), admin_id)
       ON CONFLICT DO NOTHING;
     END IF;
   END LOOP;
 END \$\$;
-" 2>/dev/null || true
-    log_success "RBAC group memberships assigned"
+" 2>&1) || true
+
+    # Verify memberships were created
+    local post_membership_count
+    post_membership_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+      "SELECT count(*) FROM user_group_members ugm
+       JOIN users u ON u.id = ugm.user_id
+       WHERE u.email LIKE 'test+persona%';" 2>/dev/null) || true
+
+    if [ "${post_membership_count:-0}" -ge 8 ]; then
+      log_success "RBAC group memberships assigned ($post_membership_count memberships)"
+    else
+      log_error "RBAC membership assignment may have failed (only ${post_membership_count:-0} memberships)"
+      if echo "$membership_output" | grep -qi "error"; then
+        log_error "DB output: $(echo "$membership_output" | grep -i "error" | head -3)"
+      fi
+    fi
   else
     log "RBAC memberships already assigned ($membership_count found) — skipping"
   fi
@@ -6709,7 +6745,18 @@ END \$\$;
   #   1. The privilege code exists in user_privileges (FK target)
   #   2. The code is granted to the user's group in group_privileges
   log "Ensuring all privilege codes exist and granting to persona groups..."
-  $db_cmd psql -U "$DB_USER" -d "$DB_NAME" << 'PRIV_SQL_EOF'
+
+  # Ensure UUID defaults exist on RBAC tables (some deployments lack them)
+  $db_cmd psql -U "$DB_USER" -d "$DB_NAME" -c "
+    ALTER TABLE user_group_members ALTER COLUMN id SET DEFAULT gen_random_uuid();
+    ALTER TABLE user_group_members ALTER COLUMN assigned_at SET DEFAULT NOW();
+    ALTER TABLE group_privileges ALTER COLUMN id SET DEFAULT gen_random_uuid();
+    ALTER TABLE group_privileges ALTER COLUMN granted SET DEFAULT true;
+    ALTER TABLE group_privileges ALTER COLUMN granted_at SET DEFAULT NOW();
+  " 2>/dev/null || true
+
+  local priv_output
+  priv_output=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" << 'PRIV_SQL_EOF'
 DO $$
 DECLARE
   admin_id UUID;
@@ -6758,7 +6805,10 @@ BEGIN
     (gen_random_uuid(), 'gorgias.view',        'View Gorgias',          'gorgias',   'View Gorgias integration',            true),
     (gen_random_uuid(), 'gorgias.admin',       'Admin Gorgias',         'gorgias',   'Admin Gorgias integration',           true),
     (gen_random_uuid(), 'gorgias.sync',        'Sync Gorgias',          'gorgias',   'Sync Gorgias data',                   true)
-  ON CONFLICT (code) DO NOTHING;
+  ON CONFLICT (code) DO UPDATE SET is_active = COALESCE(EXCLUDED.is_active, true);
+
+  -- Fix any privilege codes with NULL is_active (from earlier migrations)
+  UPDATE user_privileges SET is_active = true WHERE is_active IS NULL;
 
   -- Step 2: Grant privileges to each persona group
   -- Pattern: for each (group_name, privilege_code) pair, insert if not exists
@@ -6857,6 +6907,11 @@ BEGIN
 
 END $$;
 PRIV_SQL_EOF
+  ) || true
+
+  if echo "$priv_output" | grep -qi "error"; then
+    log_error "Privilege grant had errors: $(echo "$priv_output" | grep -i "error" | head -3)"
+  fi
 
   # Verify privileges were granted
   local priv_count
@@ -6917,6 +6972,69 @@ print(sql)
     log_success "Personas inserted into database"
   else
     log "Personas already in database ($persona_db_count found) — skipping"
+  fi
+
+  # ── Phase I: Validate persona↔journey privilege coverage ────────────────
+  # Runs after persona insertion so persona table is populated
+  log "Validating persona↔journey privilege coverage..."
+  local coverage_issues
+  coverage_issues=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc "
+    WITH persona_privs AS (
+      SELECT u.email,
+             COALESCE(array_agg(DISTINCT gp.privilege_code::text) FILTER (WHERE gp.privilege_code IS NOT NULL), ARRAY[]::text[]) AS granted
+      FROM users u
+      LEFT JOIN user_group_members ugm ON ugm.user_id = u.id
+      LEFT JOIN group_privileges gp ON gp.group_id = ugm.group_id AND gp.granted = true
+      WHERE u.email LIKE 'test+persona%'
+      GROUP BY u.email
+    )
+    SELECT replace(pp.email, '@cattle-erp.com', '')
+           || ' missing [' || array_to_string(
+             ARRAY(SELECT unnest(j.required_privileges) EXCEPT SELECT unnest(pp.granted)),
+             ', ')
+           || '] for ' || j.journey_id || ' \"' || j.name || '\"'
+    FROM persona_privs pp
+    CROSS JOIN journey j
+    WHERE j.session_name = '$SESSION_NAME'
+      AND j.required_privileges IS NOT NULL
+      AND array_length(j.required_privileges, 1) > 0
+      AND NOT (j.required_privileges <@ pp.granted)
+    ORDER BY pp.email, j.journey_id;
+  " 2>/dev/null) || true
+
+  if [ -n "$coverage_issues" ] && [ "$coverage_issues" != "" ]; then
+    local issue_count=0
+    while IFS= read -r line; do
+      line=$(echo "$line" | xargs)
+      [ -z "$line" ] && continue
+      log_warn "$line"
+      ((issue_count++)) || true
+    done <<< "$coverage_issues"
+    log_warn "Found $issue_count persona↔journey privilege gaps (some may be intentional for denied-access testing)"
+  else
+    log_success "All persona↔journey privilege mappings validated"
+  fi
+
+  # Also check for zero-privilege personas (clearly a bug, not intentional)
+  local zero_priv_personas
+  zero_priv_personas=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc "
+    SELECT u.email FROM users u
+    WHERE u.email LIKE 'test+persona%'
+      AND NOT EXISTS (
+        SELECT 1 FROM user_group_members ugm
+        JOIN group_privileges gp ON gp.group_id = ugm.group_id AND gp.granted = true
+        WHERE ugm.user_id = u.id
+      )
+    ORDER BY u.email;
+  " 2>/dev/null) || true
+
+  if [ -n "$zero_priv_personas" ] && [ "$zero_priv_personas" != "" ]; then
+    log_error "Personas with ZERO privileges (RBAC broken):"
+    while IFS= read -r line; do
+      line=$(echo "$line" | xargs)
+      [ -z "$line" ] && continue
+      log_error "  $line"
+    done <<< "$zero_priv_personas"
   fi
 
   # ── Write backup and marker ──────────────────────────────────────────────
