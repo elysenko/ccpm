@@ -7,7 +7,7 @@
 # Usage:
 #   ./feature_interrogate.sh [session-name]
 #
-# Pipeline (18 steps):
+# Pipeline (20 steps):
 #   1. repo-research     → Understand the repository structure
 #   2. user-input        → Get feature description from user
 #   3. context-research  → Deep research (/dr) to understand the domain (NEW)
@@ -26,6 +26,8 @@
 #  16. frontend-pages    → Generate page components with validation + retry
 #  17. frontend-integrate → Copy files to codebase, add routes + nav to App.tsx
 #  18. build-deploy      → Build Docker images, push to registry, deploy to K8s
+#  19. test-personas     → Generate synthetic personas and register test users
+#  20. journey-tests     → Run persona journey tests (explicit + general modes)
 #
 # Output:
 #   .claude/RESEARCH/{session}/ - Research files
@@ -72,14 +74,62 @@ readonly BOX_BR='┘'
 readonly BOX_L='├'
 readonly BOX_R='┤'
 
+# ── Database Configuration (loaded from .env) ─────────────────────────────────
+# Loads DB_HOST, DB_PORT, DB_USER, DB_NAME, DB_PASSWORD from .env
+# Falls back to K8s secret query, then hardcoded defaults
+load_db_config() {
+  local env_file=""
+  if [ -f "$PROJECT_ROOT/.env" ]; then
+    env_file="$PROJECT_ROOT/.env"
+  elif [ -f "$PROJECT_ROOT/../.env" ]; then
+    env_file="$PROJECT_ROOT/../.env"
+  fi
+
+  if [ -n "$env_file" ]; then
+    DB_HOST=$(grep -m1 '^DB_HOST=' "$env_file" | cut -d= -f2- || true)
+    DB_PORT=$(grep -m1 '^DB_PORT=' "$env_file" | cut -d= -f2- || true)
+    DB_USER=$(grep -m1 '^DB_USER=' "$env_file" | cut -d= -f2- || true)
+    DB_NAME=$(grep -m1 '^DB_NAME=' "$env_file" | cut -d= -f2- || true)
+    DB_PASSWORD=$(grep -m1 '^DB_PASSWORD=' "$env_file" | cut -d= -f2- || true)
+  fi
+
+  # Fallback: query K8s secret if password missing
+  if [ -z "${DB_PASSWORD:-}" ]; then
+    DB_PASSWORD=$(kubectl get secret cattle-erp-postgresql -n cattle-erp \
+      -o jsonpath='{.data.postgres-password}' 2>/dev/null | base64 -d 2>/dev/null || true)
+  fi
+
+  # Final defaults
+  DB_HOST="${DB_HOST:-cattle-erp-postgresql.cattle-erp.svc.cluster.local}"
+  DB_PORT="${DB_PORT:-5432}"
+  DB_USER="${DB_USER:-postgres}"
+  DB_NAME="${DB_NAME:-cattle-erp}"
+  DB_PASSWORD="${DB_PASSWORD:-}"
+
+  # Derive K8s pod name and namespace from DB_HOST
+  # e.g. cattle-erp-postgresql.cattle-erp.svc.cluster.local → pod: cattle-erp-postgresql-0, ns: cattle-erp
+  local svc_name="${DB_HOST%%.*}"
+  local remainder="${DB_HOST#*.}"
+  DB_NAMESPACE="${remainder%%.*}"
+  DB_POD="${svc_name}-0"
+}
+
+load_db_config
+
+# Helper: build kubectl exec command for piping SQL
+db_exec() {
+  kubectl exec -i -n "$DB_NAMESPACE" "$DB_POD" -- \
+    env PGPASSWORD="$DB_PASSWORD" psql -U "$DB_USER" -d "$DB_NAME" "$@"
+}
+
 # Step tracking
-TOTAL_STEPS=19
+TOTAL_STEPS=20
 CURRENT_STEP=0
 STEP_START_TIME=0
 SESSION_START_TIME=0
-declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Types" "Frontend API" "Frontend Pages" "Frontend Integrate" "Build Codebase" "Test Personas")
-declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
-declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Types" "Frontend API" "Frontend Pages" "Frontend Integrate" "Build Codebase" "Test Personas" "Journey Tests")
+declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
+declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 
 # Spinner characters (braille pattern for smooth animation)
 readonly SPINNER_CHARS='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -2232,8 +2282,10 @@ detect_completed_steps() {
   local session_dir="$1"
 
   # Check steps in reverse order to find where to resume
-  if [ -f "$session_dir/personas-generated.txt" ]; then
-    echo 20  # All 19 steps done — resume past end
+  if [ -f "$session_dir/test-feedback-generated.txt" ]; then
+    echo 21  # All 20 steps done — resume past end
+  elif [ -f "$session_dir/personas-generated.txt" ]; then
+    echo 20  # Steps 1-19 done, resume from step 20 (journey tests)
   elif [ -f "$session_dir/build-deployed.txt" ]; then
     echo 19  # Steps 1-18 done, resume from step 19 (personas)
   elif [ -f "$session_dir/frontend-integrated.txt" ]; then
@@ -4272,12 +4324,12 @@ run_migration() {
     return 1
   fi
 
-  # Database connection settings (same as generate-journeys.sh)
-  local db_namespace="cattle-erp"
-  local db_pod="postgresql-cattle-erp-0"
-  local db_name="cattle_erp"
-  local db_user="postgres"
-  local db_pass="upj3RsNuqy"
+  # Database connection settings (loaded from .env at script startup)
+  local db_namespace="$DB_NAMESPACE"
+  local db_pod="$DB_POD"
+  local db_name="$DB_NAME"
+  local db_user="$DB_USER"
+  local db_pass="$DB_PASSWORD"
 
   # Determine next migration number
   log "Determining next migration number..."
@@ -4914,6 +4966,45 @@ except:
   fi
 
   if [ "$journeys_found" = "true" ] && [ "$journey_count" -gt 0 ]; then
+    # ── Insert journeys into DB ───────────────────────────────────────────
+    local journey_db_count
+    journey_db_count=$(db_exec -tAc \
+      "SELECT count(*) FROM journey WHERE session_name='$SESSION_NAME';" 2>/dev/null) || true
+
+    if [ "${journey_db_count:-0}" -lt "$journey_count" ]; then
+      log "Inserting journeys into database..."
+
+      python3 -c "
+import json, sys
+
+data = json.load(open('$SESSION_DIR/journeys.json'))
+journeys = data if isinstance(data, list) else data.get('journeys', [])
+session = '$SESSION_NAME'
+
+def esc(s):
+    if s is None:
+        return 'NULL'
+    return \"'\" + str(s).replace(\"'\", \"''\") + \"'\"
+
+def esc_jsonb(v):
+    if v is None:
+        return \"'[]'::jsonb\"
+    return \"'\" + json.dumps(v).replace(\"'\", \"''\") + \"'::jsonb\"
+
+for j in journeys:
+    print(f'''INSERT INTO journey (session_name, journey_id, name, actor, actor_description, trigger_event, goal, preconditions, postconditions, success_criteria, exception_paths, frequency, complexity, estimated_duration, priority, confirmation_status)
+VALUES ({esc(session)}, {esc(j.get('journey_id'))}, {esc(j.get('name'))}, {esc(j.get('actor'))}, {esc(j.get('actor_description'))}, {esc(j.get('trigger_event'))}, {esc(j.get('goal'))}, {esc(j.get('preconditions'))}, {esc(j.get('postconditions'))}, {esc_jsonb(j.get('success_criteria'))}, {esc_jsonb(j.get('exception_paths'))}, {esc(j.get('frequency'))}, {esc(j.get('complexity'))}, {esc(j.get('estimated_duration'))}, {esc(j.get('priority'))}, 'confirmed')
+ON CONFLICT (session_name, name) DO NOTHING;''')
+" 2>/dev/null | db_exec 2>/dev/null || true
+
+      local inserted_count
+      inserted_count=$(db_exec -tAc \
+        "SELECT count(*) FROM journey WHERE session_name='$SESSION_NAME';" 2>/dev/null) || true
+      log_success "Journeys inserted into database (${inserted_count:-0} rows)"
+    else
+      log "Journeys already in database ($journey_db_count found) — skipping"
+    fi
+
     # Write marker file (we write this, not generate-journeys.sh)
     {
       echo "journeys_file=$SESSION_DIR/journeys.json"
@@ -6107,22 +6198,142 @@ integrate_frontend_step() {
     fi
   done
 
+  # ── Verification: ensure every *Page.tsx has import + Route in App.tsx ──
+  if [ -f "$app_tsx" ]; then
+    local verified_components=""
+    local missing_components=""
+
+    for page_file in "$gen_dir"/*.tsx; do
+      [ -f "$page_file" ] || continue
+      local vcomp
+      vcomp=$(basename "$page_file" .tsx)
+      [[ "$vcomp" != *Page ]] && continue
+
+      local has_import has_route
+      has_import=$(grep -c "import.*${vcomp}" "$app_tsx" 2>/dev/null) || true
+      has_route=$(grep -c "path=.*${vcomp}" "$app_tsx" 2>/dev/null) || true
+
+      if [ "${has_import:-0}" -eq 0 ] || [ "${has_route:-0}" -eq 0 ]; then
+        log_warn "Missing integration for $vcomp (import=$has_import, route=$has_route) — retrying"
+        missing_components+=" $vcomp"
+
+        local retry_route_path
+        retry_route_path=$(echo "$vcomp" | sed 's/Page$//' | sed 's/\([A-Z]\)/-\L\1/g' | sed 's/^-//')
+        local retry_nav_label
+        retry_nav_label=$(echo "$vcomp" | sed 's/Page$//' | sed 's/\([A-Z]\)/ \1/g' | sed 's/^ //')
+
+        # Re-attempt import if missing
+        if [ "${has_import:-0}" -eq 0 ]; then
+          local retry_import_line
+          retry_import_line=$(grep -n "import.*from.*'./pages/" "$app_tsx" 2>/dev/null | tail -1 | cut -d: -f1)
+          if [ -z "$retry_import_line" ]; then
+            retry_import_line=$(grep -n "^import" "$app_tsx" 2>/dev/null | tail -1 | cut -d: -f1)
+          fi
+          if [ -n "$retry_import_line" ]; then
+            sed -i "${retry_import_line}a\\import ${vcomp} from './pages/${vcomp}';" "$app_tsx"
+            log_success "  Retry: added import for $vcomp"
+          else
+            log_error "  Retry: could not find anchor for import of $vcomp"
+            ((integration_errors++)) || true
+          fi
+        fi
+
+        # Re-attempt route if missing
+        if [ "${has_route:-0}" -eq 0 ]; then
+          local retry_redirect_line
+          retry_redirect_line=$(grep -n '<Route path="\*"' "$app_tsx" 2>/dev/null | head -1 | cut -d: -f1)
+          if [ -z "$retry_redirect_line" ]; then
+            retry_redirect_line=$(grep -n 'Navigate.*to=' "$app_tsx" 2>/dev/null | tail -1 | cut -d: -f1)
+          fi
+          if [ -n "$retry_redirect_line" ]; then
+            sed -i "${retry_redirect_line}i\\                <Route path=\"/${retry_route_path}\" element={<${vcomp} />} />" "$app_tsx"
+            log_success "  Retry: added route /${retry_route_path}"
+          else
+            log_error "  Retry: could not find anchor for route of $vcomp"
+            ((integration_errors++)) || true
+          fi
+
+          # Also add nav entry if missing
+          local retry_nav_check
+          retry_nav_check=$(grep -c "to=\"/${retry_route_path}\"" "$app_tsx" 2>/dev/null) || true
+          if [ "${retry_nav_check:-0}" -eq 0 ]; then
+            local retry_settings_line
+            retry_settings_line=$(grep -n 'Settings' "$app_tsx" 2>/dev/null | grep -i 'listitemtext\|ListItem' | head -1 | cut -d: -f1)
+            if [ -n "$retry_settings_line" ]; then
+              local retry_nav_insert
+              retry_nav_insert=$(head -n "$retry_settings_line" "$app_tsx" | grep -n '<ListItem' | tail -1 | cut -d: -f1)
+              if [ -n "$retry_nav_insert" ]; then
+                sed -i "${retry_nav_insert}i\\                  <ListItem disablePadding>\\
+                    <ListItemButton component={Link} to=\"/${retry_route_path}\">\\
+                      <ListItemIcon><ViewListIcon /></ListItemIcon>\\
+                      <ListItemText primary=\"${retry_nav_label}\" />\\
+                    </ListItemButton>\\
+                  </ListItem>" "$app_tsx"
+                log_success "  Retry: added nav entry for $retry_nav_label"
+              fi
+            fi
+          fi
+        fi
+      else
+        verified_components+=" $vcomp"
+      fi
+    done
+
+    if [ -n "$verified_components" ]; then
+      log_success "Verified in App.tsx:${verified_components}"
+    fi
+    if [ -n "$missing_components" ]; then
+      # Re-verify after retries
+      local still_missing=""
+      for mc in $missing_components; do
+        local recheck
+        recheck=$(grep -c "import.*${mc}" "$app_tsx" 2>/dev/null) || true
+        if [ "${recheck:-0}" -eq 0 ]; then
+          still_missing+=" $mc"
+        fi
+      done
+      if [ -n "$still_missing" ]; then
+        log_error "Still missing after retry:${still_missing}"
+      else
+        log_success "All missing components recovered after retry"
+      fi
+    fi
+  fi
+
   # Check for duplicate imports in App.tsx
   if [ -f "$app_tsx" ]; then
     local dup_imports
     dup_imports=$(grep "^import" "$app_tsx" | sort | uniq -d)
     if [ -n "$dup_imports" ]; then
-      log_warn "Duplicate imports found in App.tsx (may need manual cleanup)"
+      log_warn "Duplicate imports found in App.tsx — deduplicating"
+      # Remove duplicate import lines (keep first occurrence of each)
+      local tmp_tsx
+      tmp_tsx=$(mktemp)
+      awk '!seen[$0]++' "$app_tsx" > "$tmp_tsx" && mv "$tmp_tsx" "$app_tsx"
     fi
   fi
 
-  # Write marker file
+  # Write marker file — record verified components, not just copied files
   if [ "$integration_errors" -eq 0 ]; then
     {
       date -u +"%Y-%m-%dT%H:%M:%SZ"
       echo ""
       echo "Integrated files:"
       echo -e "$integrated_files"
+      echo ""
+      echo "Verified in App.tsx:"
+      if [ -f "$app_tsx" ]; then
+        for page_file in "$gen_dir"/*.tsx; do
+          [ -f "$page_file" ] || continue
+          local mcomp
+          mcomp=$(basename "$page_file" .tsx)
+          [[ "$mcomp" != *Page ]] && continue
+          local mhas_import mhas_route
+          mhas_import=$(grep -c "import.*${mcomp}" "$app_tsx" 2>/dev/null) || true
+          mhas_route=$(grep -c "path=.*${mcomp}" "$app_tsx" 2>/dev/null) || true
+          echo "  $mcomp: import=$mhas_import route=$mhas_route"
+        done
+      fi
     } > "$SESSION_DIR/frontend-integrated.txt"
 
     complete_step 17 "Frontend integrated into codebase"
@@ -6209,21 +6420,21 @@ build_codebase_step() {
 generate_personas_step() {
   show_step_header 19 "Test Personas" "sync"
 
-  local db_cmd="PGPASSWORD=upj3RsNuqy kubectl exec -n cattle-erp postgresql-cattle-erp-0 --"
+  local db_cmd="kubectl exec -i -n $DB_NAMESPACE $DB_POD -- env PGPASSWORD=$DB_PASSWORD"
   local personas_json="$SESSION_DIR/personas.json"
   local personas_backup=".claude/testing/personas/${SESSION_NAME}-personas.json"
   local api_base="http://ubuntu.desmana-truck.ts.net:32080"
 
   # ── Phase A: Run migrations ──────────────────────────────────────────────
   local persona_table_exists
-  persona_table_exists=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+  persona_table_exists=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='persona');" 2>/dev/null) || true
 
   if [ "$persona_table_exists" != "t" ]; then
     log "Running persona migrations..."
     for mig in backend/migrations/039_persona_table.sql backend/migrations/040_test_results_table.sql; do
       if [ -f "$PROJECT_ROOT/$mig" ]; then
-        $db_cmd psql -U postgres -d cattle_erp -f - < "$PROJECT_ROOT/$mig" 2>/dev/null || true
+        $db_cmd psql -U "$DB_USER" -d "$DB_NAME" -f - < "$PROJECT_ROOT/$mig" 2>/dev/null || true
       fi
     done
     log_success "Persona tables created"
@@ -6234,12 +6445,12 @@ generate_personas_step() {
   # ── Phase B: Ensure RBAC groups exist ────────────────────────────────────
   # Create persona-specific RBAC groups if they don't exist
   local group_count
-  group_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+  group_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT count(*) FROM user_groups WHERE name LIKE 'persona-%';" 2>/dev/null) || true
 
   if [ "${group_count:-0}" -lt 5 ]; then
     log "Creating persona RBAC groups..."
-    $db_cmd psql -U postgres -d cattle_erp -c "
+    $db_cmd psql -U "$DB_USER" -d "$DB_NAME" -c "
 DO \$\$
 DECLARE
   admin_id UUID;
@@ -6267,12 +6478,12 @@ END \$\$;
 
   # ── Phase C: Confirm journeys ────────────────────────────────────────────
   local unconfirmed
-  unconfirmed=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+  unconfirmed=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT count(*) FROM journey WHERE session_name='$SESSION_NAME' AND confirmation_status != 'confirmed';" 2>/dev/null) || true
 
   if [ "${unconfirmed:-0}" -gt 0 ]; then
     log "Confirming $unconfirmed journeys..."
-    $db_cmd psql -U postgres -d cattle_erp -c \
+    $db_cmd psql -U "$DB_USER" -d "$DB_NAME" -c \
       "UPDATE journey SET confirmation_status='confirmed' WHERE session_name='$SESSION_NAME';" 2>/dev/null || true
     log_success "Journeys confirmed"
   else
@@ -6329,7 +6540,7 @@ EACH PERSONA MUST HAVE:
 - demographics: { age (18-80), techProficiency (low/medium/high), industry: "cattle", companySize (small/medium/enterprise), devicePreference (desktop/mobile/both), accessibilityNeeds: [] }
 - behavioral: { goals (1-5 items), painPoints (1-5), preferredWorkflow, patienceLevel (low/medium/high), errorTolerance (low/medium/high), commonMistakes (1-5) }
 - journeys: { primary: ["J-NNN" IDs], secondary: [], frequency (daily/weekly/monthly/occasional), sessionDuration (short/medium/long) }
-- testData: { email: "test+persona-NN@cattle-erp.com", password: "TestPersona!NN", profileData: { displayName: "..." } }
+- testData: { email: "test+persona-NN@cattle-erp.com", password: "TestPersonaNN", profileData: { displayName: "..." } }
 - feedback: { style (detailed/brief/frustrated/enthusiastic), complaintThreshold (1-10), praiseThreshold (1-10), likelyComplaints: [...], likelyPraises: [...], verbosity (minimal/moderate/verbose) }
 - metadata: { userType (primary/secondary/admin/edge_case), generatedFrom: "session: $SESSION_NAME", createdAt: "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" }
 
@@ -6380,7 +6591,7 @@ PERSONA_PROMPT_EOF
 
   # ── Phase E: Register test users via API ─────────────────────────────────
   local test_user_count
-  test_user_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+  test_user_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT count(*) FROM users WHERE email LIKE 'test+persona%';" 2>/dev/null) || true
 
   if [ "${test_user_count:-0}" -lt 10 ]; then
@@ -6410,7 +6621,7 @@ for p in personas:
 
       # Check if user already exists
       local exists
-      exists=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+      exists=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
         "SELECT count(*) FROM users WHERE email='$email';" 2>/dev/null) || true
 
       if [ "${exists:-0}" -gt 0 ]; then
@@ -6443,14 +6654,14 @@ for p in personas:
 
   # ── Phase F: Assign RBAC group memberships ──────────────────────────────
   local membership_count
-  membership_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+  membership_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT count(*) FROM user_group_members ugm
      JOIN users u ON u.id = ugm.user_id
      WHERE u.email LIKE 'test+persona%';" 2>/dev/null) || true
 
   if [ "${membership_count:-0}" -lt 10 ]; then
     log "Assigning RBAC group memberships..."
-    $db_cmd psql -U postgres -d cattle_erp -c "
+    $db_cmd psql -U "$DB_USER" -d "$DB_NAME" -c "
 DO \$\$
 DECLARE
   admin_id UUID;
@@ -6490,9 +6701,174 @@ END \$\$;
     log "RBAC memberships already assigned ($membership_count found) — skipping"
   fi
 
-  # ── Phase G: Insert personas into DB ─────────────────────────────────────
+  # ── Phase G: Ensure all privilege codes exist + grant to persona groups ──
+  # The backend require_privilege() checks fail unless:
+  #   1. The privilege code exists in user_privileges (FK target)
+  #   2. The code is granted to the user's group in group_privileges
+  log "Ensuring all privilege codes exist and granting to persona groups..."
+  $db_cmd psql -U "$DB_USER" -d "$DB_NAME" << 'PRIV_SQL_EOF'
+DO $$
+DECLARE
+  admin_id UUID;
+  priv_row RECORD;
+  grp_row RECORD;
+BEGIN
+  SELECT id INTO admin_id FROM users WHERE email = 'admin@cattle-erp.com' LIMIT 1;
+  IF admin_id IS NULL THEN
+    SELECT id INTO admin_id FROM users WHERE is_admin = true LIMIT 1;
+  END IF;
+
+  -- Step 1: Ensure all privilege codes exist in user_privileges
+  -- These are the codes referenced by require_privilege() across all backend routers
+  INSERT INTO user_privileges (id, code, name, category, description, is_active) VALUES
+    (gen_random_uuid(), 'admin.all',           'All Admin Privileges',  'admin',     'Full system access',                  true),
+    (gen_random_uuid(), 'inventory.view',      'View Inventory',        'inventory', 'View inventory items and categories', true),
+    (gen_random_uuid(), 'inventory.edit',      'Edit Inventory',        'inventory', 'Create and edit inventory items',      true),
+    (gen_random_uuid(), 'inventory.create',    'Create Inventory',      'inventory', 'Create inventory items',              true),
+    (gen_random_uuid(), 'inventory.delete',    'Delete Inventory',      'inventory', 'Delete inventory items',              true),
+    (gen_random_uuid(), 'vendors.view',        'View Vendors',          'vendors',   'View vendor information',             true),
+    (gen_random_uuid(), 'vendors.edit',        'Edit Vendors',          'vendors',   'Create and edit vendors',             true),
+    (gen_random_uuid(), 'vendors.create',      'Create Vendors',        'vendors',   'Create vendors',                      true),
+    (gen_random_uuid(), 'vendors.delete',      'Delete Vendors',        'vendors',   'Delete vendors',                      true),
+    (gen_random_uuid(), 'orders.view',         'View Orders',           'orders',    'View procurement orders',             true),
+    (gen_random_uuid(), 'orders.edit',         'Edit Orders',           'orders',    'Create and edit orders',              true),
+    (gen_random_uuid(), 'orders.create',       'Create Orders',         'orders',    'Create procurement orders',           true),
+    (gen_random_uuid(), 'orders.update',       'Update Orders',         'orders',    'Update procurement orders',           true),
+    (gen_random_uuid(), 'orders.delete',       'Delete Orders',         'orders',    'Delete orders',                       true),
+    (gen_random_uuid(), 'orders.approve',      'Approve Orders',        'orders',    'Approve procurement orders',          true),
+    (gen_random_uuid(), 'orders.workflow',     'Workflow Orders',       'orders',    'Manage order workflow/kanban',         true),
+    (gen_random_uuid(), 'kanban.view',         'View Kanban',           'kanban',    'View kanban boards',                  true),
+    (gen_random_uuid(), 'kanban.edit',         'Edit Kanban',           'kanban',    'Move and edit kanban cards',           true),
+    (gen_random_uuid(), 'organizations.view',  'View Organizations',    'organizations', 'View organizations',              true),
+    (gen_random_uuid(), 'organizations.create','Create Organizations',  'organizations', 'Create organizations',            true),
+    (gen_random_uuid(), 'organizations.edit',  'Edit Organizations',    'organizations', 'Edit organizations',              true),
+    (gen_random_uuid(), 'organizations.delete','Delete Organizations',  'organizations', 'Delete organizations',            true),
+    (gen_random_uuid(), 'invoices.view',       'View Invoices',         'invoices',  'View invoices',                       true),
+    (gen_random_uuid(), 'invoices.create',     'Create Invoices',       'invoices',  'Create invoices',                     true),
+    (gen_random_uuid(), 'invoices.edit',       'Edit Invoices',         'invoices',  'Edit invoices',                       true),
+    (gen_random_uuid(), 'invoices.delete',     'Delete Invoices',       'invoices',  'Delete invoices',                     true),
+    (gen_random_uuid(), 'users.view',          'View Users',            'users',     'View user information',               true),
+    (gen_random_uuid(), 'users.edit',          'Edit Users',            'users',     'Create and edit users',               true),
+    (gen_random_uuid(), 'users.delete',        'Delete Users',          'users',     'Delete users',                        true),
+    (gen_random_uuid(), 'reports.view',        'View Reports',          'reports',   'View reports and analytics',          true),
+    (gen_random_uuid(), 'reports.export',      'Export Reports',        'reports',   'Export reports',                      true),
+    (gen_random_uuid(), 'gorgias.view',        'View Gorgias',          'gorgias',   'View Gorgias integration',            true),
+    (gen_random_uuid(), 'gorgias.admin',       'Admin Gorgias',         'gorgias',   'Admin Gorgias integration',           true),
+    (gen_random_uuid(), 'gorgias.sync',        'Sync Gorgias',          'gorgias',   'Sync Gorgias data',                   true)
+  ON CONFLICT (code) DO NOTHING;
+
+  -- Step 2: Grant privileges to each persona group
+  -- Pattern: for each (group_name, privilege_code) pair, insert if not exists
+
+  -- persona-ranch-owners: all privileges (full admin)
+  FOR priv_row IN SELECT code FROM user_privileges WHERE is_active = true LOOP
+    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
+    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
+    FROM user_groups g
+    WHERE g.name = 'persona-ranch-owners'
+      AND NOT EXISTS (
+        SELECT 1 FROM group_privileges gp
+        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
+      );
+  END LOOP;
+
+  -- persona-ranch-operations: inventory.*, vendors.*, orders.*, kanban.*, organizations.view
+  FOR priv_row IN
+    SELECT code FROM user_privileges
+    WHERE code LIKE 'inventory.%' OR code LIKE 'vendors.%'
+       OR code LIKE 'orders.%' OR code LIKE 'kanban.%'
+       OR code = 'organizations.view' OR code LIKE 'invoices.%'
+  LOOP
+    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
+    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
+    FROM user_groups g
+    WHERE g.name = 'persona-ranch-operations'
+      AND NOT EXISTS (
+        SELECT 1 FROM group_privileges gp
+        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
+      );
+  END LOOP;
+
+  -- persona-ranch-hands: inventory.view, kanban.view, organizations.view
+  FOR priv_row IN
+    SELECT code FROM user_privileges
+    WHERE code IN ('inventory.view', 'kanban.view', 'organizations.view')
+  LOOP
+    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
+    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
+    FROM user_groups g
+    WHERE g.name = 'persona-ranch-hands'
+      AND NOT EXISTS (
+        SELECT 1 FROM group_privileges gp
+        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
+      );
+  END LOOP;
+
+  -- persona-buyers: inventory.view, orders.*, kanban.edit, kanban.view, organizations.view
+  FOR priv_row IN
+    SELECT code FROM user_privileges
+    WHERE code = 'inventory.view' OR code LIKE 'orders.%'
+       OR code IN ('kanban.edit', 'kanban.view', 'organizations.view')
+  LOOP
+    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
+    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
+    FROM user_groups g
+    WHERE g.name = 'persona-buyers'
+      AND NOT EXISTS (
+        SELECT 1 FROM group_privileges gp
+        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
+      );
+  END LOOP;
+
+  -- persona-office-staff: inventory.*, vendors.*, orders.*, reports.*, invoices.*, organizations.view
+  FOR priv_row IN
+    SELECT code FROM user_privileges
+    WHERE code LIKE 'inventory.%' OR code LIKE 'vendors.%'
+       OR code LIKE 'orders.%' OR code LIKE 'reports.%'
+       OR code LIKE 'invoices.%' OR code = 'organizations.view'
+  LOOP
+    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
+    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
+    FROM user_groups g
+    WHERE g.name = 'persona-office-staff'
+      AND NOT EXISTS (
+        SELECT 1 FROM group_privileges gp
+        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
+      );
+  END LOOP;
+
+  -- persona-read-only: inventory.view, orders.view, organizations.view, reports.view
+  FOR priv_row IN
+    SELECT code FROM user_privileges
+    WHERE code IN ('inventory.view', 'orders.view', 'organizations.view', 'reports.view')
+  LOOP
+    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
+    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
+    FROM user_groups g
+    WHERE g.name = 'persona-read-only'
+      AND NOT EXISTS (
+        SELECT 1 FROM group_privileges gp
+        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
+      );
+  END LOOP;
+
+END $$;
+PRIV_SQL_EOF
+
+  # Verify privileges were granted
+  local priv_count
+  priv_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+    "SELECT count(*) FROM group_privileges gp JOIN user_groups g ON g.id = gp.group_id WHERE g.name LIKE 'persona-%';" 2>/dev/null) || true
+
+  if [ "${priv_count:-0}" -gt 0 ]; then
+    log_success "RBAC privileges granted ($priv_count group-privilege assignments)"
+  else
+    log_error "No group privileges were created — RBAC will fail"
+  fi
+
+  # ── Phase H: Insert personas into DB ─────────────────────────────────────
   local persona_db_count
-  persona_db_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+  persona_db_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT count(*) FROM persona WHERE session_name='$SESSION_NAME';" 2>/dev/null) || true
 
   if [ "${persona_db_count:-0}" -lt 10 ]; then
@@ -6533,7 +6909,7 @@ ON CONFLICT (session_name, persona_id) DO UPDATE SET
   metadata = EXCLUDED.metadata;'''
 
 print(sql)
-" 2>/dev/null | $db_cmd psql -U postgres -d cattle_erp 2>/dev/null || true
+" 2>/dev/null | $db_cmd psql -U "$DB_USER" -d "$DB_NAME" 2>/dev/null || true
 
     log_success "Personas inserted into database"
   else
@@ -6546,10 +6922,10 @@ print(sql)
 
   # Final count verification
   local final_persona_count
-  final_persona_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+  final_persona_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT count(*) FROM persona WHERE session_name='$SESSION_NAME';" 2>/dev/null) || true
   local final_user_count
-  final_user_count=$($db_cmd psql -U postgres -d cattle_erp -tAc \
+  final_user_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT count(*) FROM users WHERE email LIKE 'test+persona%';" 2>/dev/null) || true
 
   # Write marker file
@@ -6564,6 +6940,882 @@ print(sql)
   complete_step 19 "Test personas generated (${final_persona_count:-0} personas, ${final_user_count:-0} test users)"
   dim_path "  Personas: $personas_json"
   dim_path "  Backup: $personas_backup"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Step 20: Persona Journey Tests (Parallel)
+# Runs explicit (guided) and general (goal-only) journey tests for each persona
+# using Claude sub-agents with Playwright MCP for real browser automation.
+# Parallelized: STEP20_WORKERS controls concurrency (default 4, set to 1 for sequential).
+# Each worker gets its own Playwright browser instance via separate MCP configs.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Worker function for explicit journey tests.
+# Runs as a background subshell — communicates results via files only.
+# Args: worker_id batch_file mcp_config session_dir artifacts_dir personas_json
+#       session_name test_run_id base_url db_namespace db_pod db_user db_name db_password
+_run_explicit_worker() {
+  local worker_id="$1"
+  local batch_file="$2"
+  local mcp_config="$3"
+  local session_dir="$4"
+  local artifacts_dir="$5"
+  local personas_json="$6"
+  local session_name="$7"
+  local test_run_id="$8"
+  local base_url="$9"
+  local db_namespace="${10}"
+  local db_pod="${11}"
+  local db_user="${12}"
+  local db_name="${13}"
+  local db_password="${14}"
+  local result_file="${15}"
+  local log_file="${16}"
+
+  local db_cmd="kubectl exec -i -n $db_namespace $db_pod -- env PGPASSWORD=$db_password"
+  local pass=0 fail=0 error=0
+  local test_num=0
+  local total
+  total=$(wc -l < "$batch_file" | tr -d ' ')
+
+  while IFS='|' read -r persona_id journey_id <&3; do
+    [ -z "$persona_id" ] && continue
+    [ -z "$journey_id" ] && continue
+    ((test_num++)) || true
+
+    echo "[W${worker_id}] [$test_num/$total] Explicit: $persona_id × $journey_id" >> "$log_file"
+
+    # Skip if already tested in a previous run
+    local already_tested
+    already_tested=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT count(*) FROM test_instance WHERE session_name='$session_name' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='explicit';" 2>/dev/null) || true
+    if [ "${already_tested:-0}" -gt 0 ]; then
+      echo "[W${worker_id}]   Already tested — skipping (resume)" >> "$log_file"
+      local prev_status
+      prev_status=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+        "SELECT overall_status FROM test_instance WHERE session_name='$session_name' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='explicit' ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
+      if [ "$prev_status" = "pass" ]; then
+        ((pass++)) || true
+      else
+        ((fail++)) || true
+      fi
+      continue
+    fi
+
+    # Get persona credentials
+    local persona_email persona_password
+    persona_email=$(python3 -c "
+import json
+data = json.load(open('$personas_json'))
+personas = data.get('personas', data if isinstance(data, list) else [])
+for p in personas:
+    if p.get('id') == '$persona_id':
+        print(p.get('testData', {}).get('email', ''))
+        break
+" 2>/dev/null) || true
+    persona_password=$(python3 -c "
+import json
+data = json.load(open('$personas_json'))
+personas = data.get('personas', data if isinstance(data, list) else [])
+for p in personas:
+    if p.get('id') == '$persona_id':
+        print(p.get('testData', {}).get('password', ''))
+        break
+" 2>/dev/null) || true
+
+    if [ -z "$persona_email" ] || [ -z "$persona_password" ]; then
+      echo "[W${worker_id}]   No credentials for $persona_id — skipping" >> "$log_file"
+      ((error++)) || true
+      continue
+    fi
+
+    # Get journey data from DB
+    local journey_db_id journey_name journey_steps_json
+    journey_db_id=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT id FROM journey WHERE session_name='$session_name' AND journey_id='$journey_id' AND confirmation_status='confirmed';" 2>/dev/null) || true
+
+    if [ -z "$journey_db_id" ]; then
+      echo "[W${worker_id}]   Journey $journey_id not found or not confirmed — skipping" >> "$log_file"
+      ((error++)) || true
+      continue
+    fi
+
+    journey_name=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT name FROM journey WHERE id=$journey_db_id;" 2>/dev/null) || true
+
+    journey_steps_json=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT json_agg(row_to_json(s) ORDER BY s.step_number) FROM (
+        SELECT step_number, step_name, user_action, user_intent,
+               ui_page_route, ui_component_type, ui_component_name,
+               ui_feedback, ui_state_after, possible_errors
+        FROM journey_steps_detailed WHERE journey_id=$journey_db_id
+        ORDER BY step_number
+      ) s;" 2>/dev/null) || true
+
+    if [ -z "$journey_steps_json" ] || [ "$journey_steps_json" = "null" ]; then
+      echo "[W${worker_id}]   No steps found for $journey_id — skipping" >> "$log_file"
+      ((error++)) || true
+      continue
+    fi
+
+    # Create artifacts subdirectory
+    local test_artifacts="$artifacts_dir/$persona_id/$journey_id"
+    mkdir -p "$test_artifacts" 2>/dev/null || true
+
+    # Build explicit test prompt
+    local prompt_file="$session_dir/.explicit-test-prompt-${persona_id}-${journey_id}.txt"
+    cat > "$prompt_file" << EXPLICIT_PROMPT_EOF
+Test a web application by navigating it in the browser. Follow the journey steps and report results as JSON.
+
+APPLICATION: $base_url
+LOGIN: Email: $persona_email  Password: $persona_password
+
+JOURNEY: $journey_name ($journey_id)
+
+STEPS TO TEST:
+$journey_steps_json
+
+INSTRUCTIONS:
+1. Navigate to $base_url
+2. Log in with the credentials above
+3. For each journey step, perform the user_action in the browser
+4. Check if it worked — report "complete" or "incomplete"
+5. If incomplete: describe what went wrong
+6. Take a screenshot on failures (save to $test_artifacts/)
+7. Continue testing even if a step fails
+8. Close the browser when done
+
+Your final output must be ONLY this JSON (no other text):
+{"login_status":"complete","login_notes":"...","step_results":[{"step_number":1,"step_name":"...","status":"complete or incomplete","failure_reason":null,"failure_category":null,"expected_outcome":null,"actual_outcome":null,"bugs_found":[],"accessibility_issues":[],"performance_notes":null,"suggestions":null,"page_url":"..."}]}
+EXPLICIT_PROMPT_EOF
+
+    # Run Claude sub-agent with worker-specific MCP config
+    local output_file="$session_dir/.explicit-result-${persona_id}-${journey_id}.json"
+    local claude_attempt=1
+    local max_attempts=2
+    local test_success=false
+
+    while [ "$claude_attempt" -le "$max_attempts" ]; do
+      claude --dangerously-skip-permissions --print \
+        --strict-mcp-config --mcp-config "$mcp_config" \
+        --append-system-prompt "You are a QA tester. Navigate the app in the browser, test it, then output ONLY valid JSON as your final message. No markdown fences, no explanation — just the JSON object." \
+        -p "$(cat "$prompt_file")" \
+        > "$output_file" 2>/dev/null || true
+
+      if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+        sed -i '/./,$!d' "$output_file"
+        sed -i '/^```/d' "$output_file"
+
+        if python3 -c "import json; data=json.load(open('$output_file')); assert 'step_results' in data" 2>/dev/null; then
+          test_success=true
+          break
+        fi
+      fi
+      ((claude_attempt++)) || true
+    done
+
+    if [ "$test_success" != "true" ]; then
+      echo "[W${worker_id}]   FAIL (no valid JSON) $persona_id × $journey_id" >> "$log_file"
+      ((error++)) || true
+      continue
+    fi
+
+    # Parse results and insert into database — write SQL to file first for error capture
+    local sql_file="$session_dir/.sql-explicit-${persona_id}-${journey_id}.sql"
+    python3 << PARSE_EXPLICIT_WEOF > "$sql_file"
+import json, sys
+
+try:
+    data = json.load(open('$output_file'))
+    steps = data.get('step_results', [])
+    total = len(steps)
+    completed = sum(1 for s in steps if s.get('status') == 'complete')
+    failed = sum(1 for s in steps if s.get('status') == 'incomplete')
+
+    if failed == 0 and completed > 0:
+        status = 'pass'
+    elif completed == 0:
+        status = 'fail'
+    else:
+        status = 'partial'
+
+    print(f"""INSERT INTO test_instance (
+        session_name, test_run_id, persona_id, mode,
+        journey_id, journey_db_id,
+        overall_status, steps_total, steps_completed, steps_failed,
+        base_url, artifacts_dir, started_at, completed_at
+    ) VALUES (
+        '$session_name', '$test_run_id', '$persona_id', 'explicit',
+        '$journey_id', $journey_db_id,
+        '{status}', {total}, {completed}, {failed},
+        '$base_url', '$test_artifacts',
+        NOW(), NOW()
+    ) ON CONFLICT DO NOTHING;""")
+
+    def esc(v):
+        if v is None: return ''
+        if isinstance(v, (list, dict)): return json.dumps(v).replace("'", "''")
+        return str(v).replace("'", "''")
+
+    for s in steps:
+        sn = s.get('step_number', 0)
+        sname = esc(s.get('step_name', ''))
+        sstatus = s.get('status', 'skipped')
+        fr = esc(s.get('failure_reason'))
+        fc = esc(s.get('failure_category'))
+        eo = esc(s.get('expected_outcome'))
+        ao = esc(s.get('actual_outcome'))
+        bugs = json.dumps(s.get('bugs_found', [])).replace("'", "''")
+        access = json.dumps(s.get('accessibility_issues', [])).replace("'", "''")
+        perf = esc(s.get('performance_notes'))
+        sugg = esc(s.get('suggestions'))
+        purl = esc(s.get('page_url'))
+
+        print(f"""INSERT INTO explicit_journey_feedback (
+            test_instance_id,
+            step_number, step_name, status,
+            failure_reason, failure_category, expected_outcome, actual_outcome,
+            bugs_found, accessibility_issues, performance_notes, suggestions,
+            page_url
+        ) VALUES (
+            (SELECT id FROM test_instance WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND journey_id='$journey_id' LIMIT 1),
+            {sn}, '{sname}', '{sstatus}',
+            '{fr}', '{fc}', '{eo}', '{ao}',
+            '{bugs}'::jsonb, '{access}'::jsonb, '{perf}', '{sugg}',
+            '{purl}'
+        );""")
+
+except Exception as e:
+    print(f"-- Error: {e}", file=sys.stderr)
+PARSE_EXPLICIT_WEOF
+
+    # Execute SQL with error capture (no silent suppression)
+    if [ -s "$sql_file" ]; then
+      local db_err
+      db_err=$($db_cmd psql -U "$db_user" -d "$db_name" -f - < "$sql_file" 2>&1) || true
+      if echo "$db_err" | grep -qi "error"; then
+        echo "[W${worker_id}]   DB INSERT FAILED for $persona_id × $journey_id: $(echo "$db_err" | head -3)" >> "$log_file"
+      fi
+    else
+      echo "[W${worker_id}]   SQL generation produced empty output for $persona_id × $journey_id" >> "$log_file"
+    fi
+
+    # Count result
+    local test_status
+    test_status=$(python3 -c "
+import json
+data = json.load(open('$output_file'))
+steps = data.get('step_results', [])
+completed = sum(1 for s in steps if s.get('status') == 'complete')
+failed = sum(1 for s in steps if s.get('status') == 'incomplete')
+if failed == 0 and completed > 0: print('pass')
+elif completed == 0: print('fail')
+else: print('partial')
+" 2>/dev/null) || true
+
+    if [ "$test_status" = "pass" ]; then
+      echo "[W${worker_id}]   PASS $persona_id × $journey_id" >> "$log_file"
+      ((pass++)) || true
+    else
+      echo "[W${worker_id}]   ${test_status:-error} $persona_id × $journey_id" >> "$log_file"
+      ((fail++)) || true
+    fi
+
+    # Clear browser state between persona tests to prevent stale sessions
+    local pw_data_dir
+    pw_data_dir="$(dirname "$mcp_config")/pw-data-${worker_id}"
+    rm -rf "${pw_data_dir:?}/"* 2>/dev/null || true
+
+  done 3< "$batch_file"
+
+  # Write results for aggregation by main process
+  echo "${pass}|${fail}|${error}" > "$result_file"
+}
+
+# Worker function for general goal tests.
+# Args: same as _run_explicit_worker
+_run_general_worker() {
+  local worker_id="$1"
+  local batch_file="$2"
+  local mcp_config="$3"
+  local session_dir="$4"
+  local artifacts_dir="$5"
+  local personas_json="$6"
+  local session_name="$7"
+  local test_run_id="$8"
+  local base_url="$9"
+  local db_namespace="${10}"
+  local db_pod="${11}"
+  local db_user="${12}"
+  local db_name="${13}"
+  local db_password="${14}"
+  local result_file="${15}"
+  local log_file="${16}"
+
+  local db_cmd="kubectl exec -i -n $db_namespace $db_pod -- env PGPASSWORD=$db_password"
+  local pass=0 fail=0 error=0
+  local scores_sum=0 scores_count=0
+  local test_num=0
+  local total
+  total=$(wc -l < "$batch_file" | tr -d ' ')
+
+  while IFS='|' read -r persona_id journey_id <&3; do
+    [ -z "$persona_id" ] && continue
+    [ -z "$journey_id" ] && continue
+    ((test_num++)) || true
+
+    echo "[W${worker_id}] [$test_num/$total] General: $persona_id × $journey_id" >> "$log_file"
+
+    # Skip if already tested
+    local already_tested
+    already_tested=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT count(*) FROM test_instance WHERE session_name='$session_name' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='general';" 2>/dev/null) || true
+    if [ "${already_tested:-0}" -gt 0 ]; then
+      echo "[W${worker_id}]   Already tested — skipping (resume)" >> "$log_file"
+      local prev_status
+      prev_status=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+        "SELECT overall_status FROM test_instance WHERE session_name='$session_name' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='general' ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
+      if [ "$prev_status" = "pass" ]; then
+        ((pass++)) || true
+      else
+        ((fail++)) || true
+      fi
+      continue
+    fi
+
+    # Get persona credentials
+    local persona_email persona_password
+    persona_email=$(python3 -c "
+import json
+data = json.load(open('$personas_json'))
+for p in data.get('personas', []):
+    if p.get('id') == '$persona_id':
+        print(p.get('testData', {}).get('email', ''))
+        break
+" 2>/dev/null) || true
+    persona_password=$(python3 -c "
+import json
+data = json.load(open('$personas_json'))
+for p in data.get('personas', []):
+    if p.get('id') == '$persona_id':
+        print(p.get('testData', {}).get('password', ''))
+        break
+" 2>/dev/null) || true
+
+    if [ -z "$persona_email" ] || [ -z "$persona_password" ]; then
+      ((error++)) || true
+      continue
+    fi
+
+    # Get goal text from journey
+    local goal_text
+    goal_text=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT COALESCE(goal, '') FROM journey WHERE session_name='$session_name' AND journey_id='$journey_id';" 2>/dev/null) || true
+
+    if [ -z "$goal_text" ]; then
+      echo "[W${worker_id}]   No goal found for $journey_id — skipping" >> "$log_file"
+      ((error++)) || true
+      continue
+    fi
+
+    local test_artifacts="$artifacts_dir/$persona_id/general-$journey_id"
+    mkdir -p "$test_artifacts" 2>/dev/null || true
+
+    # Build general test prompt
+    local prompt_file="$session_dir/.general-test-prompt-${persona_id}-${journey_id}.txt"
+    cat > "$prompt_file" << GENERAL_PROMPT_EOF
+Explore a web application in the browser to accomplish a goal. No predefined steps — discover the path yourself. Report results as JSON.
+
+APPLICATION: $base_url
+LOGIN: Email: $persona_email  Password: $persona_password
+
+GOAL: $goal_text
+
+INSTRUCTIONS:
+1. Navigate to $base_url
+2. Log in with the credentials above
+3. Explore the UI to accomplish the goal
+4. Record every action you take as a discovered step
+5. For each step: score intuitive (0-100) and feedback_quality (0-100)
+6. Note any bugs, accessibility issues, confusion points
+7. Save screenshots to $test_artifacts/ on interesting findings
+8. After completing or failing, score the rubric below
+9. Close the browser when done
+
+RUBRIC (0-100 each): task_completion (100=achieved, 0=failed), efficiency (100=optimal, 0=abandoned), error_recovery (100=none, 0=unrecoverable), learnability (100=obvious, 0=undiscoverable), confidence (100=certain, 0=lost)
+
+Your final output must be ONLY this JSON (no other text):
+{"goal_achieved":true,"discovered_steps":[{"step_number":1,"action_taken":"...","action_intent":"...","page_url":"...","element_interacted":"...","score_intuitive":90,"score_feedback_quality":85,"observation":"...","bugs_found":[],"accessibility_issues":[],"performance_notes":null,"suggestions":null,"confusion_points":null}],"rubric_scores":{"task_completion":75,"efficiency":80,"error_recovery":100,"learnability":70,"confidence":85},"overall_notes":"..."}
+GENERAL_PROMPT_EOF
+
+    # Run Claude sub-agent with worker-specific MCP config
+    local output_file="$session_dir/.general-result-${persona_id}-${journey_id}.json"
+    local claude_attempt=1
+    local test_success=false
+
+    while [ "$claude_attempt" -le 2 ]; do
+      claude --dangerously-skip-permissions --print \
+        --strict-mcp-config --mcp-config "$mcp_config" \
+        --append-system-prompt "You are a QA tester. Navigate the app in the browser, test it, then output ONLY valid JSON as your final message. No markdown fences, no explanation — just the JSON object." \
+        -p "$(cat "$prompt_file")" \
+        > "$output_file" 2>/dev/null || true
+
+      if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+        sed -i '/./,$!d' "$output_file"
+        sed -i '/^```/d' "$output_file"
+
+        if python3 -c "import json; data=json.load(open('$output_file')); assert 'rubric_scores' in data" 2>/dev/null; then
+          test_success=true
+          break
+        fi
+      fi
+      ((claude_attempt++)) || true
+    done
+
+    if [ "$test_success" != "true" ]; then
+      echo "[W${worker_id}]   FAIL (no valid JSON) general $persona_id × $journey_id" >> "$log_file"
+      ((error++)) || true
+      continue
+    fi
+
+    # Parse and insert results — write SQL to file first for error capture
+    local sql_file="$session_dir/.sql-general-${persona_id}-${journey_id}.sql"
+    python3 << PARSE_GENERAL_WEOF > "$sql_file"
+import json, sys
+
+try:
+    data = json.load(open('$output_file'))
+    steps = data.get('discovered_steps', [])
+    rubric = data.get('rubric_scores', {})
+    goal_achieved = data.get('goal_achieved', False)
+    total = len(steps)
+
+    tc = rubric.get('task_completion', 0)
+    eff = rubric.get('efficiency', 0)
+    er = rubric.get('error_recovery', 0)
+    learn = rubric.get('learnability', 0)
+    conf = rubric.get('confidence', 0)
+    overall = (tc + eff + er + learn + conf) // 5
+
+    status = 'pass' if goal_achieved and overall >= 50 else 'fail'
+    goal_text_escaped = """$goal_text""".replace("'", "''")
+
+    print(f"""INSERT INTO test_instance (
+        session_name, test_run_id, persona_id, mode,
+        journey_id,
+        goal_text, goal_source,
+        overall_status, steps_total, steps_completed,
+        score_task_completion, score_efficiency, score_error_recovery,
+        score_learnability, score_confidence, score_overall,
+        base_url, artifacts_dir, started_at, completed_at
+    ) VALUES (
+        '$session_name', '$test_run_id', '$persona_id', 'general',
+        '$journey_id',
+        '{goal_text_escaped}', 'journey:$journey_id',
+        '{status}', {total}, {total},
+        {tc}, {eff}, {er}, {learn}, {conf}, {overall},
+        '$base_url', '$test_artifacts',
+        NOW(), NOW()
+    ) ON CONFLICT DO NOTHING;""")
+
+    def esc(v):
+        if v is None: return ''
+        if isinstance(v, (list, dict)): return json.dumps(v).replace("'", "''")
+        return str(v).replace("'", "''")
+
+    for s in steps:
+        sn = s.get('step_number', 0)
+        at = esc(s.get('action_taken', ''))
+        ai = esc(s.get('action_intent'))
+        pu = esc(s.get('page_url'))
+        ei = esc(s.get('element_interacted'))
+        si = s.get('score_intuitive')
+        sfq = s.get('score_feedback_quality')
+        obs = esc(s.get('observation'))
+        bugs = json.dumps(s.get('bugs_found', [])).replace("'", "''")
+        access = json.dumps(s.get('accessibility_issues', [])).replace("'", "''")
+        perf = esc(s.get('performance_notes'))
+        sugg = esc(s.get('suggestions'))
+        conf_pts = esc(s.get('confusion_points'))
+
+        si_val = f"{si}" if si is not None else "NULL"
+        sfq_val = f"{sfq}" if sfq is not None else "NULL"
+
+        print(f"""INSERT INTO general_goal_feedback (
+            test_instance_id, step_number,
+            action_taken, action_intent, page_url, element_interacted,
+            score_intuitive, score_feedback_quality,
+            observation, bugs_found, accessibility_issues,
+            performance_notes, suggestions, confusion_points
+        ) VALUES (
+            (SELECT id FROM test_instance WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND mode='general' AND goal_source='journey:$journey_id' LIMIT 1),
+            {sn},
+            '{at}', '{ai}', '{pu}', '{ei}',
+            {si_val}, {sfq_val},
+            '{obs}', '{bugs}'::jsonb, '{access}'::jsonb,
+            '{perf}', '{sugg}', '{conf_pts}'
+        );""")
+
+except Exception as e:
+    print(f"-- Error: {e}", file=sys.stderr)
+PARSE_GENERAL_WEOF
+
+    # Execute SQL with error capture (no silent suppression)
+    if [ -s "$sql_file" ]; then
+      local db_err
+      db_err=$($db_cmd psql -U "$db_user" -d "$db_name" -f - < "$sql_file" 2>&1) || true
+      if echo "$db_err" | grep -qi "error"; then
+        echo "[W${worker_id}]   DB INSERT FAILED for general $persona_id × $journey_id: $(echo "$db_err" | head -3)" >> "$log_file"
+      fi
+    else
+      echo "[W${worker_id}]   SQL generation produced empty output for general $persona_id × $journey_id" >> "$log_file"
+    fi
+
+    # Extract score for summary
+    local overall_score
+    overall_score=$(python3 -c "
+import json
+data = json.load(open('$output_file'))
+r = data.get('rubric_scores', {})
+scores = [r.get('task_completion',0), r.get('efficiency',0), r.get('error_recovery',0), r.get('learnability',0), r.get('confidence',0)]
+print(sum(scores) // 5)
+" 2>/dev/null) || true
+
+    if [ "${overall_score:-0}" -ge 50 ]; then
+      echo "[W${worker_id}]   PASS $persona_id × $journey_id (score ${overall_score}/100)" >> "$log_file"
+      ((pass++)) || true
+    else
+      echo "[W${worker_id}]   FAIL $persona_id × $journey_id (score ${overall_score:-0}/100)" >> "$log_file"
+      ((fail++)) || true
+    fi
+
+    if [ -n "$overall_score" ]; then
+      scores_sum=$((scores_sum + overall_score))
+      ((scores_count++)) || true
+    fi
+
+    # Clear browser state between persona tests to prevent stale sessions
+    local pw_data_dir
+    pw_data_dir="$(dirname "$mcp_config")/pw-data-${worker_id}"
+    rm -rf "${pw_data_dir:?}/"* 2>/dev/null || true
+
+  done 3< "$batch_file"
+
+  # Write results for aggregation: pass|fail|error|scores_sum|scores_count
+  echo "${pass}|${fail}|${error}|${scores_sum}|${scores_count}" > "$result_file"
+}
+
+persona_journey_test_step() {
+  show_step_header 20 "Persona Journey Tests" "test"
+
+  local db_cmd="kubectl exec -i -n $DB_NAMESPACE $DB_POD -- env PGPASSWORD=$DB_PASSWORD"
+  local personas_json="$SESSION_DIR/personas.json"
+  local test_run_id="pipeline-$(date +%Y%m%d-%H%M%S)"
+  local artifacts_dir="$SESSION_DIR/test-artifacts"
+  local base_url="http://ubuntu.desmana-truck.ts.net:32081"
+  local NUM_WORKERS="${STEP20_WORKERS:-3}"
+
+  # ── Phase A: Verify prerequisites ──────────────────────────────────────────
+  if [ ! -f "$personas_json" ]; then
+    fail_step 20 "Personas JSON not found at $personas_json — run Step 19 first"
+    return 1
+  fi
+
+  # Run new test migrations
+  log "Ensuring test feedback tables exist..."
+  for mig in backend/migrations/042_test_instances.sql backend/migrations/043_explicit_journey_feedback.sql backend/migrations/044_general_goal_feedback.sql; do
+    if [ -f "$PROJECT_ROOT/$mig" ]; then
+      kubectl exec -i -n "$DB_NAMESPACE" "$DB_POD" -- \
+        env PGPASSWORD="$DB_PASSWORD" psql -U "$DB_USER" -d "$DB_NAME" -f - < "$PROJECT_ROOT/$mig" 2>/dev/null || true
+    fi
+  done
+  log_success "Test feedback tables ready"
+
+  # Check test users exist
+  local test_user_count
+  test_user_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+    "SELECT count(*) FROM users WHERE email LIKE 'test+persona%';" 2>/dev/null) || true
+  if [ "${test_user_count:-0}" -lt 5 ]; then
+    log_error "Only ${test_user_count:-0} test users found (need at least 5). Run Step 19 first."
+    fail_step 20 "Insufficient test users"
+    return 1
+  fi
+  log "Found ${test_user_count} test users"
+
+  # ── Route validation: check journey routes exist in App.tsx ──────────────
+  local app_tsx_path="$PROJECT_ROOT/frontend/src/App.tsx"
+  if [ -f "$app_tsx_path" ]; then
+    local journey_routes
+    journey_routes=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+      "SELECT DISTINCT js.ui_page_route FROM journey_step js
+       JOIN journey j ON j.id = js.journey_id
+       WHERE j.session_name='$SESSION_NAME' AND js.ui_page_route IS NOT NULL
+         AND js.ui_page_route != '';" 2>/dev/null) || true
+
+    if [ -n "$journey_routes" ]; then
+      local route_warnings=0
+      while IFS= read -r route; do
+        route=$(echo "$route" | tr -d '[:space:]')
+        [ -z "$route" ] && continue
+        local route_path
+        route_path=$(echo "$route" | sed 's|^/||')
+        if [ -n "$route_path" ] && ! grep -q "path=\"/${route_path}\"" "$app_tsx_path" 2>/dev/null; then
+          log_warn "Journey references unrouted path: /$route_path (tests targeting this page will likely fail)"
+          ((route_warnings++)) || true
+        fi
+      done <<< "$journey_routes"
+      if [ "$route_warnings" -eq 0 ]; then
+        log "All journey routes verified in App.tsx"
+      else
+        log_warn "$route_warnings journey route(s) not found in App.tsx"
+      fi
+    fi
+  fi
+
+  mkdir -p "$artifacts_dir" 2>/dev/null || true
+
+  # ── Phase B: Build persona-journey mapping ─────────────────────────────────
+  log "Building persona-journey test matrix..."
+
+  # Get primary journeys for each persona from personas.json
+  local persona_journey_map
+  persona_journey_map=$(python3 -c "
+import json, sys
+data = json.load(open('$personas_json'))
+personas = data.get('personas', data if isinstance(data, list) else [])
+for p in personas:
+    pid = p.get('id', '')
+    journeys = p.get('journeys', {})
+    primary = journeys.get('primary', [])
+    if primary:
+        for jid in primary[:3]:
+            print(f'{pid}|{jid}')
+" 2>/dev/null) || true
+
+  if [ -z "$persona_journey_map" ]; then
+    log_error "Could not extract persona-journey mapping from personas.json"
+    fail_step 20 "Empty persona-journey mapping"
+    return 1
+  fi
+
+  local total_tests
+  total_tests=$(echo "$persona_journey_map" | wc -l | tr -d ' ')
+  log "Test matrix: $total_tests persona-journey pairs"
+  log "Worker count: $NUM_WORKERS (set STEP20_WORKERS to change)"
+
+  # ── Worker infrastructure: MCP configs and batch files ─────────────────────
+  local batch_dir="$SESSION_DIR/.worker-batches"
+  mkdir -p "$batch_dir" 2>/dev/null || true
+
+  # Create per-worker MCP configs with isolated Playwright browser instances
+  local w
+  for w in $(seq 1 "$NUM_WORKERS"); do
+    mkdir -p "$batch_dir/pw-data-${w}" 2>/dev/null || true
+    cat > "$batch_dir/mcp-worker-${w}.json" << MCPEOF
+{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp@latest","--executable-path","/snap/bin/chromium","--user-data-dir","$batch_dir/pw-data-${w}"]}}}
+MCPEOF
+  done
+
+  # ── Phase C: Explicit Journey Testing (Parallel) ───────────────────────────
+  log_separator
+  log "Phase C: Explicit Journey Testing ($NUM_WORKERS workers)"
+  log_separator
+
+  # Partition pairs into batch files (round-robin)
+  local batch_num=1
+  # Clear old batch and log files
+  for w in $(seq 1 "$NUM_WORKERS"); do
+    : > "$batch_dir/explicit-batch-${w}.txt"
+    : > "$batch_dir/explicit-log-${w}.txt"
+    : > "$batch_dir/explicit-result-${w}.txt"
+  done
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    echo "$line" >> "$batch_dir/explicit-batch-${batch_num}.txt"
+    batch_num=$(( (batch_num % NUM_WORKERS) + 1 ))
+  done <<< "$persona_journey_map"
+
+  # Launch workers in background
+  local worker_pids=()
+  for w in $(seq 1 "$NUM_WORKERS"); do
+    if [ ! -s "$batch_dir/explicit-batch-${w}.txt" ]; then
+      continue
+    fi
+    local batch_count
+    batch_count=$(wc -l < "$batch_dir/explicit-batch-${w}.txt" | tr -d ' ')
+    log "  Worker $w: $batch_count tests"
+
+    _run_explicit_worker "$w" \
+      "$batch_dir/explicit-batch-${w}.txt" \
+      "$batch_dir/mcp-worker-${w}.json" \
+      "$SESSION_DIR" \
+      "$artifacts_dir" \
+      "$personas_json" \
+      "$SESSION_NAME" \
+      "$test_run_id" \
+      "$base_url" \
+      "$DB_NAMESPACE" \
+      "$DB_POD" \
+      "$DB_USER" \
+      "$DB_NAME" \
+      "$DB_PASSWORD" \
+      "$batch_dir/explicit-result-${w}.txt" \
+      "$batch_dir/explicit-log-${w}.txt" &
+    worker_pids+=($!)
+  done
+
+  # Wait for all explicit workers
+  local pid
+  for pid in "${worker_pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  # Aggregate explicit results
+  local explicit_pass=0 explicit_fail=0 explicit_error=0
+  for w in $(seq 1 "$NUM_WORKERS"); do
+    if [ -f "$batch_dir/explicit-result-${w}.txt" ]; then
+      local p f e
+      IFS='|' read -r p f e _ _ < "$batch_dir/explicit-result-${w}.txt"
+      explicit_pass=$((explicit_pass + ${p:-0}))
+      explicit_fail=$((explicit_fail + ${f:-0}))
+      explicit_error=$((explicit_error + ${e:-0}))
+    fi
+    # Stream worker logs to main log
+    if [ -f "$batch_dir/explicit-log-${w}.txt" ]; then
+      while IFS= read -r logline; do
+        log "$logline"
+      done < "$batch_dir/explicit-log-${w}.txt"
+    fi
+  done
+
+  log_success "Explicit testing complete: $explicit_pass pass, $explicit_fail fail, $explicit_error error"
+
+  # ── Phase D: General Goal Testing (Parallel) ───────────────────────────────
+  log_separator
+  log "Phase D: General Goal Testing ($NUM_WORKERS workers)"
+  log_separator
+
+  # Partition pairs into batch files (round-robin)
+  batch_num=1
+  for w in $(seq 1 "$NUM_WORKERS"); do
+    : > "$batch_dir/general-batch-${w}.txt"
+    : > "$batch_dir/general-log-${w}.txt"
+    : > "$batch_dir/general-result-${w}.txt"
+  done
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    echo "$line" >> "$batch_dir/general-batch-${batch_num}.txt"
+    batch_num=$(( (batch_num % NUM_WORKERS) + 1 ))
+  done <<< "$persona_journey_map"
+
+  # Launch workers in background
+  worker_pids=()
+  for w in $(seq 1 "$NUM_WORKERS"); do
+    if [ ! -s "$batch_dir/general-batch-${w}.txt" ]; then
+      continue
+    fi
+    local batch_count
+    batch_count=$(wc -l < "$batch_dir/general-batch-${w}.txt" | tr -d ' ')
+    log "  Worker $w: $batch_count tests"
+
+    _run_general_worker "$w" \
+      "$batch_dir/general-batch-${w}.txt" \
+      "$batch_dir/mcp-worker-${w}.json" \
+      "$SESSION_DIR" \
+      "$artifacts_dir" \
+      "$personas_json" \
+      "$SESSION_NAME" \
+      "$test_run_id" \
+      "$base_url" \
+      "$DB_NAMESPACE" \
+      "$DB_POD" \
+      "$DB_USER" \
+      "$DB_NAME" \
+      "$DB_PASSWORD" \
+      "$batch_dir/general-result-${w}.txt" \
+      "$batch_dir/general-log-${w}.txt" &
+    worker_pids+=($!)
+  done
+
+  # Wait for all general workers
+  for pid in "${worker_pids[@]}"; do
+    wait "$pid" || true
+  done
+
+  # Aggregate general results
+  local general_pass=0 general_fail=0 general_error=0
+  local general_scores_sum=0 general_scores_count=0
+  for w in $(seq 1 "$NUM_WORKERS"); do
+    if [ -f "$batch_dir/general-result-${w}.txt" ]; then
+      local p f e ss sc
+      IFS='|' read -r p f e ss sc < "$batch_dir/general-result-${w}.txt"
+      general_pass=$((general_pass + ${p:-0}))
+      general_fail=$((general_fail + ${f:-0}))
+      general_error=$((general_error + ${e:-0}))
+      general_scores_sum=$((general_scores_sum + ${ss:-0}))
+      general_scores_count=$((general_scores_count + ${sc:-0}))
+    fi
+    # Stream worker logs to main log
+    if [ -f "$batch_dir/general-log-${w}.txt" ]; then
+      while IFS= read -r logline; do
+        log "$logline"
+      done < "$batch_dir/general-log-${w}.txt"
+    fi
+  done
+
+  local avg_score=0
+  if [ "$general_scores_count" -gt 0 ]; then
+    avg_score=$((general_scores_sum / general_scores_count))
+  fi
+
+  log_success "General testing complete: $general_pass pass, $general_fail fail, $general_error error (avg score: $avg_score/100)"
+
+  # ── Phase E: Write summary and marker ──────────────────────────────────────
+  local total_pass=$((explicit_pass + general_pass))
+  local total_fail=$((explicit_fail + general_fail))
+  local total_error=$((explicit_error + general_error))
+
+  # ── Validate DB persistence before writing marker ──────────────────────────
+  local expected_db_rows=$((total_pass + total_fail))
+  local actual_db_rows
+  actual_db_rows=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+    "SELECT count(*) FROM test_instance WHERE test_run_id='$test_run_id';" 2>&1) || true
+  actual_db_rows=$(echo "$actual_db_rows" | tr -d '[:space:]')
+
+  if [ "${actual_db_rows:-0}" -lt "$expected_db_rows" ]; then
+    log_error "DB DATA LOSS DETECTED: expected $expected_db_rows rows in test_instance but found ${actual_db_rows:-0}"
+    log_error "Check worker logs in $batch_dir/ for DB INSERT FAILED messages"
+  else
+    log "DB validation: ${actual_db_rows:-0} rows match expected $expected_db_rows"
+  fi
+
+  # Only write completion marker if at least one test actually ran (pass or fail).
+  # All-error runs (e.g. missing journey goals, DB issues) should NOT mark complete
+  # so the pipeline retries on next invocation.
+  if [ "$total_pass" -gt 0 ] || [ "$total_fail" -gt 0 ]; then
+    {
+      echo "test_run_id=$test_run_id"
+      echo "workers=$NUM_WORKERS"
+      echo "explicit_pass=$explicit_pass"
+      echo "explicit_fail=$explicit_fail"
+      echo "explicit_error=$explicit_error"
+      echo "general_pass=$general_pass"
+      echo "general_fail=$general_fail"
+      echo "general_error=$general_error"
+      echo "general_avg_score=$avg_score"
+      echo "total_tests=$total_tests"
+      echo "db_rows_expected=$expected_db_rows"
+      echo "db_rows_actual=${actual_db_rows:-0}"
+      echo "artifacts_dir=$artifacts_dir"
+      echo "generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    } > "$SESSION_DIR/test-feedback-generated.txt"
+
+    complete_step 20 "Journey tests complete ($total_pass pass, $total_fail fail, avg score: $avg_score/100)"
+    dim_path "  Artifacts: $artifacts_dir"
+    dim_path "  Marker: $SESSION_DIR/test-feedback-generated.txt"
+  else
+    fail_step 20 "All $total_error tests errored — no marker written, will retry on next run"
+  fi
 }
 
 # Show final summary
@@ -6610,10 +7862,10 @@ COMPLETE
   echo ""
   echo -e "  ${BOLD}Next Steps${NC}"
   echo -e "  ${DIM}─────────────────────────────────────────────────────────${NC}"
-  echo -e "  ${WHITE}1.${NC} Review generated API and frontend code"
-  echo -e "  ${WHITE}2.${NC} Run ${CYAN}./build.sh${NC} to build and deploy"
-  echo -e "  ${WHITE}3.${NC} Run ${CYAN}/pm:decompose $SESSION_NAME${NC} to create PRDs"
-  echo -e "  ${WHITE}4.${NC} Query database for features/journeys"
+  echo -e "  ${WHITE}1.${NC} Review test results in ${CYAN}test_instance${NC} and feedback tables"
+  echo -e "  ${WHITE}2.${NC} Run ${CYAN}/pm:test-explicit $SESSION_NAME J-001 --persona persona-01${NC} for targeted retests"
+  echo -e "  ${WHITE}3.${NC} Run ${CYAN}/pm:decompose $SESSION_NAME${NC} to create PRDs from findings"
+  echo -e "  ${WHITE}4.${NC} Query: ${CYAN}SELECT persona_id, overall_status, score_overall FROM test_instance WHERE session_name='$SESSION_NAME'${NC}"
   echo ""
 }
 
@@ -6839,6 +8091,12 @@ main() {
     generate_personas_step
   else
     echo -e "  ${DIM}Step 19: Test Personas - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 20 ]; then
+    persona_journey_test_step
+  else
+    echo -e "  ${DIM}Step 20: Journey Tests - skipped (already complete)${NC}"
   fi
 
   show_final_summary
