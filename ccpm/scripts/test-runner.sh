@@ -316,7 +316,8 @@ if [ "$RETRY_MODE" = true ]; then
   explicit_map=$(echo -n "$explicit_map" | sed '/^$/d')
   general_map=$(echo -n "$general_map" | sed '/^$/d')
 
-  local explicit_count=0 general_count=0
+  explicit_count=0
+  general_count=0
   [ -n "$explicit_map" ] && explicit_count=$(echo "$explicit_map" | wc -l | tr -d ' ')
   [ -n "$general_map" ] && general_count=$(echo "$general_map" | wc -l | tr -d ' ')
   tl_log "Retrying: $explicit_count explicit, $general_count general failures"
