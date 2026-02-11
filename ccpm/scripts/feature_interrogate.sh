@@ -52,6 +52,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
 
+# Source shared test library (workers, DB helpers, matrix builder, etc.)
+source "$SCRIPT_DIR/lib/test-lib.sh"
+
 # Colors
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
@@ -6944,606 +6947,8 @@ print(sql)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Step 20: Persona Journey Tests (Parallel)
-# Runs explicit (guided) and general (goal-only) journey tests for each persona
-# using Claude sub-agents with Playwright MCP for real browser automation.
-# Parallelized: STEP20_WORKERS controls concurrency (default 4, set to 1 for sequential).
-# Each worker gets its own Playwright browser instance via separate MCP configs.
+# Worker functions extracted to lib/test-lib.sh (tl_run_explicit_worker, tl_run_general_worker)
 # ═══════════════════════════════════════════════════════════════════════════════
-
-# Worker function for explicit journey tests.
-# Runs as a background subshell — communicates results via files only.
-# Args: worker_id batch_file mcp_config session_dir artifacts_dir personas_json
-#       session_name test_run_id base_url db_namespace db_pod db_user db_name db_password
-_run_explicit_worker() {
-  local worker_id="$1"
-  local batch_file="$2"
-  local mcp_config="$3"
-  local session_dir="$4"
-  local artifacts_dir="$5"
-  local personas_json="$6"
-  local session_name="$7"
-  local test_run_id="$8"
-  local base_url="$9"
-  local db_namespace="${10}"
-  local db_pod="${11}"
-  local db_user="${12}"
-  local db_name="${13}"
-  local db_password="${14}"
-  local result_file="${15}"
-  local log_file="${16}"
-
-  local db_cmd="kubectl exec -i -n $db_namespace $db_pod -- env PGPASSWORD=$db_password"
-  local pass=0 fail=0 error=0
-  local test_num=0
-  local total
-  total=$(wc -l < "$batch_file" | tr -d ' ')
-
-  while IFS='|' read -r persona_id journey_id <&3; do
-    [ -z "$persona_id" ] && continue
-    [ -z "$journey_id" ] && continue
-    ((test_num++)) || true
-
-    echo "[W${worker_id}] [$test_num/$total] Explicit: $persona_id × $journey_id" >> "$log_file"
-
-    # Skip if already tested in a previous run
-    local already_tested
-    already_tested=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT count(*) FROM test_instance WHERE session_name='$session_name' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='explicit';" 2>/dev/null) || true
-    if [ "${already_tested:-0}" -gt 0 ]; then
-      echo "[W${worker_id}]   Already tested — skipping (resume)" >> "$log_file"
-      local prev_status
-      prev_status=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-        "SELECT overall_status FROM test_instance WHERE session_name='$session_name' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='explicit' ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
-      if [ "$prev_status" = "pass" ]; then
-        ((pass++)) || true
-      else
-        ((fail++)) || true
-      fi
-      continue
-    fi
-
-    # Get persona credentials
-    local persona_email persona_password
-    persona_email=$(python3 -c "
-import json
-data = json.load(open('$personas_json'))
-personas = data.get('personas', data if isinstance(data, list) else [])
-for p in personas:
-    if p.get('id') == '$persona_id':
-        print(p.get('testData', {}).get('email', ''))
-        break
-" 2>/dev/null) || true
-    persona_password=$(python3 -c "
-import json
-data = json.load(open('$personas_json'))
-personas = data.get('personas', data if isinstance(data, list) else [])
-for p in personas:
-    if p.get('id') == '$persona_id':
-        print(p.get('testData', {}).get('password', ''))
-        break
-" 2>/dev/null) || true
-
-    if [ -z "$persona_email" ] || [ -z "$persona_password" ]; then
-      echo "[W${worker_id}]   No credentials for $persona_id — skipping" >> "$log_file"
-      ((error++)) || true
-      continue
-    fi
-
-    # Get journey data from DB
-    local journey_db_id journey_name journey_steps_json
-    journey_db_id=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT id FROM journey WHERE session_name='$session_name' AND journey_id='$journey_id' AND confirmation_status='confirmed';" 2>/dev/null) || true
-
-    if [ -z "$journey_db_id" ]; then
-      echo "[W${worker_id}]   Journey $journey_id not found or not confirmed — skipping" >> "$log_file"
-      ((error++)) || true
-      continue
-    fi
-
-    journey_name=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT name FROM journey WHERE id=$journey_db_id;" 2>/dev/null) || true
-
-    journey_steps_json=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT json_agg(row_to_json(s) ORDER BY s.step_number) FROM (
-        SELECT step_number, step_name, user_action, user_intent,
-               ui_page_route, ui_component_type, ui_component_name,
-               ui_feedback, ui_state_after, possible_errors
-        FROM journey_steps_detailed WHERE journey_id=$journey_db_id
-        ORDER BY step_number
-      ) s;" 2>/dev/null) || true
-
-    if [ -z "$journey_steps_json" ] || [ "$journey_steps_json" = "null" ]; then
-      echo "[W${worker_id}]   No steps found for $journey_id — skipping" >> "$log_file"
-      ((error++)) || true
-      continue
-    fi
-
-    # Create artifacts subdirectory
-    local test_artifacts="$artifacts_dir/$persona_id/$journey_id"
-    mkdir -p "$test_artifacts" 2>/dev/null || true
-
-    # Build explicit test prompt
-    local prompt_file="$session_dir/.explicit-test-prompt-${persona_id}-${journey_id}.txt"
-    cat > "$prompt_file" << EXPLICIT_PROMPT_EOF
-Test a web application by navigating it in the browser. Follow the journey steps and report results as JSON.
-
-APPLICATION: $base_url
-LOGIN: Email: $persona_email  Password: $persona_password
-
-JOURNEY: $journey_name ($journey_id)
-
-STEPS TO TEST:
-$journey_steps_json
-
-INSTRUCTIONS:
-1. Navigate to $base_url
-2. Log in with the credentials above
-3. For each journey step, perform the user_action in the browser
-4. Check if it worked — report "complete" or "incomplete"
-5. If incomplete: describe what went wrong
-6. Take a screenshot on failures (save to $test_artifacts/)
-7. Continue testing even if a step fails
-8. Close the browser when done
-
-Your final output must be ONLY this JSON (no other text):
-{"login_status":"complete","login_notes":"...","step_results":[{"step_number":1,"step_name":"...","status":"complete or incomplete","failure_reason":null,"failure_category":null,"expected_outcome":null,"actual_outcome":null,"bugs_found":[],"accessibility_issues":[],"performance_notes":null,"suggestions":null,"page_url":"..."}]}
-EXPLICIT_PROMPT_EOF
-
-    # Run Claude sub-agent with worker-specific MCP config
-    local output_file="$session_dir/.explicit-result-${persona_id}-${journey_id}.json"
-    # Look up existing Claude session for this persona+journey (across all pipeline sessions)
-    local claude_session_id claude_session_flag
-    claude_session_id=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT claude_session_id FROM test_instance
-       WHERE persona_id='$persona_id' AND journey_id='$journey_id' AND mode='explicit'
-         AND claude_session_id IS NOT NULL
-       ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
-    claude_session_id=$(echo "$claude_session_id" | tr -d '[:space:]')
-
-    if [ -n "$claude_session_id" ]; then
-      claude_session_flag="--resume"
-    else
-      claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
-      claude_session_flag="--session-id"
-    fi
-
-    local claude_attempt=1
-    local max_attempts=2
-    local test_success=false
-
-    while [ "$claude_attempt" -le "$max_attempts" ]; do
-      claude --dangerously-skip-permissions --print \
-        $claude_session_flag "$claude_session_id" \
-        --strict-mcp-config --mcp-config "$mcp_config" \
-        --append-system-prompt "You are a QA tester. Navigate the app in the browser, test it, then output ONLY valid JSON as your final message. No markdown fences, no explanation — just the JSON object." \
-        -p "$(cat "$prompt_file")" \
-        > "$output_file" 2>/dev/null || true
-
-      if [ -f "$output_file" ] && [ -s "$output_file" ]; then
-        sed -i '/./,$!d' "$output_file"
-        sed -i '/^```/d' "$output_file"
-
-        if python3 -c "import json; data=json.load(open('$output_file')); assert 'step_results' in data" 2>/dev/null; then
-          test_success=true
-          break
-        fi
-      fi
-      ((claude_attempt++)) || true
-    done
-
-    if [ "$test_success" != "true" ]; then
-      echo "[W${worker_id}]   FAIL (no valid JSON) $persona_id × $journey_id" >> "$log_file"
-      ((error++)) || true
-      continue
-    fi
-
-    # Parse results and insert into database — write SQL to file first for error capture
-    local sql_file="$session_dir/.sql-explicit-${persona_id}-${journey_id}.sql"
-    python3 << PARSE_EXPLICIT_WEOF > "$sql_file"
-import json, sys
-
-try:
-    data = json.load(open('$output_file'))
-    steps = data.get('step_results', [])
-    total = len(steps)
-    completed = sum(1 for s in steps if s.get('status') == 'complete')
-    failed = sum(1 for s in steps if s.get('status') == 'incomplete')
-
-    if failed == 0 and completed > 0:
-        status = 'pass'
-    elif completed == 0:
-        status = 'fail'
-    else:
-        status = 'partial'
-
-    print(f"""INSERT INTO test_instance (
-        session_name, test_run_id, persona_id, mode,
-        journey_id, journey_db_id,
-        overall_status, steps_total, steps_completed, steps_failed,
-        base_url, artifacts_dir, started_at, completed_at
-    ) VALUES (
-        '$session_name', '$test_run_id', '$persona_id', 'explicit',
-        '$journey_id', $journey_db_id,
-        '{status}', {total}, {completed}, {failed},
-        '$base_url', '$test_artifacts',
-        NOW(), NOW()
-    ) ON CONFLICT DO NOTHING;""")
-
-    def esc(v):
-        if v is None: return ''
-        if isinstance(v, (list, dict)): return json.dumps(v).replace("'", "''")
-        return str(v).replace("'", "''")
-
-    for s in steps:
-        sn = s.get('step_number', 0)
-        sname = esc(s.get('step_name', ''))
-        sstatus = s.get('status', 'skipped')
-        fr = esc(s.get('failure_reason'))
-        fc = esc(s.get('failure_category'))
-        eo = esc(s.get('expected_outcome'))
-        ao = esc(s.get('actual_outcome'))
-        bugs = json.dumps(s.get('bugs_found', [])).replace("'", "''")
-        access = json.dumps(s.get('accessibility_issues', [])).replace("'", "''")
-        perf = esc(s.get('performance_notes'))
-        sugg = esc(s.get('suggestions'))
-        purl = esc(s.get('page_url'))
-
-        print(f"""INSERT INTO explicit_journey_feedback (
-            test_instance_id,
-            step_number, step_name, status,
-            failure_reason, failure_category, expected_outcome, actual_outcome,
-            bugs_found, accessibility_issues, performance_notes, suggestions,
-            page_url
-        ) VALUES (
-            (SELECT id FROM test_instance WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND journey_id='$journey_id' LIMIT 1),
-            {sn}, '{sname}', '{sstatus}',
-            '{fr}', '{fc}', '{eo}', '{ao}',
-            '{bugs}'::jsonb, '{access}'::jsonb, '{perf}', '{sugg}',
-            '{purl}'
-        );""")
-
-except Exception as e:
-    print(f"-- Error: {e}", file=sys.stderr)
-PARSE_EXPLICIT_WEOF
-
-    # Execute SQL with error capture (no silent suppression)
-    if [ -s "$sql_file" ]; then
-      local db_err
-      db_err=$($db_cmd psql -U "$db_user" -d "$db_name" -f - < "$sql_file" 2>&1) || true
-      if echo "$db_err" | grep -qi "error"; then
-        echo "[W${worker_id}]   DB INSERT FAILED for $persona_id × $journey_id: $(echo "$db_err" | head -3)" >> "$log_file"
-      fi
-      # Store Claude session ID for later resume
-      $db_cmd psql -U "$db_user" -d "$db_name" -c \
-        "UPDATE test_instance SET claude_session_id='$claude_session_id' WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='explicit';" 2>/dev/null || true
-    else
-      echo "[W${worker_id}]   SQL generation produced empty output for $persona_id × $journey_id" >> "$log_file"
-    fi
-
-    # Count result
-    local test_status
-    test_status=$(python3 -c "
-import json
-data = json.load(open('$output_file'))
-steps = data.get('step_results', [])
-completed = sum(1 for s in steps if s.get('status') == 'complete')
-failed = sum(1 for s in steps if s.get('status') == 'incomplete')
-if failed == 0 and completed > 0: print('pass')
-elif completed == 0: print('fail')
-else: print('partial')
-" 2>/dev/null) || true
-
-    if [ "$test_status" = "pass" ]; then
-      echo "[W${worker_id}]   PASS $persona_id × $journey_id" >> "$log_file"
-      ((pass++)) || true
-    else
-      echo "[W${worker_id}]   ${test_status:-error} $persona_id × $journey_id" >> "$log_file"
-      ((fail++)) || true
-    fi
-
-    # Clear browser state between persona tests to prevent stale sessions
-    local pw_data_dir
-    pw_data_dir="$(dirname "$mcp_config")/pw-data-${worker_id}"
-    rm -rf "${pw_data_dir:?}/"* 2>/dev/null || true
-
-  done 3< "$batch_file"
-
-  # Write results for aggregation by main process
-  echo "${pass}|${fail}|${error}" > "$result_file"
-}
-
-# Worker function for general goal tests.
-# Args: same as _run_explicit_worker
-_run_general_worker() {
-  local worker_id="$1"
-  local batch_file="$2"
-  local mcp_config="$3"
-  local session_dir="$4"
-  local artifacts_dir="$5"
-  local personas_json="$6"
-  local session_name="$7"
-  local test_run_id="$8"
-  local base_url="$9"
-  local db_namespace="${10}"
-  local db_pod="${11}"
-  local db_user="${12}"
-  local db_name="${13}"
-  local db_password="${14}"
-  local result_file="${15}"
-  local log_file="${16}"
-
-  local db_cmd="kubectl exec -i -n $db_namespace $db_pod -- env PGPASSWORD=$db_password"
-  local pass=0 fail=0 error=0
-  local scores_sum=0 scores_count=0
-  local test_num=0
-  local total
-  total=$(wc -l < "$batch_file" | tr -d ' ')
-
-  while IFS='|' read -r persona_id journey_id <&3; do
-    [ -z "$persona_id" ] && continue
-    [ -z "$journey_id" ] && continue
-    ((test_num++)) || true
-
-    echo "[W${worker_id}] [$test_num/$total] General: $persona_id × $journey_id" >> "$log_file"
-
-    # Skip if already tested
-    local already_tested
-    already_tested=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT count(*) FROM test_instance WHERE session_name='$session_name' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='general';" 2>/dev/null) || true
-    if [ "${already_tested:-0}" -gt 0 ]; then
-      echo "[W${worker_id}]   Already tested — skipping (resume)" >> "$log_file"
-      local prev_status
-      prev_status=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-        "SELECT overall_status FROM test_instance WHERE session_name='$session_name' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='general' ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
-      if [ "$prev_status" = "pass" ]; then
-        ((pass++)) || true
-      else
-        ((fail++)) || true
-      fi
-      continue
-    fi
-
-    # Get persona credentials
-    local persona_email persona_password
-    persona_email=$(python3 -c "
-import json
-data = json.load(open('$personas_json'))
-for p in data.get('personas', []):
-    if p.get('id') == '$persona_id':
-        print(p.get('testData', {}).get('email', ''))
-        break
-" 2>/dev/null) || true
-    persona_password=$(python3 -c "
-import json
-data = json.load(open('$personas_json'))
-for p in data.get('personas', []):
-    if p.get('id') == '$persona_id':
-        print(p.get('testData', {}).get('password', ''))
-        break
-" 2>/dev/null) || true
-
-    if [ -z "$persona_email" ] || [ -z "$persona_password" ]; then
-      ((error++)) || true
-      continue
-    fi
-
-    # Get goal text from journey
-    local goal_text
-    goal_text=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT COALESCE(goal, '') FROM journey WHERE session_name='$session_name' AND journey_id='$journey_id';" 2>/dev/null) || true
-
-    if [ -z "$goal_text" ]; then
-      echo "[W${worker_id}]   No goal found for $journey_id — skipping" >> "$log_file"
-      ((error++)) || true
-      continue
-    fi
-
-    local test_artifacts="$artifacts_dir/$persona_id/general-$journey_id"
-    mkdir -p "$test_artifacts" 2>/dev/null || true
-
-    # Build general test prompt
-    local prompt_file="$session_dir/.general-test-prompt-${persona_id}-${journey_id}.txt"
-    cat > "$prompt_file" << GENERAL_PROMPT_EOF
-Explore a web application in the browser to accomplish a goal. No predefined steps — discover the path yourself. Report results as JSON.
-
-APPLICATION: $base_url
-LOGIN: Email: $persona_email  Password: $persona_password
-
-GOAL: $goal_text
-
-INSTRUCTIONS:
-1. Navigate to $base_url
-2. Log in with the credentials above
-3. Explore the UI to accomplish the goal
-4. Record every action you take as a discovered step
-5. For each step: score intuitive (0-100) and feedback_quality (0-100)
-6. Note any bugs, accessibility issues, confusion points
-7. Save screenshots to $test_artifacts/ on interesting findings
-8. After completing or failing, score the rubric below
-9. Close the browser when done
-
-RUBRIC (0-100 each): task_completion (100=achieved, 0=failed), efficiency (100=optimal, 0=abandoned), error_recovery (100=none, 0=unrecoverable), learnability (100=obvious, 0=undiscoverable), confidence (100=certain, 0=lost)
-
-Your final output must be ONLY this JSON (no other text):
-{"goal_achieved":true,"discovered_steps":[{"step_number":1,"action_taken":"...","action_intent":"...","page_url":"...","element_interacted":"...","score_intuitive":90,"score_feedback_quality":85,"observation":"...","bugs_found":[],"accessibility_issues":[],"performance_notes":null,"suggestions":null,"confusion_points":null}],"rubric_scores":{"task_completion":75,"efficiency":80,"error_recovery":100,"learnability":70,"confidence":85},"overall_notes":"..."}
-GENERAL_PROMPT_EOF
-
-    # Run Claude sub-agent with worker-specific MCP config
-    local output_file="$session_dir/.general-result-${persona_id}-${journey_id}.json"
-    # Look up existing Claude session for this persona+journey (across all pipeline sessions)
-    local claude_session_id claude_session_flag
-    claude_session_id=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT claude_session_id FROM test_instance
-       WHERE persona_id='$persona_id' AND journey_id='$journey_id' AND mode='general'
-         AND claude_session_id IS NOT NULL
-       ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
-    claude_session_id=$(echo "$claude_session_id" | tr -d '[:space:]')
-
-    if [ -n "$claude_session_id" ]; then
-      claude_session_flag="--resume"
-    else
-      claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
-      claude_session_flag="--session-id"
-    fi
-
-    local claude_attempt=1
-    local test_success=false
-
-    while [ "$claude_attempt" -le 2 ]; do
-      claude --dangerously-skip-permissions --print \
-        $claude_session_flag "$claude_session_id" \
-        --strict-mcp-config --mcp-config "$mcp_config" \
-        --append-system-prompt "You are a QA tester. Navigate the app in the browser, test it, then output ONLY valid JSON as your final message. No markdown fences, no explanation — just the JSON object." \
-        -p "$(cat "$prompt_file")" \
-        > "$output_file" 2>/dev/null || true
-
-      if [ -f "$output_file" ] && [ -s "$output_file" ]; then
-        sed -i '/./,$!d' "$output_file"
-        sed -i '/^```/d' "$output_file"
-
-        if python3 -c "import json; data=json.load(open('$output_file')); assert 'rubric_scores' in data" 2>/dev/null; then
-          test_success=true
-          break
-        fi
-      fi
-      ((claude_attempt++)) || true
-    done
-
-    if [ "$test_success" != "true" ]; then
-      echo "[W${worker_id}]   FAIL (no valid JSON) general $persona_id × $journey_id" >> "$log_file"
-      ((error++)) || true
-      continue
-    fi
-
-    # Parse and insert results — write SQL to file first for error capture
-    local sql_file="$session_dir/.sql-general-${persona_id}-${journey_id}.sql"
-    python3 << PARSE_GENERAL_WEOF > "$sql_file"
-import json, sys
-
-try:
-    data = json.load(open('$output_file'))
-    steps = data.get('discovered_steps', [])
-    rubric = data.get('rubric_scores', {})
-    goal_achieved = data.get('goal_achieved', False)
-    total = len(steps)
-
-    tc = rubric.get('task_completion', 0)
-    eff = rubric.get('efficiency', 0)
-    er = rubric.get('error_recovery', 0)
-    learn = rubric.get('learnability', 0)
-    conf = rubric.get('confidence', 0)
-    overall = (tc + eff + er + learn + conf) // 5
-
-    status = 'pass' if goal_achieved and overall >= 50 else 'fail'
-    goal_text_escaped = """$goal_text""".replace("'", "''")
-
-    print(f"""INSERT INTO test_instance (
-        session_name, test_run_id, persona_id, mode,
-        journey_id,
-        goal_text, goal_source,
-        overall_status, steps_total, steps_completed,
-        score_task_completion, score_efficiency, score_error_recovery,
-        score_learnability, score_confidence, score_overall,
-        base_url, artifacts_dir, started_at, completed_at
-    ) VALUES (
-        '$session_name', '$test_run_id', '$persona_id', 'general',
-        '$journey_id',
-        '{goal_text_escaped}', 'journey:$journey_id',
-        '{status}', {total}, {total},
-        {tc}, {eff}, {er}, {learn}, {conf}, {overall},
-        '$base_url', '$test_artifacts',
-        NOW(), NOW()
-    ) ON CONFLICT DO NOTHING;""")
-
-    def esc(v):
-        if v is None: return ''
-        if isinstance(v, (list, dict)): return json.dumps(v).replace("'", "''")
-        return str(v).replace("'", "''")
-
-    for s in steps:
-        sn = s.get('step_number', 0)
-        at = esc(s.get('action_taken', ''))
-        ai = esc(s.get('action_intent'))
-        pu = esc(s.get('page_url'))
-        ei = esc(s.get('element_interacted'))
-        si = s.get('score_intuitive')
-        sfq = s.get('score_feedback_quality')
-        obs = esc(s.get('observation'))
-        bugs = json.dumps(s.get('bugs_found', [])).replace("'", "''")
-        access = json.dumps(s.get('accessibility_issues', [])).replace("'", "''")
-        perf = esc(s.get('performance_notes'))
-        sugg = esc(s.get('suggestions'))
-        conf_pts = esc(s.get('confusion_points'))
-
-        si_val = f"{si}" if si is not None else "NULL"
-        sfq_val = f"{sfq}" if sfq is not None else "NULL"
-
-        print(f"""INSERT INTO general_goal_feedback (
-            test_instance_id, step_number,
-            action_taken, action_intent, page_url, element_interacted,
-            score_intuitive, score_feedback_quality,
-            observation, bugs_found, accessibility_issues,
-            performance_notes, suggestions, confusion_points
-        ) VALUES (
-            (SELECT id FROM test_instance WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND mode='general' AND goal_source='journey:$journey_id' LIMIT 1),
-            {sn},
-            '{at}', '{ai}', '{pu}', '{ei}',
-            {si_val}, {sfq_val},
-            '{obs}', '{bugs}'::jsonb, '{access}'::jsonb,
-            '{perf}', '{sugg}', '{conf_pts}'
-        );""")
-
-except Exception as e:
-    print(f"-- Error: {e}", file=sys.stderr)
-PARSE_GENERAL_WEOF
-
-    # Execute SQL with error capture (no silent suppression)
-    if [ -s "$sql_file" ]; then
-      local db_err
-      db_err=$($db_cmd psql -U "$db_user" -d "$db_name" -f - < "$sql_file" 2>&1) || true
-      if echo "$db_err" | grep -qi "error"; then
-        echo "[W${worker_id}]   DB INSERT FAILED for general $persona_id × $journey_id: $(echo "$db_err" | head -3)" >> "$log_file"
-      fi
-      # Store Claude session ID for later resume
-      $db_cmd psql -U "$db_user" -d "$db_name" -c \
-        "UPDATE test_instance SET claude_session_id='$claude_session_id' WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='general';" 2>/dev/null || true
-    else
-      echo "[W${worker_id}]   SQL generation produced empty output for general $persona_id × $journey_id" >> "$log_file"
-    fi
-
-    # Extract score for summary
-    local overall_score
-    overall_score=$(python3 -c "
-import json
-data = json.load(open('$output_file'))
-r = data.get('rubric_scores', {})
-scores = [r.get('task_completion',0), r.get('efficiency',0), r.get('error_recovery',0), r.get('learnability',0), r.get('confidence',0)]
-print(sum(scores) // 5)
-" 2>/dev/null) || true
-
-    if [ "${overall_score:-0}" -ge 50 ]; then
-      echo "[W${worker_id}]   PASS $persona_id × $journey_id (score ${overall_score}/100)" >> "$log_file"
-      ((pass++)) || true
-    else
-      echo "[W${worker_id}]   FAIL $persona_id × $journey_id (score ${overall_score:-0}/100)" >> "$log_file"
-      ((fail++)) || true
-    fi
-
-    if [ -n "$overall_score" ]; then
-      scores_sum=$((scores_sum + overall_score))
-      ((scores_count++)) || true
-    fi
-
-    # Clear browser state between persona tests to prevent stale sessions
-    local pw_data_dir
-    pw_data_dir="$(dirname "$mcp_config")/pw-data-${worker_id}"
-    rm -rf "${pw_data_dir:?}/"* 2>/dev/null || true
-
-  done 3< "$batch_file"
-
-  # Write results for aggregation: pass|fail|error|scores_sum|scores_count
-  echo "${pass}|${fail}|${error}|${scores_sum}|${scores_count}" > "$result_file"
-}
 
 persona_journey_test_step() {
   show_step_header 20 "Persona Journey Tests" "test"
@@ -7556,31 +6961,17 @@ persona_journey_test_step() {
   local NUM_WORKERS="${STEP20_WORKERS:-3}"
 
   # ── Phase A: Verify prerequisites ──────────────────────────────────────────
-  if [ ! -f "$personas_json" ]; then
-    fail_step 20 "Personas JSON not found at $personas_json — run Step 19 first"
+  # Ensure test-lib has DB config (may differ from pipeline's load_db_config)
+  TL_DB_NAMESPACE="$DB_NAMESPACE"
+  TL_DB_POD="$DB_POD"
+  TL_DB_USER="$DB_USER"
+  TL_DB_NAME="$DB_NAME"
+  TL_DB_PASSWORD="$DB_PASSWORD"
+
+  if ! tl_check_test_prerequisites "$SESSION_DIR" "$SESSION_NAME" "$PROJECT_ROOT"; then
+    fail_step 20 "Prerequisites check failed"
     return 1
   fi
-
-  # Run new test migrations
-  log "Ensuring test feedback tables exist..."
-  for mig in backend/migrations/042_test_instances.sql backend/migrations/043_explicit_journey_feedback.sql backend/migrations/044_general_goal_feedback.sql; do
-    if [ -f "$PROJECT_ROOT/$mig" ]; then
-      kubectl exec -i -n "$DB_NAMESPACE" "$DB_POD" -- \
-        env PGPASSWORD="$DB_PASSWORD" psql -U "$DB_USER" -d "$DB_NAME" -f - < "$PROJECT_ROOT/$mig" 2>/dev/null || true
-    fi
-  done
-  log_success "Test feedback tables ready"
-
-  # Check test users exist
-  local test_user_count
-  test_user_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
-    "SELECT count(*) FROM users WHERE email LIKE 'test+persona%';" 2>/dev/null) || true
-  if [ "${test_user_count:-0}" -lt 5 ]; then
-    log_error "Only ${test_user_count:-0} test users found (need at least 5). Run Step 19 first."
-    fail_step 20 "Insufficient test users"
-    return 1
-  fi
-  log "Found ${test_user_count} test users"
 
   # ── Route validation: check journey routes exist in App.tsx ──────────────
   local app_tsx_path="$PROJECT_ROOT/frontend/src/App.tsx"
@@ -7614,23 +7005,11 @@ persona_journey_test_step() {
 
   mkdir -p "$artifacts_dir" 2>/dev/null || true
 
-  # ── Phase B: Build persona-journey mapping ─────────────────────────────────
+  # ── Phase B: Build persona-journey mapping (via library) ───────────────────
   log "Building persona-journey test matrix..."
 
-  # Get primary journeys for each persona from personas.json
   local persona_journey_map
-  persona_journey_map=$(python3 -c "
-import json, sys
-data = json.load(open('$personas_json'))
-personas = data.get('personas', data if isinstance(data, list) else [])
-for p in personas:
-    pid = p.get('id', '')
-    journeys = p.get('journeys', {})
-    primary = journeys.get('primary', [])
-    if primary:
-        for jid in primary[:3]:
-            print(f'{pid}|{jid}')
-" 2>/dev/null) || true
+  persona_journey_map=$(tl_build_test_matrix "$personas_json")
 
   if [ -z "$persona_journey_map" ]; then
     log_error "Could not extract persona-journey mapping from personas.json"
@@ -7643,40 +7022,22 @@ for p in personas:
   log "Test matrix: $total_tests persona-journey pairs"
   log "Worker count: $NUM_WORKERS (set STEP20_WORKERS to change)"
 
-  # ── Worker infrastructure: MCP configs and batch files ─────────────────────
+  # ── Worker infrastructure: MCP configs and batch files (via library) ───────
   local batch_dir="$SESSION_DIR/.worker-batches"
   mkdir -p "$batch_dir" 2>/dev/null || true
 
-  # Create per-worker MCP configs with isolated Playwright browser instances
-  local w
-  for w in $(seq 1 "$NUM_WORKERS"); do
-    mkdir -p "$batch_dir/pw-data-${w}" 2>/dev/null || true
-    cat > "$batch_dir/mcp-worker-${w}.json" << MCPEOF
-{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp@latest","--executable-path","/snap/bin/chromium","--user-data-dir","$batch_dir/pw-data-${w}"]}}}
-MCPEOF
-  done
+  tl_create_mcp_configs "$batch_dir" "$NUM_WORKERS"
 
   # ── Phase C: Explicit Journey Testing (Parallel) ───────────────────────────
   log_separator
   log "Phase C: Explicit Journey Testing ($NUM_WORKERS workers)"
   log_separator
 
-  # Partition pairs into batch files (round-robin)
-  local batch_num=1
-  # Clear old batch and log files
-  for w in $(seq 1 "$NUM_WORKERS"); do
-    : > "$batch_dir/explicit-batch-${w}.txt"
-    : > "$batch_dir/explicit-log-${w}.txt"
-    : > "$batch_dir/explicit-result-${w}.txt"
-  done
-  while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    echo "$line" >> "$batch_dir/explicit-batch-${batch_num}.txt"
-    batch_num=$(( (batch_num % NUM_WORKERS) + 1 ))
-  done <<< "$persona_journey_map"
+  tl_partition_batches "$batch_dir" "$NUM_WORKERS" "explicit" "$persona_journey_map"
 
   # Launch workers in background
   local worker_pids=()
+  local w
   for w in $(seq 1 "$NUM_WORKERS"); do
     if [ ! -s "$batch_dir/explicit-batch-${w}.txt" ]; then
       continue
@@ -7685,7 +7046,7 @@ MCPEOF
     batch_count=$(wc -l < "$batch_dir/explicit-batch-${w}.txt" | tr -d ' ')
     log "  Worker $w: $batch_count tests"
 
-    _run_explicit_worker "$w" \
+    tl_run_explicit_worker "$w" \
       "$batch_dir/explicit-batch-${w}.txt" \
       "$batch_dir/mcp-worker-${w}.json" \
       "$SESSION_DIR" \
@@ -7710,23 +7071,13 @@ MCPEOF
     wait "$pid" || true
   done
 
-  # Aggregate explicit results
-  local explicit_pass=0 explicit_fail=0 explicit_error=0
-  for w in $(seq 1 "$NUM_WORKERS"); do
-    if [ -f "$batch_dir/explicit-result-${w}.txt" ]; then
-      local p f e
-      IFS='|' read -r p f e _ _ < "$batch_dir/explicit-result-${w}.txt"
-      explicit_pass=$((explicit_pass + ${p:-0}))
-      explicit_fail=$((explicit_fail + ${f:-0}))
-      explicit_error=$((explicit_error + ${e:-0}))
-    fi
-    # Stream worker logs to main log
-    if [ -f "$batch_dir/explicit-log-${w}.txt" ]; then
-      while IFS= read -r logline; do
-        log "$logline"
-      done < "$batch_dir/explicit-log-${w}.txt"
-    fi
-  done
+  # Aggregate explicit results (via library)
+  local explicit_agg
+  explicit_agg=$(tl_aggregate_explicit_results "$batch_dir" "$NUM_WORKERS")
+  local explicit_pass explicit_fail explicit_error
+  IFS='|' read -r explicit_pass explicit_fail explicit_error <<< "$explicit_agg"
+
+  tl_stream_worker_logs "$batch_dir" "$NUM_WORKERS" "explicit" "log"
 
   log_success "Explicit testing complete: $explicit_pass pass, $explicit_fail fail, $explicit_error error"
 
@@ -7735,18 +7086,7 @@ MCPEOF
   log "Phase D: General Goal Testing ($NUM_WORKERS workers)"
   log_separator
 
-  # Partition pairs into batch files (round-robin)
-  batch_num=1
-  for w in $(seq 1 "$NUM_WORKERS"); do
-    : > "$batch_dir/general-batch-${w}.txt"
-    : > "$batch_dir/general-log-${w}.txt"
-    : > "$batch_dir/general-result-${w}.txt"
-  done
-  while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    echo "$line" >> "$batch_dir/general-batch-${batch_num}.txt"
-    batch_num=$(( (batch_num % NUM_WORKERS) + 1 ))
-  done <<< "$persona_journey_map"
+  tl_partition_batches "$batch_dir" "$NUM_WORKERS" "general" "$persona_journey_map"
 
   # Launch workers in background
   worker_pids=()
@@ -7758,7 +7098,7 @@ MCPEOF
     batch_count=$(wc -l < "$batch_dir/general-batch-${w}.txt" | tr -d ' ')
     log "  Worker $w: $batch_count tests"
 
-    _run_general_worker "$w" \
+    tl_run_general_worker "$w" \
       "$batch_dir/general-batch-${w}.txt" \
       "$batch_dir/mcp-worker-${w}.json" \
       "$SESSION_DIR" \
@@ -7782,29 +7122,16 @@ MCPEOF
     wait "$pid" || true
   done
 
-  # Aggregate general results
-  local general_pass=0 general_fail=0 general_error=0
-  local general_scores_sum=0 general_scores_count=0
-  for w in $(seq 1 "$NUM_WORKERS"); do
-    if [ -f "$batch_dir/general-result-${w}.txt" ]; then
-      local p f e ss sc
-      IFS='|' read -r p f e ss sc < "$batch_dir/general-result-${w}.txt"
-      general_pass=$((general_pass + ${p:-0}))
-      general_fail=$((general_fail + ${f:-0}))
-      general_error=$((general_error + ${e:-0}))
-      general_scores_sum=$((general_scores_sum + ${ss:-0}))
-      general_scores_count=$((general_scores_count + ${sc:-0}))
-    fi
-    # Stream worker logs to main log
-    if [ -f "$batch_dir/general-log-${w}.txt" ]; then
-      while IFS= read -r logline; do
-        log "$logline"
-      done < "$batch_dir/general-log-${w}.txt"
-    fi
-  done
+  # Aggregate general results (via library)
+  local general_agg
+  general_agg=$(tl_aggregate_general_results "$batch_dir" "$NUM_WORKERS")
+  local general_pass general_fail general_error general_scores_sum general_scores_count
+  IFS='|' read -r general_pass general_fail general_error general_scores_sum general_scores_count <<< "$general_agg"
+
+  tl_stream_worker_logs "$batch_dir" "$NUM_WORKERS" "general" "log"
 
   local avg_score=0
-  if [ "$general_scores_count" -gt 0 ]; then
+  if [ "${general_scores_count:-0}" -gt 0 ]; then
     avg_score=$((general_scores_sum / general_scores_count))
   fi
 
