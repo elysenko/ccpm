@@ -7091,12 +7091,29 @@ EXPLICIT_PROMPT_EOF
 
     # Run Claude sub-agent with worker-specific MCP config
     local output_file="$session_dir/.explicit-result-${persona_id}-${journey_id}.json"
+    # Look up existing Claude session for this persona+journey (across all pipeline sessions)
+    local claude_session_id claude_session_flag
+    claude_session_id=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT claude_session_id FROM test_instance
+       WHERE persona_id='$persona_id' AND journey_id='$journey_id' AND mode='explicit'
+         AND claude_session_id IS NOT NULL
+       ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
+    claude_session_id=$(echo "$claude_session_id" | tr -d '[:space:]')
+
+    if [ -n "$claude_session_id" ]; then
+      claude_session_flag="--resume"
+    else
+      claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
+      claude_session_flag="--session-id"
+    fi
+
     local claude_attempt=1
     local max_attempts=2
     local test_success=false
 
     while [ "$claude_attempt" -le "$max_attempts" ]; do
       claude --dangerously-skip-permissions --print \
+        $claude_session_flag "$claude_session_id" \
         --strict-mcp-config --mcp-config "$mcp_config" \
         --append-system-prompt "You are a QA tester. Navigate the app in the browser, test it, then output ONLY valid JSON as your final message. No markdown fences, no explanation — just the JSON object." \
         -p "$(cat "$prompt_file")" \
@@ -7196,6 +7213,9 @@ PARSE_EXPLICIT_WEOF
       if echo "$db_err" | grep -qi "error"; then
         echo "[W${worker_id}]   DB INSERT FAILED for $persona_id × $journey_id: $(echo "$db_err" | head -3)" >> "$log_file"
       fi
+      # Store Claude session ID for later resume
+      $db_cmd psql -U "$db_user" -d "$db_name" -c \
+        "UPDATE test_instance SET claude_session_id='$claude_session_id' WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='explicit';" 2>/dev/null || true
     else
       echo "[W${worker_id}]   SQL generation produced empty output for $persona_id × $journey_id" >> "$log_file"
     fi
@@ -7350,11 +7370,28 @@ GENERAL_PROMPT_EOF
 
     # Run Claude sub-agent with worker-specific MCP config
     local output_file="$session_dir/.general-result-${persona_id}-${journey_id}.json"
+    # Look up existing Claude session for this persona+journey (across all pipeline sessions)
+    local claude_session_id claude_session_flag
+    claude_session_id=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT claude_session_id FROM test_instance
+       WHERE persona_id='$persona_id' AND journey_id='$journey_id' AND mode='general'
+         AND claude_session_id IS NOT NULL
+       ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
+    claude_session_id=$(echo "$claude_session_id" | tr -d '[:space:]')
+
+    if [ -n "$claude_session_id" ]; then
+      claude_session_flag="--resume"
+    else
+      claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
+      claude_session_flag="--session-id"
+    fi
+
     local claude_attempt=1
     local test_success=false
 
     while [ "$claude_attempt" -le 2 ]; do
       claude --dangerously-skip-permissions --print \
+        $claude_session_flag "$claude_session_id" \
         --strict-mcp-config --mcp-config "$mcp_config" \
         --append-system-prompt "You are a QA tester. Navigate the app in the browser, test it, then output ONLY valid JSON as your final message. No markdown fences, no explanation — just the JSON object." \
         -p "$(cat "$prompt_file")" \
@@ -7467,6 +7504,9 @@ PARSE_GENERAL_WEOF
       if echo "$db_err" | grep -qi "error"; then
         echo "[W${worker_id}]   DB INSERT FAILED for general $persona_id × $journey_id: $(echo "$db_err" | head -3)" >> "$log_file"
       fi
+      # Store Claude session ID for later resume
+      $db_cmd psql -U "$db_user" -d "$db_name" -c \
+        "UPDATE test_instance SET claude_session_id='$claude_session_id' WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND journey_id='$journey_id' AND mode='general';" 2>/dev/null || true
     else
       echo "[W${worker_id}]   SQL generation produced empty output for general $persona_id × $journey_id" >> "$log_file"
     fi
