@@ -13,6 +13,7 @@
 #   --workers N             Parallel fix agent count (default: 3)
 #   --test-workers N        Test runner worker count (default: 4)
 #   --skip-build            Skip build.sh on first iteration (useful for debugging)
+#   --retest-all            Run ALL tests every iteration (default: retry only failed on iter 2+)
 #   --help                  Show usage
 
 set -euo pipefail
@@ -45,6 +46,7 @@ NUM_WORKERS=3
 TEST_WORKERS=4
 SKIP_BUILD=false
 RESUME=false
+RETEST_ALL=false
 
 show_usage() {
   cat << 'USAGE_EOF'
@@ -62,6 +64,7 @@ Flags:
   --workers N               Parallel fix agent count (default: 3)
   --test-workers N          Test runner worker count (default: 4)
   --skip-build              Skip build.sh on first iteration
+  --retest-all              Run ALL tests every iteration (default: retry failed only on iter 2+)
   --resume                  Resume from last completed iteration
   --help                    Show this usage
 
@@ -85,6 +88,7 @@ while [[ $# -gt 0 ]]; do
     --help|-h) show_usage; exit 0 ;;
     --skip-first-test) SKIP_FIRST_TEST=true; shift ;;
     --skip-build) SKIP_BUILD=true; shift ;;
+    --retest-all) RETEST_ALL=true; shift ;;
     --resume) RESUME=true; shift ;;
     --max-iterations)
       [[ -z "${2:-}" ]] && { echo "Error: --max-iterations requires a number" >&2; exit 1; }
@@ -207,6 +211,7 @@ echo -e "  Start from:     $START_ITERATION"
 echo -e "  Fix workers:    $NUM_WORKERS"
 echo -e "  Test workers:   $TEST_WORKERS"
 echo -e "  Skip 1st test:  $SKIP_FIRST_TEST"
+echo -e "  Retest mode:    $([ "$RETEST_ALL" = true ] && echo "ALL tests every iter" || echo "failed-only on iter 2+")"
 echo -e "${DIM}─────────────────────────────────────────────────${NC}"
 echo ""
 
@@ -229,12 +234,23 @@ for iteration in $(seq "$START_ITERATION" "$MAX_ITERATIONS"); do
   else
     fl_log "Phase 1: Build & Test"
 
+    # Build test-runner arguments
+    tr_args=("$SESSION_NAME" --workers "$TEST_WORKERS")
+
+    # Skip build only if explicitly requested on first iteration
     if [ "$iteration" -eq "$START_ITERATION" ] && [ "$SKIP_BUILD" = true ]; then
       fl_log "Skipping build (--skip-build)"
-      "$SCRIPT_DIR/test-runner.sh" "$SESSION_NAME" --skip-build --workers "$TEST_WORKERS" || true
-    else
-      "$SCRIPT_DIR/test-runner.sh" "$SESSION_NAME" --workers "$TEST_WORKERS" || true
+      tr_args+=(--skip-build)
     fi
+    # Iterations 2+ always rebuild (to deploy code fixes from previous iteration)
+
+    # Retry only failed tests on iteration 2+ (unless --retest-all)
+    if [ "$iteration" -gt "$START_ITERATION" ] && [ "$RETEST_ALL" = false ]; then
+      fl_log "Retesting failed-only (use --retest-all to run all tests)"
+      tr_args+=(--retry)
+    fi
+
+    "$SCRIPT_DIR/test-runner.sh" "${tr_args[@]}" || true
 
     # Read test_run_id from output file
     local_trid_file="$SESSION_DIR/.fix-loop/last-test-run-id.txt"
