@@ -126,13 +126,13 @@ db_exec() {
 }
 
 # Step tracking
-TOTAL_STEPS=20
+TOTAL_STEPS=21
 CURRENT_STEP=0
 STEP_START_TIME=0
 SESSION_START_TIME=0
-declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Types" "Frontend API" "Frontend Pages" "Frontend Integrate" "Build Codebase" "Test Personas" "Journey Tests")
-declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
-declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+declare -a STEP_NAMES=("Repo Analysis" "Feature Input" "Context Research" "Refinement" "Impl Research" "Summary" "Flow Diagram" "Database Sync" "Data Schema" "Run Migration" "Integrate Models" "API Generation" "Journey Gen" "Frontend Types" "Frontend API" "Frontend Pages" "Frontend Integrate" "Build Codebase" "Test Personas" "Journey Tests" "Fix Loop")
+declare -a STEP_STATUS=("pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending" "pending")
+declare -a STEP_DURATIONS=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 
 # Spinner characters (braille pattern for smooth animation)
 readonly SPINNER_CHARS='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -2285,8 +2285,10 @@ detect_completed_steps() {
   local session_dir="$1"
 
   # Check steps in reverse order to find where to resume
-  if [ -f "$session_dir/test-feedback-generated.txt" ]; then
-    echo 21  # All 20 steps done — resume past end
+  if [ -f "$session_dir/fix-loop-complete.txt" ]; then
+    echo 22  # All 21 steps done — resume past end
+  elif [ -f "$session_dir/test-feedback-generated.txt" ]; then
+    echo 21  # Steps 1-20 done, resume from step 21 (fix loop)
   elif [ -f "$session_dir/personas-generated.txt" ]; then
     echo 20  # Steps 1-19 done, resume from step 20 (journey tests)
   elif [ -f "$session_dir/build-deployed.txt" ]; then
@@ -4634,6 +4636,13 @@ Separate them with a line containing only: --- SCHEMAS ---
 - Include proper error handling with HTTPException
 - Add docstrings to all handlers
 - Follow the existing router patterns from the codebase examples
+- For list endpoints that return user-specific data (memberships, connections, owned items):
+  add a query param (e.g. my_items=true) that filters by the authenticated user's ID.
+  Use appropriate joins (e.g., MembershipTable) to scope results to the user.
+- All list endpoints must accept skip/limit query params with sensible defaults (limit=50).
+  For endpoints consumed by dropdowns, document that frontends should request higher limits.
+- When an entity has a parent-child relationship (org → members, org → invites),
+  scope child queries to the parent ID and verify the user has access to the parent.
 
 PROMPT_HEADER
 
@@ -5493,6 +5502,9 @@ generate_frontend_api_client() {
     printf -- "- Map to a specific backend endpoint\n"
     printf -- "- Accept typed parameters\n"
     printf -- "- Return typed responses\n"
+    printf -- "- List functions must accept optional pagination params: { skip?: number, limit?: number }\n"
+    printf -- "  with a default limit of 100 for dropdown/select use cases.\n"
+    printf -- "- For user-scoped endpoints, include the scoping query param (e.g., my_items: true) by default.\n"
     printf "</task>\n\n"
     printf "<reminder>\n"
     printf "Output raw TypeScript code starting with import/export. The file is saved directly to disk.\n"
@@ -5629,6 +5641,21 @@ generate_frontend_pages() {
       printf -- "- DELETE endpoints → confirmation dialogs\n"
       printf -- "- Include loading, error, and empty states\n"
       printf -- "- Include CRUD operations where applicable\n"
+      printf -- "- Gate create/edit/delete buttons behind privilege checks: only render action buttons\n"
+      printf -- "  if the current user has the corresponding privilege (check user.privileges array\n"
+      printf -- "  from AuthContext). Users without the privilege should not see the button at all.\n"
+      printf -- "- For pages with tabs that load different data scopes (e.g., Members vs Invites):\n"
+      printf -- "  lazy-load tab data only when the tab is clicked, not on initial page load.\n"
+      printf -- "  This prevents 403 errors when a user doesn't have permission for all tabs.\n"
+      printf -- "- Map API error responses to user-friendly messages. Never display raw backend error\n"
+      printf -- "  strings like 'Insufficient privileges' or HTTP status codes to the user.\n"
+      printf -- "  Use a helper function that maps common error patterns to readable messages.\n"
+      printf -- "- For search/filter inputs with debounce: keep previous results visible while the new\n"
+      printf -- "  search is loading. Only replace results when the new data arrives. Show a loading\n"
+      printf -- "  indicator during the fetch, not 'No results found.'\n"
+      printf -- "- For dropdown/select components that fetch entity lists: request limit=200 and use\n"
+      printf -- "  the user-scoped variant of the API (e.g., my_orgs=true) so only the user's\n"
+      printf -- "  relevant items appear, not the entire system's data.\n"
       printf "</task>\n\n"
       printf "<reminder>\n"
       printf "Output raw TypeScript/TSX code starting with import statements. The file is saved directly to disk.\n"
@@ -6206,6 +6233,76 @@ integrate_frontend_step() {
       fi
     fi
   done
+
+  # ── Route ordering: specific paths before dynamic :param paths ──
+  # Prevents /entities/:id from shadowing /entities/join/:token etc.
+  if [ -f "$app_tsx" ]; then
+    log "Sorting routes: specific paths before dynamic :param paths..."
+    local routes_tmp
+    routes_tmp=$(mktemp)
+
+    # Extract Route lines between <Routes> and catch-all <Route path="*"
+    local routes_start routes_end
+    routes_start=$(grep -n '<Routes>' "$app_tsx" 2>/dev/null | head -1 | cut -d: -f1) || true
+    routes_end=$(grep -n '<Route path="\*"' "$app_tsx" 2>/dev/null | head -1 | cut -d: -f1) || true
+
+    if [ -n "$routes_start" ] && [ -n "$routes_end" ] && [ "$routes_end" -gt "$routes_start" ]; then
+      # Extract only <Route lines (skip blank/comment lines)
+      sed -n "$((routes_start+1)),$((routes_end-1))p" "$app_tsx" | grep '<Route ' > "$routes_tmp" || true
+
+      if [ -s "$routes_tmp" ]; then
+        # Separate into: static routes (no :param), then dynamic routes (with :param)
+        local static_routes dynamic_routes
+        static_routes=$(grep -v ':[a-zA-Z]' "$routes_tmp" || true)
+        dynamic_routes=$(grep ':[a-zA-Z]' "$routes_tmp" || true)
+
+        # Among dynamic routes, sort longer paths first (more segments = more specific)
+        if [ -n "$dynamic_routes" ]; then
+          dynamic_routes=$(echo "$dynamic_routes" | awk '{
+            s = $0; sub(/.*path="/, "", s); sub(/".*/, "", s);
+            n = split(s, segs, "/");
+            printf "%03d\t%s\n", 1000-n, $0
+          }' | sort -t$'\t' -k1,1 | cut -f2-)
+        fi
+
+        # Build sorted block
+        local sorted_block=""
+        if [ -n "$static_routes" ]; then
+          sorted_block="$static_routes"
+        fi
+        if [ -n "$dynamic_routes" ]; then
+          if [ -n "$sorted_block" ]; then
+            sorted_block="$sorted_block"$'\n'"$dynamic_routes"
+          else
+            sorted_block="$dynamic_routes"
+          fi
+        fi
+
+        # Replace original route block in-place
+        if [ -n "$sorted_block" ]; then
+          # Delete old route lines between markers
+          sed -i "$((routes_start+1)),$((routes_end-1)){/< *Route /d}" "$app_tsx"
+
+          # Re-read the catch-all line (it may have shifted)
+          routes_end=$(grep -n '<Route path="\*"' "$app_tsx" 2>/dev/null | head -1 | cut -d: -f1) || true
+          if [ -n "$routes_end" ]; then
+            # Insert sorted routes before catch-all
+            local route_line
+            while IFS= read -r route_line; do
+              [ -z "$route_line" ] && continue
+              # Escape special chars for sed
+              local escaped_line
+              escaped_line=$(printf '%s\n' "$route_line" | sed 's~[&/\\]~\\&~g')
+              sed -i "${routes_end}i\\${escaped_line}" "$app_tsx"
+              routes_end=$((routes_end + 1))
+            done <<< "$sorted_block"
+            log_success "Routes reordered: static paths first, then by specificity"
+          fi
+        fi
+      fi
+    fi
+    rm -f "$routes_tmp"
+  fi
 
   # ── Verification: ensure every *Page.tsx has import + Route in App.tsx ──
   if [ -f "$app_tsx" ]; then
@@ -6830,7 +6927,7 @@ BEGIN
     SELECT code FROM user_privileges
     WHERE code LIKE 'inventory.%' OR code LIKE 'vendors.%'
        OR code LIKE 'orders.%' OR code LIKE 'kanban.%'
-       OR code = 'organizations.view' OR code LIKE 'invoices.%'
+       OR code IN ('organizations.view','organizations.create','organizations.edit') OR code LIKE 'invoices.%'
   LOOP
     INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
     SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
@@ -6861,7 +6958,7 @@ BEGIN
   FOR priv_row IN
     SELECT code FROM user_privileges
     WHERE code = 'inventory.view' OR code LIKE 'orders.%'
-       OR code IN ('kanban.edit', 'kanban.view', 'organizations.view')
+       OR code IN ('kanban.edit', 'kanban.view', 'organizations.view', 'organizations.create', 'organizations.edit')
   LOOP
     INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
     SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
@@ -6878,7 +6975,7 @@ BEGIN
     SELECT code FROM user_privileges
     WHERE code LIKE 'inventory.%' OR code LIKE 'vendors.%'
        OR code LIKE 'orders.%' OR code LIKE 'reports.%'
-       OR code LIKE 'invoices.%' OR code = 'organizations.view'
+       OR code LIKE 'invoices.%' OR code IN ('organizations.view','organizations.create','organizations.edit')
   LOOP
     INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
     SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
@@ -7303,6 +7400,24 @@ persona_journey_test_step() {
   fi
 }
 
+# Step 21: Fix Loop — iteratively fix failures from journey tests
+fix_loop_step() {
+  show_step_header 21 "Fix Loop" "verify"
+
+  # Run fix-loop.sh with --skip-first-test (step 20 just produced results)
+  "$SCRIPT_DIR/fix-loop.sh" "$SESSION_NAME" \
+    --skip-first-test \
+    --max-iterations "${FIX_LOOP_MAX_ITERATIONS:-3}"
+
+  # Write marker
+  {
+    echo "completed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    echo "session=$SESSION_NAME"
+  } > "$SESSION_DIR/fix-loop-complete.txt"
+
+  complete_step 21 "Fix loop complete"
+}
+
 # Show final summary
 show_final_summary() {
   local total_duration=$(($(date +%s) - SESSION_START_TIME))
@@ -7582,6 +7697,12 @@ main() {
     persona_journey_test_step
   else
     echo -e "  ${DIM}Step 20: Journey Tests - skipped (already complete)${NC}"
+  fi
+
+  if [ "$RESUME_FROM_STEP" -le 21 ]; then
+    fix_loop_step
+  else
+    echo -e "  ${DIM}Step 21: Fix Loop - skipped (already complete)${NC}"
   fi
 
   show_final_summary
