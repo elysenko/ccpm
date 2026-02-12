@@ -150,7 +150,7 @@ tl_create_mcp_configs() {
   for w in $(seq 1 "$num_workers"); do
     mkdir -p "$batch_dir/pw-data-${w}" 2>/dev/null || true
     cat > "$batch_dir/mcp-worker-${w}.json" << MCPEOF
-{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp@latest","--executable-path","/snap/bin/chromium","--user-data-dir","$batch_dir/pw-data-${w}"]}}}
+{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp@latest","--executable-path","/snap/bin/chromium","--image-responses","omit","--user-data-dir","$batch_dir/pw-data-${w}"]}}}
 MCPEOF
   done
 }
@@ -428,50 +428,23 @@ tl_run_explicit_worker() {
     local test_artifacts="$artifacts_dir/$persona_id/$journey_id"
     mkdir -p "$test_artifacts" 2>/dev/null || true
 
-    # Build explicit test prompt
+    # Build explicit test prompt — dynamic data only (instructions in system prompt)
     local prompt_file="$session_dir/.explicit-test-prompt-${persona_id}-${journey_id}.txt"
     cat > "$prompt_file" << EXPLICIT_PROMPT_EOF
-Test a web application by navigating it in the browser. Follow the journey steps and report results as JSON.
-
 APPLICATION: $base_url
 LOGIN: Email: $persona_email  Password: $persona_password
-
 JOURNEY: $journey_name ($journey_id)
+SCREENSHOTS: $test_artifacts/
 
 STEPS TO TEST:
 $journey_steps_json
-
-INSTRUCTIONS:
-1. Navigate to $base_url
-2. Log in with the credentials above
-3. For each journey step, perform the user_action in the browser
-4. Check if it worked — report "complete" or "incomplete"
-5. If incomplete: describe what went wrong
-6. Take a screenshot on failures (save to $test_artifacts/)
-7. Continue testing even if a step fails
-8. Close the browser when done
-
-Your final output must be ONLY this JSON (no other text):
-{"login_status":"complete","login_notes":"...","step_results":[{"step_number":1,"step_name":"...","status":"complete or incomplete","failure_reason":null,"failure_category":null,"expected_outcome":null,"actual_outcome":null,"bugs_found":[],"accessibility_issues":[],"performance_notes":null,"suggestions":null,"page_url":"..."}]}
 EXPLICIT_PROMPT_EOF
 
     # Run Claude sub-agent with worker-specific MCP config
     local output_file="$session_dir/.explicit-result-${persona_id}-${journey_id}.json"
-    # Look up existing Claude session for this persona+journey
-    local claude_session_id claude_session_flag
-    claude_session_id=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT claude_session_id FROM test_instance
-       WHERE persona_id='$persona_id' AND journey_id='$journey_id' AND mode='explicit'
-         AND claude_session_id IS NOT NULL
-       ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
-    claude_session_id=$(echo "$claude_session_id" | tr -d '[:space:]')
-
-    if [ -n "$claude_session_id" ]; then
-      claude_session_flag="--resume"
-    else
-      claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
-      claude_session_flag="--session-id"
-    fi
+    # Always use a fresh session to avoid reloading prior conversation history (snapshots)
+    local claude_session_id
+    claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
 
     local claude_attempt=1
     local max_attempts=2
@@ -479,9 +452,22 @@ EXPLICIT_PROMPT_EOF
 
     while [ "$claude_attempt" -le "$max_attempts" ]; do
       claude --dangerously-skip-permissions --print \
-        $claude_session_flag "$claude_session_id" \
+        --session-id "$claude_session_id" \
         --strict-mcp-config --mcp-config "$mcp_config" \
-        --append-system-prompt "You are a QA tester. Navigate the app in the browser, test it, then output ONLY valid JSON as your final message. No markdown fences, no explanation — just the JSON object." \
+        --append-system-prompt "You are a QA tester. Test a web app by following journey steps in the browser.
+Instructions:
+1. Navigate to the APPLICATION URL
+2. Log in with the provided credentials
+3. For each step, perform the user_action in the browser
+4. Report each step as complete or incomplete
+5. If incomplete: describe what went wrong in failure_reason
+6. On failure: take a screenshot (save as step-{N}-failure.png to the SCREENSHOTS dir)
+7. Include screenshot_path in JSON for failed steps
+8. Continue testing even if a step fails
+9. Close the browser when done
+
+Output ONLY this JSON (no markdown fences, no explanation):
+{\"login_status\":\"complete|incomplete\",\"login_notes\":\"...\",\"step_results\":[{\"step_number\":1,\"step_name\":\"...\",\"status\":\"complete|incomplete\",\"failure_reason\":\"...or null\",\"bugs_found\":[],\"page_url\":\"...\",\"screenshot_path\":\"...or null\"}]}" \
         -p "$(cat "$prompt_file")" \
         > "$output_file" 2>/dev/null || true
 
@@ -512,8 +498,8 @@ try:
     data = json.load(open('$output_file'))
     steps = data.get('step_results', [])
     total = len(steps)
-    completed = sum(1 for s in steps if s.get('status') == 'complete')
-    failed = sum(1 for s in steps if s.get('status') == 'incomplete')
+    completed = sum(1 for s in steps if s.get('status') in ('complete', 'pass'))
+    failed = sum(1 for s in steps if s.get('status') in ('incomplete', 'fail'))
 
     if failed == 0 and completed > 0:
         status = 'pass'
@@ -543,7 +529,8 @@ try:
     for s in steps:
         sn = s.get('step_number', 0)
         sname = esc(s.get('step_name', ''))
-        sstatus = s.get('status', 'skipped')
+        raw_status = s.get('status', 'skipped')
+        sstatus = {'pass': 'complete', 'fail': 'incomplete'}.get(raw_status, raw_status)
         fr = esc(s.get('failure_reason'))
         fc = esc(s.get('failure_category'))
         eo = esc(s.get('expected_outcome'))
@@ -553,19 +540,20 @@ try:
         perf = esc(s.get('performance_notes'))
         sugg = esc(s.get('suggestions'))
         purl = esc(s.get('page_url'))
+        sspath = esc(s.get('screenshot_path'))
 
         print(f"""INSERT INTO explicit_journey_feedback (
             test_instance_id,
             step_number, step_name, status,
             failure_reason, failure_category, expected_outcome, actual_outcome,
             bugs_found, accessibility_issues, performance_notes, suggestions,
-            page_url
+            page_url, screenshot_path
         ) VALUES (
             (SELECT id FROM test_instance WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND journey_id='$journey_id' LIMIT 1),
             {sn}, '{sname}', '{sstatus}',
             '{fr}', '{fc}', '{eo}', '{ao}',
             '{bugs}'::jsonb, '{access}'::jsonb, '{perf}', '{sugg}',
-            '{purl}'
+            '{purl}', '{sspath}'
         );""")
 
 except Exception as e:
@@ -592,8 +580,8 @@ PARSE_EXPLICIT_WEOF
 import json
 data = json.load(open('$output_file'))
 steps = data.get('step_results', [])
-completed = sum(1 for s in steps if s.get('status') == 'complete')
-failed = sum(1 for s in steps if s.get('status') == 'incomplete')
+completed = sum(1 for s in steps if s.get('status') in ('complete', 'pass'))
+failed = sum(1 for s in steps if s.get('status') in ('incomplete', 'fail'))
 if failed == 0 and completed > 0: print('pass')
 elif completed == 0: print('fail')
 else: print('partial')
@@ -693,59 +681,41 @@ tl_run_general_worker() {
     local test_artifacts="$artifacts_dir/$persona_id/general-$journey_id"
     mkdir -p "$test_artifacts" 2>/dev/null || true
 
-    # Build general test prompt
+    # Build general test prompt — dynamic data only (instructions in system prompt)
     local prompt_file="$session_dir/.general-test-prompt-${persona_id}-${journey_id}.txt"
     cat > "$prompt_file" << GENERAL_PROMPT_EOF
-Explore a web application in the browser to accomplish a goal. No predefined steps — discover the path yourself. Report results as JSON.
-
 APPLICATION: $base_url
 LOGIN: Email: $persona_email  Password: $persona_password
-
 GOAL: $goal_text
-
-INSTRUCTIONS:
-1. Navigate to $base_url
-2. Log in with the credentials above
-3. Explore the UI to accomplish the goal
-4. Record every action you take as a discovered step
-5. For each step: score intuitive (0-100) and feedback_quality (0-100)
-6. Note any bugs, accessibility issues, confusion points
-7. Save screenshots to $test_artifacts/ on interesting findings
-8. After completing or failing, score the rubric below
-9. Close the browser when done
-
-RUBRIC (0-100 each): task_completion (100=achieved, 0=failed), efficiency (100=optimal, 0=abandoned), error_recovery (100=none, 0=unrecoverable), learnability (100=obvious, 0=undiscoverable), confidence (100=certain, 0=lost)
-
-Your final output must be ONLY this JSON (no other text):
-{"goal_achieved":true,"discovered_steps":[{"step_number":1,"action_taken":"...","action_intent":"...","page_url":"...","element_interacted":"...","score_intuitive":90,"score_feedback_quality":85,"observation":"...","bugs_found":[],"accessibility_issues":[],"performance_notes":null,"suggestions":null,"confusion_points":null}],"rubric_scores":{"task_completion":75,"efficiency":80,"error_recovery":100,"learnability":70,"confidence":85},"overall_notes":"..."}
+SCREENSHOTS: $test_artifacts/
 GENERAL_PROMPT_EOF
 
     # Run Claude sub-agent with worker-specific MCP config
     local output_file="$session_dir/.general-result-${persona_id}-${journey_id}.json"
-    # Look up existing Claude session for this persona+journey
-    local claude_session_id claude_session_flag
-    claude_session_id=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
-      "SELECT claude_session_id FROM test_instance
-       WHERE persona_id='$persona_id' AND journey_id='$journey_id' AND mode='general'
-         AND claude_session_id IS NOT NULL
-       ORDER BY completed_at DESC LIMIT 1;" 2>/dev/null) || true
-    claude_session_id=$(echo "$claude_session_id" | tr -d '[:space:]')
-
-    if [ -n "$claude_session_id" ]; then
-      claude_session_flag="--resume"
-    else
-      claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
-      claude_session_flag="--session-id"
-    fi
+    # Always use a fresh session to avoid reloading prior conversation history (snapshots)
+    local claude_session_id
+    claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
 
     local claude_attempt=1
     local test_success=false
 
     while [ "$claude_attempt" -le 2 ]; do
       claude --dangerously-skip-permissions --print \
-        $claude_session_flag "$claude_session_id" \
+        --session-id "$claude_session_id" \
         --strict-mcp-config --mcp-config "$mcp_config" \
-        --append-system-prompt "You are a QA tester. Navigate the app in the browser, test it, then output ONLY valid JSON as your final message. No markdown fences, no explanation — just the JSON object." \
+        --append-system-prompt "You are a QA tester. Explore a web app to accomplish the given GOAL. No predefined steps — discover the path yourself.
+Instructions:
+1. Navigate to the APPLICATION URL and log in
+2. Explore the UI to accomplish the GOAL
+3. Record every action as a discovered step with scores: intuitive (0-100), feedback_quality (0-100)
+4. Note bugs, accessibility issues, confusion points
+5. Save screenshots to SCREENSHOTS dir on interesting findings or failures
+6. Score the rubric: task_completion, efficiency, error_recovery, learnability, confidence (0-100 each)
+7. For rubric scores below 80, include a deduction reason
+8. Close the browser when done
+
+Output ONLY this JSON (no markdown fences, no explanation):
+{\"goal_achieved\":true,\"discovered_steps\":[{\"step_number\":1,\"action_taken\":\"...\",\"page_url\":\"...\",\"element_interacted\":\"...\",\"score_intuitive\":90,\"score_feedback_quality\":85,\"observation\":\"...\",\"bugs_found\":[],\"screenshot_path\":null}],\"rubric_scores\":{\"task_completion\":75,\"task_completion_deduction\":null,\"efficiency\":80,\"efficiency_deduction\":null,\"error_recovery\":100,\"error_recovery_deduction\":null,\"learnability\":70,\"learnability_deduction\":null,\"confidence\":85,\"confidence_deduction\":null},\"overall_notes\":\"...\"}" \
         -p "$(cat "$prompt_file")" \
         > "$output_file" 2>/dev/null || true
 
@@ -826,6 +796,7 @@ try:
         perf = esc(s.get('performance_notes'))
         sugg = esc(s.get('suggestions'))
         conf_pts = esc(s.get('confusion_points'))
+        sspath = esc(s.get('screenshot_path'))
 
         si_val = f"{si}" if si is not None else "NULL"
         sfq_val = f"{sfq}" if sfq is not None else "NULL"
@@ -835,14 +806,16 @@ try:
             action_taken, action_intent, page_url, element_interacted,
             score_intuitive, score_feedback_quality,
             observation, bugs_found, accessibility_issues,
-            performance_notes, suggestions, confusion_points
+            performance_notes, suggestions, confusion_points,
+            screenshot_path
         ) VALUES (
             (SELECT id FROM test_instance WHERE test_run_id='$test_run_id' AND persona_id='$persona_id' AND mode='general' AND goal_source='journey:$journey_id' LIMIT 1),
             {sn},
             '{at}', '{ai}', '{pu}', '{ei}',
             {si_val}, {sfq_val},
             '{obs}', '{bugs}'::jsonb, '{access}'::jsonb,
-            '{perf}', '{sugg}', '{conf_pts}'
+            '{perf}', '{sugg}', '{conf_pts}',
+            '{sspath}'
         );""")
 
 except Exception as e:
