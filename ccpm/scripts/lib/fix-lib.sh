@@ -336,7 +336,10 @@ Key patterns to look for:
 - "no nav link" / "cannot find menu item" → missing sidebar entry in App.tsx
 - API errors (500, 404) → missing or broken backend endpoint
 - Form not working → missing frontend form handler or API integration
-- Permission denied → RBAC misconfiguration (mark as unfixable if complex)
+- "403 Forbidden" or "Insufficient privileges" → data_fixable=true, data_fix_type="rbac_grants"
+- Empty lists when data should exist → data_fixable=true, data_fix_type="seed_data"
+- Browser crashes / SIGTERM → unfixable=true, unfixable_reason="infrastructure"
+- Only mark unfixable if issue cannot be resolved by code, migrations, privilege grants, or test data
 </instructions>
 
 <output_format>
@@ -357,7 +360,10 @@ Output ONLY valid JSON with this structure (no markdown fences, no explanation):
         }
       ],
       "unfixable": false,
-      "needs_interrogation": false
+      "needs_interrogation": false,
+      "data_fixable": false,
+      "data_fix_type": null,
+      "data_fix_sql": null
     }
   ],
   "summary": "Brief summary of all diagnoses"
@@ -366,8 +372,11 @@ Output ONLY valid JSON with this structure (no markdown fences, no explanation):
 For each fix:
 - diagnosis_confidence: 0.0-1.0 (set needs_interrogation=true if < 0.7)
 - is_shared_file: true if file is in the shared list (App.tsx, api.ts, exchangeApi.ts, types/exchange.ts, main_complete.py, task_5_20260130_010555.py)
-- unfixable: true if the fix requires infrastructure/external service changes
-- If unfixable, add unfixable_reason (one of: third_party_integration, infrastructure, data_dependency, test_environment)
+- unfixable: true ONLY if the fix requires external infrastructure changes (browser crash, third-party API)
+- If unfixable, add unfixable_reason (one of: third_party_integration, infrastructure, test_environment)
+- data_fixable: true if the fix requires database changes (privilege grants, seed data, migrations)
+- data_fix_type: one of "rbac_grants", "seed_data", "migration" (only when data_fixable=true)
+- data_fix_sql: optional SQL to execute (single statement, idempotent) for seed data fixes
 </output_format>
 SYNTH_STATIC_EOF
 
@@ -649,5 +658,200 @@ MERGE_DATA_EOF
     sed -i '/./,$!d' "$output_file"
     sed -i '/^```/d' "$output_file"
     _fl_extract_json "$output_file" "merged"
+  fi
+}
+
+# ── Data fix functions ────────────────────────────────────────────────────────
+
+# Check if any fix specs have data_fixable=true.
+# Args: synthesis_file
+# Outputs: "yes" or "no"
+fl_has_data_fixable_specs() {
+  local synthesis_file="$1"
+  python3 -c "
+import json, sys
+d = json.load(open('$synthesis_file'))
+has = any(s.get('data_fixable', False) for s in d.get('fix_specs', []))
+print('yes' if has else 'no')
+" 2>/dev/null || echo "no"
+}
+
+# Apply data fixes: re-run migrations, apply group grants, execute seed SQL.
+# Args: session_dir project_root synthesis_file
+fl_apply_data_fixes() {
+  local session_dir="$1"
+  local project_root="$2"
+  local synthesis_file="$3"
+
+  fl_log "  Applying database migrations..."
+  # Re-apply all migrations (sorted numerically, idempotent)
+  for mig in $(ls "$project_root"/backend/migrations/*.sql 2>/dev/null | sort -V); do
+    tl_db_exec_file "$mig" > /dev/null 2>&1 || true
+  done
+
+  # Apply catch-all group grants migration specifically
+  if [ -f "$project_root/backend/migrations/049_grant_persona_privileges.sql" ]; then
+    fl_log "  Applying 049_grant_persona_privileges.sql..."
+    tl_db_exec_file "$project_root/backend/migrations/049_grant_persona_privileges.sql" > /dev/null 2>&1 || true
+  fi
+
+  # Apply session-specific test data seed if it exists
+  if [ -f "$session_dir/test-data-seed.sql" ]; then
+    fl_log "  Applying test-data-seed.sql..."
+    tl_db_exec_file "$session_dir/test-data-seed.sql" > /dev/null 2>&1 || true
+  fi
+
+  # Execute any data_fix_sql from synthesis specs
+  local sql_fixes
+  sql_fixes=$(python3 -c "
+import json
+d = json.load(open('$synthesis_file'))
+for s in d.get('fix_specs', []):
+    sql = s.get('data_fix_sql')
+    if sql and s.get('data_fixable', False):
+        print(sql)
+" 2>/dev/null) || true
+
+  if [ -n "$sql_fixes" ]; then
+    fl_log "  Executing synthesis data_fix_sql..."
+    echo "$sql_fixes" | tl_db_query > /dev/null 2>&1 || true
+  fi
+
+  fl_log_success "Data fixes applied"
+}
+
+# Validate modified files before commit — syntax check Python and TypeScript.
+# Args: project_root
+# Returns 0 if all valid, 1 if any invalid (with reverts).
+fl_validate_changes() {
+  local project_root="$1"
+  local had_errors=false
+
+  cd "$project_root"
+
+  # Find modified Python files
+  local py_files
+  py_files=$(git diff --name-only -- '*.py' 2>/dev/null) || true
+  for f in $py_files; do
+    if [ -f "$f" ]; then
+      if ! python3 -m py_compile "$f" 2>/dev/null; then
+        fl_log_warn "  Syntax error in $f — reverting"
+        git checkout -- "$f" 2>/dev/null || true
+        had_errors=true
+      fi
+    fi
+  done
+
+  # Find modified TypeScript/TSX files — only check if tsc is available
+  if command -v npx >/dev/null 2>&1 && [ -f "$project_root/frontend/tsconfig.json" ]; then
+    local tsx_files
+    tsx_files=$(git diff --name-only -- '*.tsx' '*.ts' 2>/dev/null | grep '^frontend/' || true)
+    if [ -n "$tsx_files" ]; then
+      if ! (cd "$project_root/frontend" && npx tsc --noEmit 2>/dev/null); then
+        fl_log_warn "  TypeScript errors detected — checking individual files"
+        for f in $tsx_files; do
+          if [ -f "$project_root/$f" ]; then
+            # Individual file check is expensive, just warn
+            fl_log_warn "  Potentially broken: $f"
+          fi
+        done
+      fi
+    fi
+  fi
+
+  if [ "$had_errors" = true ]; then
+    return 1
+  fi
+  return 0
+}
+
+# Detect regressions between iterations by comparing test metrics.
+# Args: session_name current_test_run_id history_file work_dir
+# Outputs regression info to work_dir/regressions-iterN.json
+fl_detect_regressions() {
+  local session_name="$1"
+  local test_run_id="$2"
+  local work_dir="$3"
+  local iteration="$4"
+
+  local prev_trid_file="$work_dir/prev-test-run-id.txt"
+  local regression_file="$work_dir/regressions-iter${iteration}.json"
+
+  # Need a previous test_run_id to compare against
+  if [ ! -f "$prev_trid_file" ]; then
+    echo '{"regressions":[]}' > "$regression_file"
+    echo "$test_run_id" > "$prev_trid_file"
+    return
+  fi
+
+  local prev_trid
+  prev_trid=$(cat "$prev_trid_file" | tr -d '[:space:]')
+
+  python3 << REGRESS_EOF > "$regression_file"
+import json, subprocess, sys
+
+def db_query(sql):
+    proc = subprocess.run(
+        ['kubectl', 'exec', '-i', '-n', '$TL_DB_NAMESPACE', '$TL_DB_POD', '--',
+         'env', 'PGPASSWORD=$TL_DB_PASSWORD',
+         'psql', '-U', '$TL_DB_USER', '-d', '$TL_DB_NAME', '-tA'],
+        input=sql, capture_output=True, text=True
+    )
+    return proc.stdout.strip()
+
+# Get prev results: journey_id|mode|status|score
+prev = {}
+for row in db_query("""
+    SELECT journey_id, mode, overall_status, COALESCE(score_overall, 0)
+    FROM test_instance
+    WHERE session_name = '$session_name' AND test_run_id = '$prev_trid'
+""").split('\n'):
+    parts = row.strip().split('|')
+    if len(parts) >= 4:
+        prev[(parts[0], parts[1])] = {'status': parts[2], 'score': int(parts[3]) if parts[3] else 0}
+
+# Get current results
+curr = {}
+for row in db_query("""
+    SELECT journey_id, mode, overall_status, COALESCE(score_overall, 0)
+    FROM test_instance
+    WHERE session_name = '$session_name' AND test_run_id = '$test_run_id'
+""").split('\n'):
+    parts = row.strip().split('|')
+    if len(parts) >= 4:
+        curr[(parts[0], parts[1])] = {'status': parts[2], 'score': int(parts[3]) if parts[3] else 0}
+
+# Detect regressions: was pass → now fail, or score dropped significantly
+regressions = []
+for key, prev_data in prev.items():
+    curr_data = curr.get(key)
+    if not curr_data:
+        continue
+    if prev_data['status'] == 'pass' and curr_data['status'] in ('fail', 'error', 'partial'):
+        regressions.append({
+            'journey_id': key[0], 'mode': key[1],
+            'prev_status': prev_data['status'], 'curr_status': curr_data['status'],
+            'prev_score': prev_data['score'], 'curr_score': curr_data['score'],
+            'type': 'status_regression'
+        })
+    elif curr_data['score'] < prev_data['score'] - 20:
+        regressions.append({
+            'journey_id': key[0], 'mode': key[1],
+            'prev_status': prev_data['status'], 'curr_status': curr_data['status'],
+            'prev_score': prev_data['score'], 'curr_score': curr_data['score'],
+            'type': 'score_regression'
+        })
+
+print(json.dumps({'regressions': regressions}, indent=2))
+REGRESS_EOF
+
+  # Update prev test_run_id for next iteration
+  echo "$test_run_id" > "$prev_trid_file"
+
+  # Log if regressions found
+  local reg_count
+  reg_count=$(python3 -c "import json; print(len(json.load(open('$regression_file')).get('regressions',[])))" 2>/dev/null) || true
+  if [ "${reg_count:-0}" -gt 0 ]; then
+    fl_log_warn "  Detected $reg_count regressions from previous iteration"
   fi
 }

@@ -297,7 +297,7 @@ PROMPT_MID1_EOF
 <session_name>$session_name</session_name>
 
 <privilege_map>
-Available privilege codes: admin.all, inventory.view, inventory.edit, inventory.create, inventory.delete, vendors.view, vendors.edit, vendors.create, vendors.delete, orders.view, orders.edit, orders.create, orders.update, orders.delete, orders.approve, orders.workflow, kanban.view, kanban.edit, organizations.view, organizations.create, organizations.edit, organizations.delete, invoices.view, invoices.create, invoices.edit, invoices.delete, users.view, users.edit, users.delete, reports.view, reports.export
+Available privilege codes: $(paste -sd', ' "$session_dir/privilege-codes.txt" 2>/dev/null || echo "admin.all, inventory.view, inventory.edit, inventory.create, inventory.delete, vendors.view, vendors.edit, vendors.create, vendors.delete, orders.view, orders.edit, orders.create, orders.update, orders.delete, orders.approve, orders.workflow, kanban.view, kanban.edit, organizations.view, organizations.create, organizations.edit, organizations.delete, invoices.view, invoices.create, invoices.edit, invoices.delete, users.view, users.edit, users.delete, reports.view, reports.export")
 </privilege_map>
 </context>
 

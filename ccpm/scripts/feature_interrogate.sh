@@ -125,6 +125,24 @@ db_exec() {
     env PGPASSWORD="$DB_PASSWORD" psql -U "$DB_USER" -d "$DB_NAME" "$@"
 }
 
+# ── Privilege Code Scanner ────────────────────────────────────────────────────
+# Scans all require_privilege("...") patterns from existing + generated routers.
+# Produces $SESSION_DIR/privilege-codes.txt (one code per line, sorted, deduplicated).
+scan_privilege_codes() {
+  local output_file="$SESSION_DIR/privilege-codes.txt"
+  {
+    # Existing backend routers
+    grep -ohP 'require_privilege\("\K[^"]+' "$PROJECT_ROOT"/backend/app/api/v1/*.py 2>/dev/null || true
+    # Generated router (Step 12 output)
+    if [ -f "$SESSION_DIR/generated-api/router.py" ]; then
+      grep -ohP 'require_privilege\("\K[^"]+' "$SESSION_DIR/generated-api/router.py" 2>/dev/null || true
+    fi
+    # Base codes not in any router but needed for RBAC system
+    printf '%s\n' admin.all users.view users.edit users.delete reports.view reports.export
+  } | sort -u > "$output_file"
+  log "Scanned $(wc -l < "$output_file") privilege codes -> privilege-codes.txt"
+}
+
 # Step tracking
 TOTAL_STEPS=21
 CURRENT_STEP=0
@@ -4906,6 +4924,9 @@ REGEOF
       echo "generated_at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     } > "$SESSION_DIR/api-generated.txt"
 
+    # Scan privilege codes from all routers (existing + newly generated)
+    scan_privilege_codes
+
     complete_step 12 "API generated (score: $score%, iterations: $iteration)"
     dim_path "  Router: $dest_router"
     dim_path "  Schemas: $dest_schemas"
@@ -4923,6 +4944,9 @@ REGEOF
 # Generate user journeys by delegating to generate-journeys.sh
 generate_journey_steps() {
   show_step_header 13 "Journey Generation" "sync"
+
+  # Ensure privilege codes are scanned (idempotent — skips if already exists)
+  [ -f "$SESSION_DIR/privilege-codes.txt" ] || scan_privilege_codes
 
   # Check prerequisites
   if [ ! -f "$SESSION_DIR/refined-requirements.md" ]; then
@@ -6526,6 +6550,9 @@ build_codebase_step() {
 generate_personas_step() {
   show_step_header 19 "Test Personas" "sync"
 
+  # Ensure privilege codes are scanned (idempotent — skips if already exists)
+  [ -f "$SESSION_DIR/privilege-codes.txt" ] || scan_privilege_codes
+
   local db_cmd="kubectl exec -i -n $DB_NAMESPACE $DB_POD -- env PGPASSWORD=$DB_PASSWORD"
   local personas_json="$SESSION_DIR/personas.json"
   local personas_backup=".claude/testing/personas/${SESSION_NAME}-personas.json"
@@ -6637,19 +6664,21 @@ You are a QA persona generator for a cattle ERP system called "KC Cattle Company
 
 Generate exactly 10 test personas as a JSON object with a "personas" array. Each persona must match this schema:
 
-PERSONA ROLES AND RBAC:
-| # | ID | Role | Group | Granted Privileges | Denied Privileges |
-|---|-----|------|-------|-------------------|-------------------|
-| 1 | persona-01 | Ranch Owner/Manager | persona-ranch-owners | all privileges | (none) |
-| 2 | persona-02 | Ranch Foreman | persona-ranch-operations | inventory.*, vendors.*, orders.*, kanban.* | users.delete |
-| 3 | persona-03 | Ranch Hand | persona-ranch-hands | inventory.view, kanban.view | inventory.delete, vendors.*, orders.edit |
-| 4 | persona-04 | Livestock Buyer | persona-buyers | inventory.view, orders.*, kanban.edit | inventory.edit, vendors.delete |
-| 5 | persona-05 | Feedlot Operator | persona-ranch-operations | inventory.*, orders.*, kanban.*, vendors.* | users.* |
-| 6 | persona-06 | Auction House Rep | persona-read-only | inventory.view, orders.view | orders.edit, inventory.edit |
-| 7 | persona-07 | Veterinarian | persona-read-only | inventory.view, reports.view | inventory.delete, orders.* |
-| 8 | persona-08 | Office Manager | persona-office-staff | inventory.*, vendors.*, orders.*, reports.* | users.delete |
-| 9 | persona-09 | New Hire (Edge Case) | persona-ranch-hands | inventory.view | everything else |
-| 10 | persona-10 | Multi-Ranch Manager (Edge Case) | persona-ranch-owners | all privileges (multi-org) | (none) |
+AVAILABLE PRIVILEGES: $(paste -sd', ' "$SESSION_DIR/privilege-codes.txt" 2>/dev/null || echo "admin.all, inventory.view, inventory.edit, vendors.view, vendors.edit, orders.view, orders.edit")
+
+PERSONA ACCESS TIERS:
+| # | ID | Role | Group | Access Pattern | Denied |
+|---|-----|------|-------|---------------|--------|
+| 1 | persona-01 | Ranch Owner/Manager | persona-ranch-owners | ALL privileges listed above | (none) |
+| 2 | persona-02 | Ranch Foreman | persona-ranch-operations | view+edit+create on all operational entities (not users/admin/gorgias) | users.delete |
+| 3 | persona-03 | Ranch Hand | persona-ranch-hands | *.view only (all entities) | all edit/create/delete |
+| 4 | persona-04 | Livestock Buyer | persona-buyers | view+create+edit on all operational entities, no delete | *.delete |
+| 5 | persona-05 | Feedlot Operator | persona-ranch-operations | view+edit+create on all operational entities (not users/admin/gorgias) | users.* |
+| 6 | persona-06 | Auction House Rep | persona-read-only | *.view only (all entities) | all edit/create/delete |
+| 7 | persona-07 | Veterinarian | persona-read-only | *.view only (all entities) | all edit/create/delete |
+| 8 | persona-08 | Office Manager | persona-office-staff | all except admin.*, gorgias.*, users.delete | users.delete |
+| 9 | persona-09 | New Hire (Edge Case) | persona-ranch-hands | *.view only (all entities) | everything else |
+| 10 | persona-10 | Multi-Ranch Manager (Edge Case) | persona-ranch-owners | ALL privileges (multi-org) | (none) |
 
 AVAILABLE JOURNEYS: $journey_ids
 
@@ -6852,159 +6881,172 @@ END \$\$;
     ALTER TABLE group_privileges ALTER COLUMN granted_at SET DEFAULT NOW();
   " 2>/dev/null || true
 
+  # ── Step 1: Generate dynamic privilege INSERT from privilege-codes.txt ──
+  local priv_codes_file="$SESSION_DIR/privilege-codes.txt"
+  local priv_sql_file="$SESSION_DIR/.phase-g-privileges.sql"
+
+  python3 << PRIV_GEN_EOF > "$priv_sql_file"
+import sys
+
+codes_file = '$priv_codes_file'
+try:
+    codes = [line.strip() for line in open(codes_file) if line.strip()]
+except FileNotFoundError:
+    print("-- privilege-codes.txt not found, using empty list", file=sys.stderr)
+    codes = []
+
+print("DO \$\$")
+print("DECLARE")
+print("  admin_id UUID;")
+print("  priv_row RECORD;")
+print("BEGIN")
+print("  SELECT id INTO admin_id FROM users WHERE email = 'admin@cattle-erp.com' LIMIT 1;")
+print("  IF admin_id IS NULL THEN")
+print("    SELECT id INTO admin_id FROM users WHERE is_admin = true LIMIT 1;")
+print("  END IF;")
+print()
+print("  -- Step 1: Ensure all privilege codes exist (dynamically derived from require_privilege() calls)")
+print("  INSERT INTO user_privileges (id, code, name, category, description, is_active) VALUES")
+
+values = []
+for code in codes:
+    parts = code.split('.', 1)
+    entity = parts[0] if len(parts) > 1 else code
+    action = parts[1] if len(parts) > 1 else code
+    name = f"{action.title()} {entity.title()}"
+    desc_map = {'view': f'View {entity} data', 'edit': f'Edit {entity} records',
+                'create': f'Create {entity} records', 'delete': f'Delete {entity} records',
+                'export': f'Export {entity} data', 'approve': f'Approve {entity} records',
+                'workflow': f'Manage {entity} workflow', 'sync': f'Sync {entity} data',
+                'update': f'Update {entity} records'}
+    desc = desc_map.get(action, f'{action} for {entity}')
+    # Escape single quotes
+    name = name.replace("'", "''")
+    desc = desc.replace("'", "''")
+    values.append(f"    (gen_random_uuid(), '{code}', '{name}', '{entity}', '{desc}', true)")
+
+print(',\n'.join(values))
+print("  ON CONFLICT (code) DO UPDATE SET is_active = COALESCE(EXCLUDED.is_active, true);")
+print()
+print("  -- Fix any privilege codes with NULL is_active (from earlier migrations)")
+print("  UPDATE user_privileges SET is_active = true WHERE is_active IS NULL;")
+print()
+
+# Step 2: Catch-all group grants
+print("  -- Step 2: Grant privileges to each persona group (catch-all patterns)")
+print()
+
+# persona-ranch-owners: ALL privileges
+print("  -- persona-ranch-owners: all privileges (full admin)")
+print("  FOR priv_row IN SELECT code FROM user_privileges WHERE is_active = true LOOP")
+print("    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)")
+print("    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id")
+print("    FROM user_groups g")
+print("    WHERE g.name = 'persona-ranch-owners'")
+print("      AND NOT EXISTS (")
+print("        SELECT 1 FROM group_privileges gp")
+print("        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code")
+print("      );")
+print("  END LOOP;")
+print()
+
+# persona-ranch-operations: all operational privileges (catch-all: everything except users.*, admin.*, gorgias.*)
+print("  -- persona-ranch-operations: all operational privileges (auto-includes new feature entities)")
+print("  FOR priv_row IN")
+print("    SELECT code FROM user_privileges")
+print("    WHERE is_active = true")
+print("      AND code NOT LIKE 'users.%' AND code NOT LIKE 'admin.%' AND code NOT LIKE 'gorgias.%'")
+print("      AND (code LIKE '%.view' OR code LIKE '%.edit' OR code LIKE '%.create' OR code LIKE '%.workflow' OR code LIKE '%.approve' OR code LIKE '%.update')")
+print("  LOOP")
+print("    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)")
+print("    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id")
+print("    FROM user_groups g")
+print("    WHERE g.name = 'persona-ranch-operations'")
+print("      AND NOT EXISTS (")
+print("        SELECT 1 FROM group_privileges gp")
+print("        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code")
+print("      );")
+print("  END LOOP;")
+print()
+
+# persona-ranch-hands: view-only on all entities
+print("  -- persona-ranch-hands: view-only on all entities (auto-includes new feature entities)")
+print("  FOR priv_row IN")
+print("    SELECT code FROM user_privileges")
+print("    WHERE is_active = true AND code LIKE '%.view'")
+print("  LOOP")
+print("    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)")
+print("    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id")
+print("    FROM user_groups g")
+print("    WHERE g.name = 'persona-ranch-hands'")
+print("      AND NOT EXISTS (")
+print("        SELECT 1 FROM group_privileges gp")
+print("        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code")
+print("      );")
+print("  END LOOP;")
+print()
+
+# persona-buyers: view+create+edit on all entities (no delete), except users/admin/gorgias
+print("  -- persona-buyers: view+create+edit on all entities, no delete (auto-includes new features)")
+print("  FOR priv_row IN")
+print("    SELECT code FROM user_privileges")
+print("    WHERE is_active = true")
+print("      AND code NOT LIKE 'users.%' AND code NOT LIKE 'admin.%' AND code NOT LIKE 'gorgias.%'")
+print("      AND (code LIKE '%.view' OR code LIKE '%.create' OR code LIKE '%.edit' OR code LIKE '%.workflow' OR code LIKE '%.approve' OR code LIKE '%.update')")
+print("  LOOP")
+print("    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)")
+print("    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id")
+print("    FROM user_groups g")
+print("    WHERE g.name = 'persona-buyers'")
+print("      AND NOT EXISTS (")
+print("        SELECT 1 FROM group_privileges gp")
+print("        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code")
+print("      );")
+print("  END LOOP;")
+print()
+
+# persona-office-staff: all except users.delete, admin.*, gorgias.*
+print("  -- persona-office-staff: all except users.delete, admin.*, gorgias.* (auto-includes new features)")
+print("  FOR priv_row IN")
+print("    SELECT code FROM user_privileges")
+print("    WHERE is_active = true")
+print("      AND code NOT LIKE 'admin.%' AND code NOT LIKE 'gorgias.%'")
+print("      AND code != 'users.delete'")
+print("  LOOP")
+print("    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)")
+print("    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id")
+print("    FROM user_groups g")
+print("    WHERE g.name = 'persona-office-staff'")
+print("      AND NOT EXISTS (")
+print("        SELECT 1 FROM group_privileges gp")
+print("        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code")
+print("      );")
+print("  END LOOP;")
+print()
+
+# persona-read-only: view-only on all entities
+print("  -- persona-read-only: view-only on all entities (auto-includes new feature entities)")
+print("  FOR priv_row IN")
+print("    SELECT code FROM user_privileges")
+print("    WHERE is_active = true AND code LIKE '%.view'")
+print("  LOOP")
+print("    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)")
+print("    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id")
+print("    FROM user_groups g")
+print("    WHERE g.name = 'persona-read-only'")
+print("      AND NOT EXISTS (")
+print("        SELECT 1 FROM group_privileges gp")
+print("        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code")
+print("      );")
+print("  END LOOP;")
+print()
+
+print("END \$\$;")
+PRIV_GEN_EOF
+
+  # Execute generated SQL
   local priv_output
-  priv_output=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" << 'PRIV_SQL_EOF'
-DO $$
-DECLARE
-  admin_id UUID;
-  priv_row RECORD;
-  grp_row RECORD;
-BEGIN
-  SELECT id INTO admin_id FROM users WHERE email = 'admin@cattle-erp.com' LIMIT 1;
-  IF admin_id IS NULL THEN
-    SELECT id INTO admin_id FROM users WHERE is_admin = true LIMIT 1;
-  END IF;
-
-  -- Step 1: Ensure all privilege codes exist in user_privileges
-  -- These are the codes referenced by require_privilege() across all backend routers
-  INSERT INTO user_privileges (id, code, name, category, description, is_active) VALUES
-    (gen_random_uuid(), 'admin.all',           'All Admin Privileges',  'admin',     'Full system access',                  true),
-    (gen_random_uuid(), 'inventory.view',      'View Inventory',        'inventory', 'View inventory items and categories', true),
-    (gen_random_uuid(), 'inventory.edit',      'Edit Inventory',        'inventory', 'Create and edit inventory items',      true),
-    (gen_random_uuid(), 'inventory.create',    'Create Inventory',      'inventory', 'Create inventory items',              true),
-    (gen_random_uuid(), 'inventory.delete',    'Delete Inventory',      'inventory', 'Delete inventory items',              true),
-    (gen_random_uuid(), 'vendors.view',        'View Vendors',          'vendors',   'View vendor information',             true),
-    (gen_random_uuid(), 'vendors.edit',        'Edit Vendors',          'vendors',   'Create and edit vendors',             true),
-    (gen_random_uuid(), 'vendors.create',      'Create Vendors',        'vendors',   'Create vendors',                      true),
-    (gen_random_uuid(), 'vendors.delete',      'Delete Vendors',        'vendors',   'Delete vendors',                      true),
-    (gen_random_uuid(), 'orders.view',         'View Orders',           'orders',    'View procurement orders',             true),
-    (gen_random_uuid(), 'orders.edit',         'Edit Orders',           'orders',    'Create and edit orders',              true),
-    (gen_random_uuid(), 'orders.create',       'Create Orders',         'orders',    'Create procurement orders',           true),
-    (gen_random_uuid(), 'orders.update',       'Update Orders',         'orders',    'Update procurement orders',           true),
-    (gen_random_uuid(), 'orders.delete',       'Delete Orders',         'orders',    'Delete orders',                       true),
-    (gen_random_uuid(), 'orders.approve',      'Approve Orders',        'orders',    'Approve procurement orders',          true),
-    (gen_random_uuid(), 'orders.workflow',     'Workflow Orders',       'orders',    'Manage order workflow/kanban',         true),
-    (gen_random_uuid(), 'kanban.view',         'View Kanban',           'kanban',    'View kanban boards',                  true),
-    (gen_random_uuid(), 'kanban.edit',         'Edit Kanban',           'kanban',    'Move and edit kanban cards',           true),
-    (gen_random_uuid(), 'organizations.view',  'View Organizations',    'organizations', 'View organizations',              true),
-    (gen_random_uuid(), 'organizations.create','Create Organizations',  'organizations', 'Create organizations',            true),
-    (gen_random_uuid(), 'organizations.edit',  'Edit Organizations',    'organizations', 'Edit organizations',              true),
-    (gen_random_uuid(), 'organizations.delete','Delete Organizations',  'organizations', 'Delete organizations',            true),
-    (gen_random_uuid(), 'invoices.view',       'View Invoices',         'invoices',  'View invoices',                       true),
-    (gen_random_uuid(), 'invoices.create',     'Create Invoices',       'invoices',  'Create invoices',                     true),
-    (gen_random_uuid(), 'invoices.edit',       'Edit Invoices',         'invoices',  'Edit invoices',                       true),
-    (gen_random_uuid(), 'invoices.delete',     'Delete Invoices',       'invoices',  'Delete invoices',                     true),
-    (gen_random_uuid(), 'users.view',          'View Users',            'users',     'View user information',               true),
-    (gen_random_uuid(), 'users.edit',          'Edit Users',            'users',     'Create and edit users',               true),
-    (gen_random_uuid(), 'users.delete',        'Delete Users',          'users',     'Delete users',                        true),
-    (gen_random_uuid(), 'reports.view',        'View Reports',          'reports',   'View reports and analytics',          true),
-    (gen_random_uuid(), 'reports.export',      'Export Reports',        'reports',   'Export reports',                      true),
-    (gen_random_uuid(), 'gorgias.view',        'View Gorgias',          'gorgias',   'View Gorgias integration',            true),
-    (gen_random_uuid(), 'gorgias.admin',       'Admin Gorgias',         'gorgias',   'Admin Gorgias integration',           true),
-    (gen_random_uuid(), 'gorgias.sync',        'Sync Gorgias',          'gorgias',   'Sync Gorgias data',                   true)
-  ON CONFLICT (code) DO UPDATE SET is_active = COALESCE(EXCLUDED.is_active, true);
-
-  -- Fix any privilege codes with NULL is_active (from earlier migrations)
-  UPDATE user_privileges SET is_active = true WHERE is_active IS NULL;
-
-  -- Step 2: Grant privileges to each persona group
-  -- Pattern: for each (group_name, privilege_code) pair, insert if not exists
-
-  -- persona-ranch-owners: all privileges (full admin)
-  FOR priv_row IN SELECT code FROM user_privileges WHERE is_active = true LOOP
-    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
-    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
-    FROM user_groups g
-    WHERE g.name = 'persona-ranch-owners'
-      AND NOT EXISTS (
-        SELECT 1 FROM group_privileges gp
-        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
-      );
-  END LOOP;
-
-  -- persona-ranch-operations: inventory.*, vendors.*, orders.*, kanban.*, organizations.view
-  FOR priv_row IN
-    SELECT code FROM user_privileges
-    WHERE code LIKE 'inventory.%' OR code LIKE 'vendors.%'
-       OR code LIKE 'orders.%' OR code LIKE 'kanban.%'
-       OR code IN ('organizations.view','organizations.create','organizations.edit') OR code LIKE 'invoices.%'
-  LOOP
-    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
-    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
-    FROM user_groups g
-    WHERE g.name = 'persona-ranch-operations'
-      AND NOT EXISTS (
-        SELECT 1 FROM group_privileges gp
-        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
-      );
-  END LOOP;
-
-  -- persona-ranch-hands: inventory.view, kanban.view, organizations.view
-  FOR priv_row IN
-    SELECT code FROM user_privileges
-    WHERE code IN ('inventory.view', 'kanban.view', 'organizations.view')
-  LOOP
-    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
-    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
-    FROM user_groups g
-    WHERE g.name = 'persona-ranch-hands'
-      AND NOT EXISTS (
-        SELECT 1 FROM group_privileges gp
-        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
-      );
-  END LOOP;
-
-  -- persona-buyers: inventory.view, orders.*, kanban.edit, kanban.view, organizations.view
-  FOR priv_row IN
-    SELECT code FROM user_privileges
-    WHERE code = 'inventory.view' OR code LIKE 'orders.%'
-       OR code IN ('kanban.edit', 'kanban.view', 'organizations.view', 'organizations.create', 'organizations.edit')
-  LOOP
-    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
-    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
-    FROM user_groups g
-    WHERE g.name = 'persona-buyers'
-      AND NOT EXISTS (
-        SELECT 1 FROM group_privileges gp
-        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
-      );
-  END LOOP;
-
-  -- persona-office-staff: inventory.*, vendors.*, orders.*, reports.*, invoices.*, organizations.view
-  FOR priv_row IN
-    SELECT code FROM user_privileges
-    WHERE code LIKE 'inventory.%' OR code LIKE 'vendors.%'
-       OR code LIKE 'orders.%' OR code LIKE 'reports.%'
-       OR code LIKE 'invoices.%' OR code IN ('organizations.view','organizations.create','organizations.edit')
-  LOOP
-    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
-    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
-    FROM user_groups g
-    WHERE g.name = 'persona-office-staff'
-      AND NOT EXISTS (
-        SELECT 1 FROM group_privileges gp
-        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
-      );
-  END LOOP;
-
-  -- persona-read-only: inventory.view, orders.view, organizations.view, reports.view
-  FOR priv_row IN
-    SELECT code FROM user_privileges
-    WHERE code IN ('inventory.view', 'orders.view', 'organizations.view', 'reports.view')
-  LOOP
-    INSERT INTO group_privileges (id, group_id, privilege_code, granted, granted_at, granted_by)
-    SELECT gen_random_uuid(), g.id, priv_row.code, true, NOW(), admin_id
-    FROM user_groups g
-    WHERE g.name = 'persona-read-only'
-      AND NOT EXISTS (
-        SELECT 1 FROM group_privileges gp
-        WHERE gp.group_id = g.id AND gp.privilege_code = priv_row.code
-      );
-  END LOOP;
-
-END $$;
-PRIV_SQL_EOF
-  ) || true
+  priv_output=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" < "$priv_sql_file" 2>&1) || true
 
   if echo "$priv_output" | grep -qi "error"; then
     log_error "Privilege grant had errors: $(echo "$priv_output" | grep -i "error" | head -3)"
@@ -7021,7 +7063,83 @@ PRIV_SQL_EOF
     log_error "No group privileges were created — RBAC will fail"
   fi
 
-  # ── Phase H: Insert personas into DB ─────────────────────────────────────
+  # ── Phase H: Generate test data seed ──────────────────────────────────────
+  # Uses Claude to generate session-specific test data (org memberships, connection
+  # requests, etc.) based on journey specs and DB schema.
+  local seed_sql="$SESSION_DIR/test-data-seed.sql"
+  if [ ! -f "$seed_sql" ]; then
+    log "Generating test data seed SQL..."
+
+    # Collect journey info for context
+    local journey_summary=""
+    if [ -f "$SESSION_DIR/journeys.json" ]; then
+      journey_summary=$(python3 -c "
+import json
+data = json.load(open('$SESSION_DIR/journeys.json'))
+journeys = data if isinstance(data, list) else data.get('journeys', [])
+for j in journeys[:15]:
+    jid = j.get('id', j.get('journey_id', '?'))
+    name = j.get('name', '?')
+    pre = ', '.join(j.get('preconditions', [])[:3])
+    print(f'{jid}: {name} (preconditions: {pre})')
+" 2>/dev/null) || true
+    fi
+
+    # Get persona emails for context
+    local persona_emails
+    persona_emails=$(printf 'test+persona-%02d@cattle-erp.com\n' $(seq 1 10))
+
+    # Build seed generation prompt
+    local seed_prompt_file="$SESSION_DIR/.seed-prompt.txt"
+    cat > "$seed_prompt_file" << SEED_STATIC_EOF
+You are a database seed data generator for a cattle ERP test environment.
+
+Generate idempotent SQL (using ON CONFLICT or NOT EXISTS) that creates the test data
+needed for persona journey tests. The SQL will run against PostgreSQL.
+
+<context>
+Persona test emails:
+$persona_emails
+
+Journey preconditions:
+$journey_summary
+
+Available privilege codes: $(paste -sd', ' "$SESSION_DIR/privilege-codes.txt" 2>/dev/null || echo "unknown")
+</context>
+
+<instructions>
+1. Ensure each persona user has at least one organization membership (via user_organization_members or equivalent)
+2. Create any seed data that journey preconditions require (e.g., pending connection requests, sample deals)
+3. Use UUIDs for primary keys: gen_random_uuid()
+4. Reference users by email lookup: (SELECT id FROM users WHERE email = 'test+persona-01@cattle-erp.com')
+5. Make all INSERT statements idempotent with ON CONFLICT DO NOTHING or WHERE NOT EXISTS
+6. Output ONLY valid SQL. No markdown fences, no explanation.
+</instructions>
+SEED_STATIC_EOF
+
+    claude --dangerously-skip-permissions --print \
+      --max-turns 3 \
+      --tools "Read,Glob,Grep" \
+      --append-system-prompt "Output only valid PostgreSQL SQL. No markdown fences. No explanation." \
+      -p "$(cat "$seed_prompt_file")" \
+      > "$seed_sql" 2>/dev/null || true
+
+    # Clean output
+    if [ -f "$seed_sql" ] && [ -s "$seed_sql" ]; then
+      sed -i '/./,$!d' "$seed_sql"
+      sed -i '/^```/d' "$seed_sql"
+      # Execute the seed SQL
+      $db_cmd psql -U "$DB_USER" -d "$DB_NAME" < "$seed_sql" 2>/dev/null || true
+      log_success "Test data seed generated and applied"
+    else
+      log_warn "Could not generate test data seed (non-fatal)"
+    fi
+  else
+    log "Test data seed already exists — re-applying..."
+    $db_cmd psql -U "$DB_USER" -d "$DB_NAME" < "$seed_sql" 2>/dev/null || true
+  fi
+
+  # ── Phase I: Insert personas into DB ─────────────────────────────────────
   local persona_db_count
   persona_db_count=$($db_cmd psql -U "$DB_USER" -d "$DB_NAME" -tAc \
     "SELECT count(*) FROM persona WHERE session_name='$SESSION_NAME';" 2>/dev/null) || true
@@ -7071,7 +7189,7 @@ print(sql)
     log "Personas already in database ($persona_db_count found) — skipping"
   fi
 
-  # ── Phase I: Validate persona↔journey privilege coverage ────────────────
+  # ── Phase J: Validate persona↔journey privilege coverage ────────────────
   # Runs after persona insertion so persona table is populated
   log "Validating persona↔journey privilege coverage..."
   local coverage_issues
