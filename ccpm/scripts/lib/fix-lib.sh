@@ -388,15 +388,22 @@ $failures_json
 </failure_data>
 SYNTH_DATA_EOF
 
-  # Run synthesis agent with tool access for code inspection
+  # Run synthesis agent — use file-based prompt to avoid stdin size issues
+  local synth_log="${output_file%.json}-agent.log"
   claude --dangerously-skip-permissions --print \
     --max-turns 15 \
     --tools "Read,Glob,Grep" \
     --append-system-prompt "Output only valid JSON. No markdown fences. No explanation before or after." \
-    -p "$(cat "$prompt_file")" \
-    > "$output_file" 2>/dev/null || true
+    -p "Read the file $prompt_file and follow its instructions. The failure data is inside that file." \
+    > "$output_file" 2>"$synth_log" || true
 
-  rm -f "$prompt_file"
+  [ -s "$synth_log" ] && fl_log "Synthesis agent log: $synth_log"
+  # Keep prompt file on failure for debugging, clean on success
+  if [ -s "$output_file" ] && python3 -c "import json; json.load(open('$output_file'))" 2>/dev/null; then
+    rm -f "$prompt_file"
+  else
+    fl_log_warn "Synthesis prompt preserved at: $prompt_file"
+  fi
 
   # Clean output — extract JSON from potentially mixed output
   if [ -f "$output_file" ] && [ -s "$output_file" ]; then
@@ -434,6 +441,9 @@ EXTRACT_JSON_EOF
   if ! python3 -c "import json; d=json.load(open('$output_file')); assert 'fix_specs' in d" 2>/dev/null; then
     fl_log_error "Synthesis produced invalid JSON"
     fl_log_error "Raw output (first 200 chars): $(head -c 200 "$output_file" 2>/dev/null)"
+    if [ -f "$synth_log" ] && [ -s "$synth_log" ]; then
+      fl_log_error "Agent stderr (last 500 chars): $(tail -c 500 "$synth_log" 2>/dev/null)"
+    fi
     return 1
   fi
   return 0
