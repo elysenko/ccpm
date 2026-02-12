@@ -381,6 +381,7 @@ SYNTH_DATA_EOF
 
   # Run synthesis agent with tool access for code inspection
   claude --dangerously-skip-permissions --print \
+    --max-turns 5 \
     --tools "Read,Glob,Grep" \
     --append-system-prompt "Output only valid JSON. No markdown fences. No explanation before or after." \
     -p "$(cat "$prompt_file")" \
@@ -512,6 +513,7 @@ FIXAGENT_DATA_EOF
 
   # Run the fix agent
   claude --dangerously-skip-permissions --print \
+    --max-turns 30 \
     --tools "Read,Edit,Write,Glob,Grep" \
     --append-system-prompt "You are a developer. Make targeted code fixes. Output only valid JSON as your final message." \
     -p "$(cat "$prompt_file")" \
@@ -634,6 +636,7 @@ Your final output must be ONLY this JSON:
 MERGE_DATA_EOF
 
   claude --dangerously-skip-permissions --print \
+    --max-turns 15 \
     --tools "Read,Edit,Write,Glob,Grep" \
     --append-system-prompt "You are a merge engineer. Apply code changes precisely. Output only valid JSON as your final message." \
     -p "$(cat "$prompt_file")" \

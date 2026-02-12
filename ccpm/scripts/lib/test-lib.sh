@@ -446,12 +446,21 @@ EXPLICIT_PROMPT_EOF
     local claude_session_id
     claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
 
+    # Dynamic max-turns: ceil((steps + 2) * 5.5) — login + steps + output, ~5.5 browser actions each
+    local test_model="${TEST_MODEL:-sonnet}"
+    local step_count max_turns
+    step_count=$(python3 -c "import json; print(len(json.loads('''$journey_steps_json''')))" 2>/dev/null) || true
+    step_count=${step_count:-5}
+    max_turns=$(python3 -c "import math; print(math.ceil(($step_count + 2) * 5.5))")
+
     local claude_attempt=1
     local max_attempts=2
     local test_success=false
 
     while [ "$claude_attempt" -le "$max_attempts" ]; do
       claude --dangerously-skip-permissions --print \
+        --model "$test_model" \
+        --max-turns "$max_turns" \
         --session-id "$claude_session_id" \
         --strict-mcp-config --mcp-config "$mcp_config" \
         --append-system-prompt "You are a QA tester. Test a web app by following journey steps in the browser.
@@ -667,8 +676,10 @@ tl_run_general_worker() {
       continue
     fi
 
-    # Get goal text from journey
-    local goal_text
+    # Get journey DB id, goal text, and step count
+    local journey_db_id goal_text step_count
+    journey_db_id=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+      "SELECT id FROM journey WHERE session_name='$session_name' AND journey_id='$journey_id' AND confirmation_status='confirmed';" 2>/dev/null) || true
     goal_text=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
       "SELECT COALESCE(goal, '') FROM journey WHERE session_name='$session_name' AND journey_id='$journey_id';" 2>/dev/null) || true
 
@@ -677,6 +688,13 @@ tl_run_general_worker() {
       ((error++)) || true
       continue
     fi
+
+    # Get step count for max-turns calculation
+    if [ -n "$journey_db_id" ]; then
+      step_count=$($db_cmd psql -U "$db_user" -d "$db_name" -tAc \
+        "SELECT count(*) FROM journey_steps_detailed WHERE journey_id=$journey_db_id;" 2>/dev/null) || true
+    fi
+    step_count=${step_count:-5}
 
     local test_artifacts="$artifacts_dir/$persona_id/general-$journey_id"
     mkdir -p "$test_artifacts" 2>/dev/null || true
@@ -696,11 +714,18 @@ GENERAL_PROMPT_EOF
     local claude_session_id
     claude_session_id=$(python3 -c "import uuid; print(uuid.uuid4())")
 
+    # Dynamic max-turns: ceil((steps + 2) * 5.5)
+    local test_model="${TEST_MODEL:-sonnet}"
+    local max_turns
+    max_turns=$(python3 -c "import math; print(math.ceil(($step_count + 2) * 5.5))")
+
     local claude_attempt=1
     local test_success=false
 
     while [ "$claude_attempt" -le 2 ]; do
       claude --dangerously-skip-permissions --print \
+        --model "$test_model" \
+        --max-turns "$max_turns" \
         --session-id "$claude_session_id" \
         --strict-mcp-config --mcp-config "$mcp_config" \
         --append-system-prompt "You are a QA tester. Explore a web app to accomplish the given GOAL. No predefined steps — discover the path yourself.
