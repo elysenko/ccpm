@@ -390,7 +390,7 @@ SYNTH_DATA_EOF
 
   # Run synthesis agent with tool access for code inspection
   claude --dangerously-skip-permissions --print \
-    --max-turns 5 \
+    --max-turns 15 \
     --tools "Read,Glob,Grep" \
     --append-system-prompt "Output only valid JSON. No markdown fences. No explanation before or after." \
     -p "$(cat "$prompt_file")" \
